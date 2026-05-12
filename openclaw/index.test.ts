@@ -1,13 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
-  detectEmotion,
-  MEDIA_LINE_RE,
-  editMessageWithImage,
-  buildEmotionRules,
-  detectEmotionWithLLM,
-  detectApiType,
-  extractEmotion,
-} from "./index.js";
+   detectEmotion,
+   MEDIA_LINE_RE,
+   editMessageWithImage,
+   buildEmotionRules,
+   detectEmotionWithLLM,
+   detectApiType,
+   extractEmotion,
+   assertPathInside,
+   expandEnvPlaceholder,
+ } from "./index.js";
 
 describe("detectEmotion", () => {
   it("returns 'happy' when text contains completion keywords", () => {
@@ -554,6 +556,65 @@ describe("detectEmotionWithLLM", () => {
       mockLogger,
     );
 
-    expect(result).toBeNull();
-  });
-});
+     expect(result).toBeNull();
+   });
+ });
+
+describe("assertPathInside", () => {
+   it("returns normalized path when candidate is inside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets/happy.png");
+   });
+
+   it("returns null when candidate escapes root via parent traversal", () => {
+     const root = "/home/user/assets";
+     const candidate = "../../etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns null when candidate is absolute and outside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "/etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns path when candidate equals root", () => {
+     const root = "/home/user/assets";
+     const candidate = ".";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets");
+   });
+
+   it("returns null when candidate prefix overlaps but escapes", () => {
+     const root = "/home/user/assets";
+     const candidate = "../assets-evil/file.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("handles relative root paths", () => {
+     const root = "./assets";
+     const candidate = "happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeTruthy();
+     expect(result).toContain("assets/happy.png");
+   });
+
+   it("returns null for deeply nested parent traversal", () => {
+     const root = "/home/user/assets";
+     const candidate = "../../../../../../../../etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns path for nested subdirectories inside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "emotions/happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets/emotions/happy.png");
+   });
+ });

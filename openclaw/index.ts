@@ -6,12 +6,46 @@ import { existsSync } from "node:fs";
 
 const LLM_TIMEOUT_MS = 15_000;
 
+/**
+ * Ensure a candidate path resolves to a location inside (or equal to) the
+ * trusted root directory. Prevents path traversal via `imageDir` or
+ * `emotionMap` values smuggling something like "../../etc/passwd".
+ *
+ * Returns the normalized absolute path on success, or null when the candidate
+ * escapes the root. Both inputs may be relative or absolute; both are
+ * normalized to absolute form using `resolve`.
+ */
+export function assertPathInside(root: string, candidate: string): string | null {
+   const normalizedRoot = resolve(root);
+   const normalizedCandidate = resolve(normalizedRoot, candidate);
+   const rootWithSep = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep;
+   if (
+     normalizedCandidate === normalizedRoot ||
+     normalizedCandidate.startsWith(rootWithSep)
+   ) {
+     return normalizedCandidate;
+   }
+   return null;
+ }
+
 export type ApiType = "openai-completions" | "anthropic-messages";
 
 export function detectApiType(apiFromConfig?: string): ApiType {
-  if (apiFromConfig === "anthropic-messages") return "anthropic-messages";
-  return "openai-completions";
-}
+   if (apiFromConfig === "anthropic-messages") return "anthropic-messages";
+   return "openai-completions";
+ }
+
+/**
+ * Expand a value of the form `${ENV_VAR}` to `process.env.ENV_VAR`.
+ * Returns the original string if no placeholder is present, or undefined when
+ * the referenced env var is missing.
+ */
+export function expandEnvPlaceholder(value: string | undefined): string | undefined {
+   if (!value) return undefined;
+   const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
+   if (!m) return value;
+   return process.env[m[1]];
+ }
 
 /**
  * Extract a valid emotion from LLM response text with robust parsing.
@@ -617,12 +651,24 @@ export default definePluginEntry({
       ? resolve(pluginConfig.imageDir)
       : resolve(extensionDir, "..", "assets");
 
-    const emotionMap: Record<string, string> = {
-      ...DEFAULT_EMOTION_MAP,
-      ...pluginConfig.emotionMap,
-    };
+     const emotionMap: Record<string, string> = {
+       ...DEFAULT_EMOTION_MAP,
+       ...pluginConfig.emotionMap,
+     };
 
-    const validEmotions = Object.keys(emotionMap);
+     for (const [emotion, filename] of Object.entries(emotionMap)) {
+       if (isAbsolute(filename)) {
+         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" must be a filename relative to imageDir, not an absolute path. Skipping.`);
+         delete emotionMap[emotion];
+         continue;
+       }
+       if (assertPathInside(imageDir, filename) === null) {
+         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" escapes imageDir="${imageDir}". Skipping.`);
+         delete emotionMap[emotion];
+       }
+     }
+
+     const validEmotions = Object.keys(emotionMap);
     const activeEmotion = pluginConfig.defaultEmotion ?? DEFAULT_EMOTION;
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
@@ -653,11 +699,11 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    // Phase 1: On user message received, immediately send focused (thinking) image
-    const thinkingFilename = emotionMap["focused"] ?? "focused.png";
-    const thinkingImagePath = resolve(imageDir, thinkingFilename);
+     // Phase 1: On user message received, immediately send focused (thinking) image
+     const thinkingFilename = emotionMap["focused"] ?? "focused.png";
+     const thinkingImagePath = assertPathInside(imageDir, thinkingFilename);
 
-    if (existsSync(thinkingImagePath)) {
+     if (thinkingImagePath && existsSync(thinkingImagePath)) {
       api.on("message_received", async (event, ctx) => {
         const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
         if (!content || content.trim() === "NO_REPLY") return;
@@ -726,12 +772,16 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-        const finalFilename = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? "neutral.png";
-        const finalImagePath = resolve(imageDir, finalFilename);
-        if (!existsSync(finalImagePath)) {
-          api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
-          return;
-        }
+         const finalFilename = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? "neutral.png";
+         const finalImagePath = assertPathInside(imageDir, finalFilename);
+         if (!finalImagePath) {
+           api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
+           return;
+         }
+         if (!existsSync(finalImagePath)) {
+           api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
+           return;
+         }
 
         api.logger.info(`emotion-image: appending ${finalEmotion} image for msg=${messageId}`);
         await appendImageToMessage(botToken!, channelId, messageId, finalImagePath, api.logger);
