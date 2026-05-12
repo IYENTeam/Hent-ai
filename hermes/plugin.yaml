@@ -1,0 +1,5 @@
+name: hent-ai
+version: 0.1.0
+description: Attach Hent-ai emotion images to Hermes Agent responses.
+provides_hooks:
+  - transform_llm_output

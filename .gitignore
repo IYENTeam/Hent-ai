@@ -2,3 +2,6 @@ node_modules/
 dist-runtime/
 *.js
 !jest.config.js
+
+__pycache__/
+*.py[cod]

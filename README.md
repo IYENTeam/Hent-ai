@@ -205,6 +205,26 @@ You are a helpful assistant. Polite but not robotic.
 - Greeting/acknowledgment → warm and brief
 ```
 
+
+## Hermes Agent Support
+
+Hent-ai also includes an experimental Hermes Agent plugin in `hermes/`.
+This path is separate from the OpenClaw plugin and uses Hermes' plugin hook
+system plus Gateway media delivery.
+
+Quick install from a clone:
+
+```bash
+git clone https://github.com/IYENTeam/Hent-ai.git
+cd Hent-ai
+ln -s "$PWD/hermes" ~/.hermes/plugins/hent-ai
+hermes plugins enable hent-ai
+hermes gateway restart
+```
+
+For copy-based installation, custom assets, and platform filtering, see
+[`hermes/README.md`](./hermes/README.md).
+
 ## Creating Emotion Images
 
 You need 6 images that visually represent each emotion. Here's how to create a cohesive set.
