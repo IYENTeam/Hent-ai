@@ -1,5 +1,7 @@
 # Hent-ai 🎭
 
+> *Let your AI agent express its hent (intent).*
+
 **Emotion Image Attachment Plugin for OpenClaw**
 
 Automatically classifies the emotion of every bot response using LLM and attaches a matching emotion image to Discord messages.
@@ -34,7 +36,16 @@ Hent-ai operates in two phases:
 
 - [OpenClaw](https://github.com/openclaw/openclaw) installed and running
 - A Discord bot token (automatically resolved from OpenClaw Discord channel config)
-- An LLM provider configured in OpenClaw (e.g., `closedrouter/claude-sonnet-4-5-20250929`)
+- An LLM provider configured in OpenClaw for emotion classification
+- **Emotion images** — You need 6 PNG images, one for each emotion. Generate or create your own images and name them:
+  - `happy.png`
+  - `neutral.png`
+  - `loyalty.png`
+  - `sorry.png`
+  - `confused.png`
+  - `focused.png`
+
+  Place them in the `assets/` directory inside the plugin, or set a custom `imageDir` in the config.
 
 ### Step 1: Clone the Repository
 
@@ -50,7 +61,23 @@ cd ~/.openclaw/extensions
 git clone https://github.com/IYENTeam/Hent-ai.git emotion-image
 ```
 
-### Step 2: Configure OpenClaw
+### Step 2: Add Your Emotion Images
+
+Place your 6 emotion images in the `assets/` directory:
+
+```
+assets/
+├── happy.png
+├── neutral.png
+├── loyalty.png
+├── sorry.png
+├── confused.png
+└── focused.png
+```
+
+You can generate these with any image generation tool — just make sure each file is named exactly as shown above.
+
+### Step 3: Configure OpenClaw
 
 Add the plugin configuration to your `openclaw.json` (or via `openclaw config`):
 
@@ -61,20 +88,14 @@ Add the plugin configuration to your `openclaw.json` (or via `openclaw config`):
       "emotion-image": {
         "enabled": true,
         "config": {
-          // Required: LLM model for emotion classification
-          "classifierModel": "closedrouter/claude-sonnet-4-5-20250929",
+          // Required: provider/model ID for LLM-based emotion classification
+          "classifierModel": "your-provider/your-model-id",
 
           // Optional: custom image directory (defaults to assets/ inside the plugin)
           // "imageDir": "/path/to/custom/assets",
 
           // Optional: override default emotion (defaults to "neutral")
           // "defaultEmotion": "neutral",
-
-          // Optional: add custom keyword patterns for rule-based fallback
-          // "emotionRules": {
-          //   "happy": ["awesome", "great job"],
-          //   "sorry": ["my fault", "apologize"]
-          // },
 
           // Optional: override emotion-to-filename mapping
           // "emotionMap": {
@@ -87,25 +108,6 @@ Add the plugin configuration to your `openclaw.json` (or via `openclaw config`):
   }
 }
 ```
-
-### Step 3: Add Emotion Images
-
-The plugin ships with default emotion images in the `assets/` directory:
-
-```
-assets/
-├── happy.png
-├── neutral.png
-├── loyalty.png
-├── sorry.png
-├── confused.png
-└── focused.png
-```
-
-To use custom images, either:
-- Replace files in `assets/` directly
-- Set `imageDir` in the config to point to your custom assets directory
-- Override individual filenames via `emotionMap` in the config
 
 ### Step 4: Build and Restart OpenClaw
 
@@ -127,7 +129,7 @@ openclaw gateway restart
 After restart, check the gateway log for:
 
 ```
-[plugins] emotion-image: LLM classifier enabled with model="your/model-id"
+[plugins] emotion-image: LLM classifier enabled with model="your-provider/your-model-id"
 [plugins] emotion-image: token found (len=XX), imageDir=/path/to/assets
 ```
 
