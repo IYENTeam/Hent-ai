@@ -6,19 +6,6 @@
 
 Automatically classifies the emotion of every bot response using LLM and attaches a matching emotion image to Discord messages.
 
-## How It Works
-
-Hent-ai operates in two phases:
-
-1. **Phase 1 — Thinking Indicator** (`message_received` hook)
-   - When a user sends a message, the plugin immediately sends a "focused" (thinking) image to the channel
-   - This gives instant visual feedback before the bot responds
-
-2. **Phase 2 — Emotion Classification** (`message_sent` hook)
-   - After the bot sends a response, the plugin calls an LLM to classify the emotion of the response text
-   - The classified emotion image is appended to the bot's message
-   - If LLM classification fails, falls back to rule-based keyword matching
-
 ### Supported Emotions
 
 | Emotion | When Used |
@@ -148,6 +135,21 @@ Send a message in Discord. You should see:
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
 | `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
+
+
+## How It Works
+
+Hent-ai operates in two phases:
+
+1. **Phase 1 — Thinking Indicator** (`message_received` hook)
+   - When a user sends a message, the plugin immediately sends a "focused" (thinking) image to the channel
+   - This gives instant visual feedback before the bot responds
+
+2. **Phase 2 — Emotion Classification** (`message_sent` hook)
+   - After the bot sends a response, the plugin calls an LLM to classify the emotion of the response text
+   - The classified emotion image is appended to the bot's message
+   - If LLM classification fails, falls back to rule-based keyword matching
+
 
 ## Architecture
 
