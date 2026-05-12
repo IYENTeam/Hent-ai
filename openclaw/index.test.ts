@@ -141,7 +141,7 @@ describe("editMessageWithImage", () => {
       text: vi.fn().mockResolvedValue(""),
     } as unknown as Response);
 
-    const imagePath = new URL("./assets/neutral.png", import.meta.url).pathname;
+    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
 
     await editMessageWithImage(
       "bot-token-123",
@@ -175,7 +175,7 @@ describe("editMessageWithImage", () => {
       text: vi.fn().mockResolvedValue('{"message": "Invalid Form Body"}'),
     } as unknown as Response);
 
-    const imagePath = new URL("./assets/neutral.png", import.meta.url).pathname;
+    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
 
     await editMessageWithImage(
       "bot-token-123",
@@ -194,7 +194,7 @@ describe("editMessageWithImage", () => {
   it("logs error on exception", async () => {
     vi.mocked(fetch).mockRejectedValue(new Error("Network error"));
 
-    const imagePath = new URL("./assets/neutral.png", import.meta.url).pathname;
+    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
 
     await editMessageWithImage(
       "bot-token-123",
@@ -232,7 +232,7 @@ describe("editMessageWithImage", () => {
       text: vi.fn().mockResolvedValue(""),
     } as unknown as Response);
 
-    const imagePath = new URL("./assets/neutral.png", import.meta.url).pathname;
+    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
 
     await editMessageWithImage(
       "bot-token",

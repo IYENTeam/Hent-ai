@@ -612,7 +612,7 @@ export default definePluginEntry({
     const extensionDir = dirname(fileURLToPath(import.meta.url));
     const imageDir = pluginConfig.imageDir
       ? resolve(pluginConfig.imageDir)
-      : resolve(extensionDir, "assets");
+      : resolve(extensionDir, "..", "assets");
 
     const emotionMap: Record<string, string> = {
       ...DEFAULT_EMOTION_MAP,
