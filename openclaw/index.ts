@@ -482,30 +482,30 @@ export async function appendImageToMessage(
       attachments?: Array<{ id: string; filename: string }>;
     };
 
-    const existingContent = msg.content ?? "";
-    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
-    const newAttachmentIdx = existingAttachments.length;
+     const existingContent = msg.content ?? "";
+     const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
+     const newFileIndex = 0;
 
-     const imageBuffer = await readFile(imagePath);
-    const filename = imagePath.split("/").pop() ?? "emotion.png";
+      const imageBuffer = await readFile(imagePath);
+     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
+     const boundary = `----EmotionImage${Date.now()}`;
+     const parts: Buffer[] = [];
 
-    const jsonPayload = JSON.stringify({
-      content: existingContent,
-      attachments: [
-        ...existingAttachments,
-        { id: newAttachmentIdx, filename },
-      ],
-    });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
+     const jsonPayload = JSON.stringify({
+       content: existingContent,
+       attachments: [
+         ...existingAttachments,
+         { id: newFileIndex, filename },
+       ],
+     });
+     parts.push(Buffer.from(
+       `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
+     ));
 
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newAttachmentIdx}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
+     parts.push(Buffer.from(
+       `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
+     ));
     parts.push(imageBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 

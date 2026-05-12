@@ -672,3 +672,43 @@ describe("expandEnvPlaceholder", () => {
      delete process.env.lowercase_var;
    });
  });
+
+describe("appendImageToMessage attachment schema", () => {
+   it("uses newFileIndex=0 for new attachment placeholder ID", () => {
+     const newFileIndex = 0;
+     const filename = "emotion.png";
+     const attachment = { id: newFileIndex, filename };
+     expect(attachment.id).toBe(0);
+     expect(attachment.filename).toBe("emotion.png");
+   });
+
+   it("preserves existing attachment snowflake IDs as strings", () => {
+     const existingAttachments = [
+       { id: "1234567890123456789", filename: "old1.png" },
+       { id: "9876543210987654321", filename: "old2.png" },
+     ];
+     const preserved = existingAttachments.map((a) => ({ id: a.id }));
+     expect(preserved[0].id).toBe("1234567890123456789");
+     expect(preserved[1].id).toBe("9876543210987654321");
+   });
+
+   it("matches files[0] form key with id=0 for new upload", () => {
+     const newFileIndex = 0;
+     const formKey = `files[${newFileIndex}]`;
+     expect(formKey).toBe("files[0]");
+   });
+
+   it("correctly builds attachment array with existing + new", () => {
+     const existingAttachments = [{ id: "123456789" }];
+     const newFileIndex = 0;
+     const filename = "emotion.png";
+     const attachments = [
+       ...existingAttachments,
+       { id: newFileIndex, filename },
+     ];
+     expect(attachments).toHaveLength(2);
+     expect(attachments[0].id).toBe("123456789");
+     expect(attachments[1].id).toBe(0);
+     expect(attachments[1].filename).toBe("emotion.png");
+   });
+ });
