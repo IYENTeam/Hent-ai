@@ -618,3 +618,57 @@ describe("assertPathInside", () => {
      expect(result).toBe("/home/user/assets/emotions/happy.png");
    });
  });
+
+describe("expandEnvPlaceholder", () => {
+   beforeEach(() => {
+     process.env.TEST_VAR = "test_value";
+     process.env.EMOTION_IMAGE_DISCORD_TOKEN = "bot_token_123";
+   });
+
+   afterEach(() => {
+     delete process.env.TEST_VAR;
+     delete process.env.EMOTION_IMAGE_DISCORD_TOKEN;
+   });
+
+   it("returns original string when no placeholder", () => {
+     const result = expandEnvPlaceholder("literal_token");
+     expect(result).toBe("literal_token");
+   });
+
+   it("expands ${ENV_VAR} placeholder to env value", () => {
+     const result = expandEnvPlaceholder("${TEST_VAR}");
+     expect(result).toBe("test_value");
+   });
+
+   it("expands ${EMOTION_IMAGE_DISCORD_TOKEN} placeholder", () => {
+     const result = expandEnvPlaceholder("${EMOTION_IMAGE_DISCORD_TOKEN}");
+     expect(result).toBe("bot_token_123");
+   });
+
+   it("returns undefined when env var is missing", () => {
+     const result = expandEnvPlaceholder("${NONEXISTENT_VAR}");
+     expect(result).toBeUndefined();
+   });
+
+   it("returns undefined when input is undefined", () => {
+     const result = expandEnvPlaceholder(undefined);
+     expect(result).toBeUndefined();
+   });
+
+   it("returns undefined when input is empty string", () => {
+     const result = expandEnvPlaceholder("");
+     expect(result).toBeUndefined();
+   });
+
+   it("does not expand placeholder in middle of string", () => {
+     const result = expandEnvPlaceholder("prefix_${TEST_VAR}_suffix");
+     expect(result).toBe("prefix_${TEST_VAR}_suffix");
+   });
+
+   it("is case-insensitive for env var names", () => {
+     process.env.lowercase_var = "value";
+     const result = expandEnvPlaceholder("${LOWERCASE_VAR}");
+     expect(result).toBe("value");
+     delete process.env.lowercase_var;
+   });
+ });

@@ -677,25 +677,17 @@ export default definePluginEntry({
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
     }
 
-    // Discord bot token: env var → config file lookup
-    let botToken = process.env.EMOTION_IMAGE_DISCORD_TOKEN;
-    if (!botToken) {
-      try {
-        const cfgPath = resolve(process.env.HOME ?? "~", ".openclaw/openclaw.json");
-        const rawCfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
-        const accounts = rawCfg?.channels?.discord?.accounts;
-        if (accounts) {
-          const firstAccount = Object.values(accounts as Record<string, { token?: string }>)
-            .find((a) => a?.token);
-          botToken = firstAccount?.token;
-        }
-      } catch {}
-    }
+     const botToken =
+       process.env.EMOTION_IMAGE_DISCORD_TOKEN ??
+       expandEnvPlaceholder(pluginConfig.discordToken);
 
-    if (!botToken) {
-      api.logger.warn(`emotion-image: Discord token not found. Set EMOTION_IMAGE_DISCORD_TOKEN env var.`);
-      return;
-    }
+     if (!botToken) {
+       api.logger.warn(
+         `emotion-image: Discord token not configured. Set EMOTION_IMAGE_DISCORD_TOKEN env var ` +
+         `or pluginConfig.discordToken (supports "\${ENV_VAR}" placeholder).`,
+       );
+       return;
+     }
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
