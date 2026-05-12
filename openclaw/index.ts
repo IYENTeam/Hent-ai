@@ -1,7 +1,8 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -319,15 +320,15 @@ export function detectEmotion(
 }
 
 export async function editMessageWithImage(
-  token: string,
-  channelId: string,
-  messageId: string,
-  originalContent: string,
-  imagePath: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer = readFileSync(imagePath);
+   token: string,
+   channelId: string,
+   messageId: string,
+   originalContent: string,
+   imagePath: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
     // Build multipart/form-data
@@ -376,13 +377,13 @@ export async function editMessageWithImage(
 }
 
 export async function sendImageMessage(
-  token: string,
-  channelId: string,
-  imagePath: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer = readFileSync(imagePath);
+   token: string,
+   channelId: string,
+   imagePath: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
     const boundary = `----EmotionImage${Date.now()}`;
@@ -451,7 +452,7 @@ export async function appendImageToMessage(
     const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
     const newAttachmentIdx = existingAttachments.length;
 
-    const imageBuffer = readFileSync(imagePath);
+     const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
     const boundary = `----EmotionImage${Date.now()}`;
@@ -500,17 +501,19 @@ export async function appendImageToMessage(
 }
 
 export async function editMessageWithTwoImages(
-  token: string,
-  channelId: string,
-  messageId: string,
-  originalContent: string,
-  imagePath1: string,
-  imagePath2: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer1 = readFileSync(imagePath1);
-    const imageBuffer2 = readFileSync(imagePath2);
+   token: string,
+   channelId: string,
+   messageId: string,
+   originalContent: string,
+   imagePath1: string,
+   imagePath2: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const [imageBuffer1, imageBuffer2] = await Promise.all([
+       readFile(imagePath1),
+       readFile(imagePath2),
+     ]);
     const filename1 = imagePath1.split("/").pop() ?? "emotion1.png";
     const filename2 = imagePath2.split("/").pop() ?? "emotion2.png";
 
