@@ -1,5 +1,5 @@
 # Hent-AI : Let your AI agent express its hent!!
-<img width="294.5" height="363.5" alt="image" src="https://github.com/user-attachments/assets/fea635e3-9a20-4676-954f-464a1595c0e1" />
+<img width="2172" height="724" alt="Hent-AI Banner" src="https://github.com/user-attachments/assets/16565dd4-129b-44ce-9275-2efd4199cbde" />
 
 > *Let your AI agent express its hent (intent).*
 
