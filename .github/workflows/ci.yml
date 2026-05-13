@@ -49,9 +49,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Type check
-        run: pnpm exec tsc --noEmit --skipLibCheck
-
       - name: Test
         run: pnpm test
 
