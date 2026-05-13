@@ -1,16 +1,51 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 
 const LLM_TIMEOUT_MS = 15_000;
+
+/**
+ * Ensure a candidate path resolves to a location inside (or equal to) the
+ * trusted root directory. Prevents path traversal via `imageDir` or
+ * `emotionMap` values smuggling something like "../../etc/passwd".
+ *
+ * Returns the normalized absolute path on success, or null when the candidate
+ * escapes the root. Both inputs may be relative or absolute; both are
+ * normalized to absolute form using `resolve`.
+ */
+export function assertPathInside(root: string, candidate: string): string | null {
+   const normalizedRoot = resolve(root);
+   const normalizedCandidate = resolve(normalizedRoot, candidate);
+   const rootWithSep = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep;
+   if (
+     normalizedCandidate === normalizedRoot ||
+     normalizedCandidate.startsWith(rootWithSep)
+   ) {
+     return normalizedCandidate;
+   }
+   return null;
+ }
 
 export type ApiType = "openai-completions" | "anthropic-messages";
 
 export function detectApiType(apiFromConfig?: string): ApiType {
-  if (apiFromConfig === "anthropic-messages") return "anthropic-messages";
-  return "openai-completions";
-}
+   if (apiFromConfig === "anthropic-messages") return "anthropic-messages";
+   return "openai-completions";
+ }
+
+/**
+ * Expand a value of the form `${ENV_VAR}` to `process.env.ENV_VAR`.
+ * Returns the original string if no placeholder is present, or undefined when
+ * the referenced env var is missing.
+ */
+export function expandEnvPlaceholder(value: string | undefined): string | undefined {
+   if (!value) return undefined;
+   const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
+   if (!m) return value;
+   return process.env[m[1]];
+ }
 
 /**
  * Extract a valid emotion from LLM response text with robust parsing.
@@ -319,15 +354,15 @@ export function detectEmotion(
 }
 
 export async function editMessageWithImage(
-  token: string,
-  channelId: string,
-  messageId: string,
-  originalContent: string,
-  imagePath: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer = readFileSync(imagePath);
+   token: string,
+   channelId: string,
+   messageId: string,
+   originalContent: string,
+   imagePath: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
     // Build multipart/form-data
@@ -376,13 +411,13 @@ export async function editMessageWithImage(
 }
 
 export async function sendImageMessage(
-  token: string,
-  channelId: string,
-  imagePath: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer = readFileSync(imagePath);
+   token: string,
+   channelId: string,
+   imagePath: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
     const boundary = `----EmotionImage${Date.now()}`;
@@ -447,30 +482,30 @@ export async function appendImageToMessage(
       attachments?: Array<{ id: string; filename: string }>;
     };
 
-    const existingContent = msg.content ?? "";
-    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
-    const newAttachmentIdx = existingAttachments.length;
+     const existingContent = msg.content ?? "";
+     const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
+     const newFileIndex = 0;
 
-    const imageBuffer = readFileSync(imagePath);
-    const filename = imagePath.split("/").pop() ?? "emotion.png";
+      const imageBuffer = await readFile(imagePath);
+     const filename = imagePath.split("/").pop() ?? "emotion.png";
 
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
+     const boundary = `----EmotionImage${Date.now()}`;
+     const parts: Buffer[] = [];
 
-    const jsonPayload = JSON.stringify({
-      content: existingContent,
-      attachments: [
-        ...existingAttachments,
-        { id: newAttachmentIdx, filename },
-      ],
-    });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
+     const jsonPayload = JSON.stringify({
+       content: existingContent,
+       attachments: [
+         ...existingAttachments,
+         { id: newFileIndex, filename },
+       ],
+     });
+     parts.push(Buffer.from(
+       `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
+     ));
 
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newAttachmentIdx}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
+     parts.push(Buffer.from(
+       `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
+     ));
     parts.push(imageBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
@@ -500,17 +535,19 @@ export async function appendImageToMessage(
 }
 
 export async function editMessageWithTwoImages(
-  token: string,
-  channelId: string,
-  messageId: string,
-  originalContent: string,
-  imagePath1: string,
-  imagePath2: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    const imageBuffer1 = readFileSync(imagePath1);
-    const imageBuffer2 = readFileSync(imagePath2);
+   token: string,
+   channelId: string,
+   messageId: string,
+   originalContent: string,
+   imagePath1: string,
+   imagePath2: string,
+   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+ ) {
+   try {
+     const [imageBuffer1, imageBuffer2] = await Promise.all([
+       readFile(imagePath1),
+       readFile(imagePath2),
+     ]);
     const filename1 = imagePath1.split("/").pop() ?? "emotion1.png";
     const filename2 = imagePath2.split("/").pop() ?? "emotion2.png";
 
@@ -614,12 +651,24 @@ export default definePluginEntry({
       ? resolve(pluginConfig.imageDir)
       : resolve(extensionDir, "..", "assets");
 
-    const emotionMap: Record<string, string> = {
-      ...DEFAULT_EMOTION_MAP,
-      ...pluginConfig.emotionMap,
-    };
+     const emotionMap: Record<string, string> = {
+       ...DEFAULT_EMOTION_MAP,
+       ...pluginConfig.emotionMap,
+     };
 
-    const validEmotions = Object.keys(emotionMap);
+     for (const [emotion, filename] of Object.entries(emotionMap)) {
+       if (isAbsolute(filename)) {
+         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" must be a filename relative to imageDir, not an absolute path. Skipping.`);
+         delete emotionMap[emotion];
+         continue;
+       }
+       if (assertPathInside(imageDir, filename) === null) {
+         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" escapes imageDir="${imageDir}". Skipping.`);
+         delete emotionMap[emotion];
+       }
+     }
+
+     const validEmotions = Object.keys(emotionMap);
     const activeEmotion = pluginConfig.defaultEmotion ?? DEFAULT_EMOTION;
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
@@ -628,33 +677,25 @@ export default definePluginEntry({
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
     }
 
-    // Discord bot token: env var → config file lookup
-    let botToken = process.env.EMOTION_IMAGE_DISCORD_TOKEN;
-    if (!botToken) {
-      try {
-        const cfgPath = resolve(process.env.HOME ?? "~", ".openclaw/openclaw.json");
-        const rawCfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
-        const accounts = rawCfg?.channels?.discord?.accounts;
-        if (accounts) {
-          const firstAccount = Object.values(accounts as Record<string, { token?: string }>)
-            .find((a) => a?.token);
-          botToken = firstAccount?.token;
-        }
-      } catch {}
-    }
+     const botToken =
+       process.env.EMOTION_IMAGE_DISCORD_TOKEN ??
+       expandEnvPlaceholder(pluginConfig.discordToken);
 
-    if (!botToken) {
-      api.logger.warn(`emotion-image: Discord token not found. Set EMOTION_IMAGE_DISCORD_TOKEN env var.`);
-      return;
-    }
+     if (!botToken) {
+       api.logger.warn(
+         `emotion-image: Discord token not configured. Set EMOTION_IMAGE_DISCORD_TOKEN env var ` +
+         `or pluginConfig.discordToken (supports "\${ENV_VAR}" placeholder).`,
+       );
+       return;
+     }
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    // Phase 1: On user message received, immediately send focused (thinking) image
-    const thinkingFilename = emotionMap["focused"] ?? "focused.png";
-    const thinkingImagePath = resolve(imageDir, thinkingFilename);
+     // Phase 1: On user message received, immediately send focused (thinking) image
+     const thinkingFilename = emotionMap["focused"] ?? "focused.png";
+     const thinkingImagePath = assertPathInside(imageDir, thinkingFilename);
 
-    if (existsSync(thinkingImagePath)) {
+     if (thinkingImagePath && existsSync(thinkingImagePath)) {
       api.on("message_received", async (event, ctx) => {
         const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
         if (!content || content.trim() === "NO_REPLY") return;
@@ -671,11 +712,13 @@ export default definePluginEntry({
         } catch (err) {
           api.logger.warn(`emotion-image: thinking image send failed: ${err}`);
         }
-      }, { name: "emotion-image-thinking" });
-    }
+       }, { name: "emotion-image-thinking" });
+     }
 
-    // Phase 2: On bot message sent, LLM classifies emotion and appends image
-    api.on("message_sent", async (event, ctx) => {
+     const channelQueues = new Map<string, Promise<void>>();
+
+     // Phase 2: On bot message sent, LLM classifies emotion and appends image
+     api.on("message_sent", async (event, ctx) => {
       const {
         to,
         content,
@@ -723,17 +766,29 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-        const finalFilename = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? "neutral.png";
-        const finalImagePath = resolve(imageDir, finalFilename);
-        if (!existsSync(finalImagePath)) {
-          api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
-          return;
-        }
+         const finalFilename = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? "neutral.png";
+         const finalImagePath = assertPathInside(imageDir, finalFilename);
+         if (!finalImagePath) {
+           api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
+           return;
+         }
+         if (!existsSync(finalImagePath)) {
+           api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
+           return;
+         }
 
-        api.logger.info(`emotion-image: appending ${finalEmotion} image for msg=${messageId}`);
-        await appendImageToMessage(botToken!, channelId, messageId, finalImagePath, api.logger);
-      };
-      classifyAndAppend();
+         api.logger.info(`emotion-image: appending ${finalEmotion} image for msg=${messageId}`);
+         await appendImageToMessage(botToken!, channelId, messageId, finalImagePath, api.logger);
+       };
+
+       const prev = channelQueues.get(channelId) ?? Promise.resolve();
+       const next = prev.then(classifyAndAppend).catch((err) => {
+         api.logger.error(`emotion-image: classifyAndAppend failed for msg=${messageId}: ${err}`);
+       });
+       channelQueues.set(channelId, next);
+       next.finally(() => {
+         if (channelQueues.get(channelId) === next) channelQueues.delete(channelId);
+       });
     }, { name: "emotion-image-sent" });
   },
 });

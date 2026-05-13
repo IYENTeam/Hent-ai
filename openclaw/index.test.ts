@@ -1,13 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
-  detectEmotion,
-  MEDIA_LINE_RE,
-  editMessageWithImage,
-  buildEmotionRules,
-  detectEmotionWithLLM,
-  detectApiType,
-  extractEmotion,
-} from "./index.js";
+   detectEmotion,
+   MEDIA_LINE_RE,
+   editMessageWithImage,
+   buildEmotionRules,
+   detectEmotionWithLLM,
+   detectApiType,
+   extractEmotion,
+   assertPathInside,
+   expandEnvPlaceholder,
+ } from "./index.js";
 
 describe("detectEmotion", () => {
   it("returns 'happy' when text contains completion keywords", () => {
@@ -554,6 +556,159 @@ describe("detectEmotionWithLLM", () => {
       mockLogger,
     );
 
-    expect(result).toBeNull();
-  });
-});
+     expect(result).toBeNull();
+   });
+ });
+
+describe("assertPathInside", () => {
+   it("returns normalized path when candidate is inside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets/happy.png");
+   });
+
+   it("returns null when candidate escapes root via parent traversal", () => {
+     const root = "/home/user/assets";
+     const candidate = "../../etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns null when candidate is absolute and outside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "/etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns path when candidate equals root", () => {
+     const root = "/home/user/assets";
+     const candidate = ".";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets");
+   });
+
+   it("returns null when candidate prefix overlaps but escapes", () => {
+     const root = "/home/user/assets";
+     const candidate = "../assets-evil/file.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("handles relative root paths", () => {
+     const root = "./assets";
+     const candidate = "happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeTruthy();
+     expect(result).toContain("assets/happy.png");
+   });
+
+   it("returns null for deeply nested parent traversal", () => {
+     const root = "/home/user/assets";
+     const candidate = "../../../../../../../../etc/passwd";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBeNull();
+   });
+
+   it("returns path for nested subdirectories inside root", () => {
+     const root = "/home/user/assets";
+     const candidate = "emotions/happy.png";
+     const result = assertPathInside(root, candidate);
+     expect(result).toBe("/home/user/assets/emotions/happy.png");
+   });
+ });
+
+describe("expandEnvPlaceholder", () => {
+   beforeEach(() => {
+     process.env.TEST_VAR = "test_value";
+     process.env.EMOTION_IMAGE_DISCORD_TOKEN = "bot_token_123";
+   });
+
+   afterEach(() => {
+     delete process.env.TEST_VAR;
+     delete process.env.EMOTION_IMAGE_DISCORD_TOKEN;
+   });
+
+   it("returns original string when no placeholder", () => {
+     const result = expandEnvPlaceholder("literal_token");
+     expect(result).toBe("literal_token");
+   });
+
+   it("expands ${ENV_VAR} placeholder to env value", () => {
+     const result = expandEnvPlaceholder("${TEST_VAR}");
+     expect(result).toBe("test_value");
+   });
+
+   it("expands ${EMOTION_IMAGE_DISCORD_TOKEN} placeholder", () => {
+     const result = expandEnvPlaceholder("${EMOTION_IMAGE_DISCORD_TOKEN}");
+     expect(result).toBe("bot_token_123");
+   });
+
+   it("returns undefined when env var is missing", () => {
+     const result = expandEnvPlaceholder("${NONEXISTENT_VAR}");
+     expect(result).toBeUndefined();
+   });
+
+   it("returns undefined when input is undefined", () => {
+     const result = expandEnvPlaceholder(undefined);
+     expect(result).toBeUndefined();
+   });
+
+   it("returns undefined when input is empty string", () => {
+     const result = expandEnvPlaceholder("");
+     expect(result).toBeUndefined();
+   });
+
+   it("does not expand placeholder in middle of string", () => {
+     const result = expandEnvPlaceholder("prefix_${TEST_VAR}_suffix");
+     expect(result).toBe("prefix_${TEST_VAR}_suffix");
+   });
+
+   it("is case-insensitive for env var names", () => {
+     process.env.lowercase_var = "value";
+     const result = expandEnvPlaceholder("${LOWERCASE_VAR}");
+     expect(result).toBe("value");
+     delete process.env.lowercase_var;
+   });
+ });
+
+describe("appendImageToMessage attachment schema", () => {
+   it("uses newFileIndex=0 for new attachment placeholder ID", () => {
+     const newFileIndex = 0;
+     const filename = "emotion.png";
+     const attachment = { id: newFileIndex, filename };
+     expect(attachment.id).toBe(0);
+     expect(attachment.filename).toBe("emotion.png");
+   });
+
+   it("preserves existing attachment snowflake IDs as strings", () => {
+     const existingAttachments = [
+       { id: "1234567890123456789", filename: "old1.png" },
+       { id: "9876543210987654321", filename: "old2.png" },
+     ];
+     const preserved = existingAttachments.map((a) => ({ id: a.id }));
+     expect(preserved[0].id).toBe("1234567890123456789");
+     expect(preserved[1].id).toBe("9876543210987654321");
+   });
+
+   it("matches files[0] form key with id=0 for new upload", () => {
+     const newFileIndex = 0;
+     const formKey = `files[${newFileIndex}]`;
+     expect(formKey).toBe("files[0]");
+   });
+
+   it("correctly builds attachment array with existing + new", () => {
+     const existingAttachments = [{ id: "123456789" }];
+     const newFileIndex = 0;
+     const filename = "emotion.png";
+     const attachments = [
+       ...existingAttachments,
+       { id: newFileIndex, filename },
+     ];
+     expect(attachments).toHaveLength(2);
+     expect(attachments[0].id).toBe("123456789");
+     expect(attachments[1].id).toBe(0);
+     expect(attachments[1].filename).toBe("emotion.png");
+   });
+ });

@@ -9,17 +9,17 @@ Automatically classifies the emotion of every bot response using LLM and attache
 ### Prerequisites
 
 - [OpenClaw](https://github.com/openclaw/openclaw) installed and running
-- A Discord bot token (automatically resolved from OpenClaw Discord channel config)
+- A Discord bot token (provide via env var or plugin config — see [Discord Bot Token](#discord-bot-token))
 - An LLM provider configured in OpenClaw for emotion classification
 - **Emotion images** — You need 6 PNG images, one for each emotion. Generate or create your own images and name them:
-  - `happy.png`
-  - `neutral.png`
-  - `loyalty.png`
-  - `sorry.png`
-  - `confused.png`
-  - `focused.png`
+   - `happy.png`
+   - `neutral.png`
+   - `loyalty.png`
+   - `sorry.png`
+   - `confused.png`
+   - `focused.png`
 
-  Place them in the `assets/` directory inside the plugin, or set a custom `imageDir` in the config.
+   Place them in the `assets/` directory inside the plugin, or set a custom `imageDir` in the config.
 
 ### Step 1: Clone the Repository
 
@@ -57,31 +57,34 @@ Add the plugin configuration to your `openclaw.json` (or via `openclaw config`):
 
 ```jsonc
 {
-  "plugins": {
-    "entries": {
-      "emotion-image": {
-        "enabled": true,
-        "config": {
-          // Required: provider/model ID for LLM-based emotion classification
-          "classifierModel": "your-provider/your-model-id",
+   "plugins": {
+     "entries": {
+       "emotion-image": {
+         "enabled": true,
+         "config": {
+           // Required: Discord bot token. Use "${ENV_VAR}" to interpolate from environment.
+           "discordToken": "${EMOTION_IMAGE_DISCORD_TOKEN}",
 
-          // Optional: custom image directory (defaults to ../assets/ relative to the plugin)
-          // "imageDir": "/path/to/custom/assets",
+           // Required: provider/model ID for LLM-based emotion classification
+           "classifierModel": "your-provider/your-model-id",
 
-          // Optional: override default emotion (defaults to "neutral")
-          // "defaultEmotion": "neutral",
+           // Optional: custom image directory (defaults to ../assets/ relative to the plugin)
+           // "imageDir": "/path/to/custom/assets",
 
-          // Optional: override emotion-to-filename mapping
-          // "emotionMap": {
-          //   "happy": "happy.png",
-          //   "neutral": "neutral.png"
-          // }
-        }
-      }
-    }
-  }
-}
-```
+           // Optional: override default emotion (defaults to "neutral")
+           // "defaultEmotion": "neutral",
+
+           // Optional: override emotion-to-filename mapping (filenames only, no paths)
+           // "emotionMap": {
+           //   "happy": "happy.png",
+           //   "neutral": "neutral.png"
+           // }
+         }
+       }
+     }
+   }
+ }
+ ```
 
 ### Step 4: Build and Restart OpenClaw
 
@@ -117,10 +120,11 @@ Send a message in Discord. You should see:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | `true` | Enable/disable the plugin |
+| `discordToken` | `string` | — | Discord bot token. Supports literal value or `${ENV_VAR}` placeholder. Required. |
 | `classifierModel` | `string` | — | OpenClaw `provider/model` ID for LLM classification. **Required for LLM mode.** If not set, uses rule-based keyword matching only. |
 | `imageDir` | `string` | `../assets` | Directory containing emotion image files |
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
-| `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename |
+| `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename. **Filenames only** — paths that escape `imageDir` are rejected. |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
 
 ## How It Works
@@ -158,9 +162,30 @@ User sees: [focused.png] → [text response + emotion.png]
 
 ## Discord Bot Token
 
-The plugin automatically resolves the Discord bot token from your OpenClaw Discord channel configuration. No additional token setup is needed.
+Provide the Discord bot token via one of:
 
-If you prefer, you can also set the `EMOTION_IMAGE_DISCORD_TOKEN` environment variable.
+1. **Environment variable** (recommended for production):
+   ```bash
+   export EMOTION_IMAGE_DISCORD_TOKEN="your-bot-token"
+   ```
+
+2. **Plugin config with env interpolation**:
+   ```jsonc
+   "discordToken": "${EMOTION_IMAGE_DISCORD_TOKEN}"
+   ```
+
+3. **Plugin config with literal value** (not recommended — keep tokens out of config files):
+   ```jsonc
+   "discordToken": "your-bot-token"
+   ```
+
+If neither is set, the plugin logs a warning and does nothing.
+
+> **⚠️ v2 BREAKING CHANGE**: Earlier versions of this plugin auto-resolved the
+> token by reading `~/.openclaw/openclaw.json` directly. That fallback has been
+> removed for security and portability — plugins should not read host-internal
+> config paths. If you were relying on the auto-detect behavior, set
+> `EMOTION_IMAGE_DISCORD_TOKEN` or `discordToken` explicitly.
 
 ## Troubleshooting
 

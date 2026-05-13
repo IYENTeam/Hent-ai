@@ -37,10 +37,14 @@
           "description": "Array of case-insensitive keyword patterns for this emotion."
         }
       },
-      "classifierModel": {
-        "type": "string",
-        "description": "OpenClaw provider/model ID for LLM-based emotion classification (e.g. 'closedrouter-openai/gpt-4o-mini'). If not set, falls back to rule-based keyword matching."
-      }
+       "classifierModel": {
+         "type": "string",
+         "description": "OpenClaw provider/model ID for LLM-based emotion classification (e.g. 'closedrouter-openai/gpt-4o-mini'). If not set, falls back to rule-based keyword matching."
+       },
+       "discordToken": {
+         "type": "string",
+         "description": "Discord bot token. Supports literal token or '${ENV_VAR}' placeholder (e.g. '${EMOTION_IMAGE_DISCORD_TOKEN}'). The env var EMOTION_IMAGE_DISCORD_TOKEN also works directly. Required for the plugin to attach images."
+       }
     }
   }
 }
