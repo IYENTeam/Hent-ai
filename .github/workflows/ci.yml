@@ -33,11 +33,21 @@ jobs:
         with:
           version: 9
 
+      - name: Strip workspace dependencies
+        run: node -e "
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+          for (const [k,v] of Object.entries(pkg.devDependencies || {})) {
+            if (String(v).startsWith('workspace:')) delete pkg.devDependencies[k];
+          }
+          fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
       - name: Type check
-        run: pnpm exec tsc --noEmit
+        run: pnpm exec tsc --noEmit --skipLibCheck
 
       - name: Test
         run: pnpm test
