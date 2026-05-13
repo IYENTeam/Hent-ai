@@ -1,4 +1,4 @@
-# Hent-AI : Let your AI agent express its hent!!
+# Hent-ai : Let your AI agent express its hent!!
 <img width="2172" height="724" alt="Hent-AI Banner" src="https://github.com/user-attachments/assets/16565dd4-129b-44ce-9275-2efd4199cbde" />
 
 > *Let your AI agent express its hent (intent).*
