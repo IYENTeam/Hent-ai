@@ -45,26 +45,41 @@ jobs:
   generate:
     name: Generate Module
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: generate
-    # Only run when generate/ exists (PR #6 and onwards)
-    if: hashFiles('generate/package.json') != ''
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check if generate module exists
+        id: check
+        run: |
+          if [ -f generate/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Node
+        if: steps.check.outputs.exists == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: Install dependencies
+        if: steps.check.outputs.exists == 'true'
+        working-directory: generate
         run: npm ci
 
       - name: Build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: generate
         run: npm run build
 
       - name: Test
+        if: steps.check.outputs.exists == 'true'
+        working-directory: generate
         run: npm test
+
+      - name: Skip (module not present)
+        if: steps.check.outputs.exists != 'true'
+        run: echo "generate/ not present on this branch, skipping"
