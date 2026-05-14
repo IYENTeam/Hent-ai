@@ -115,11 +115,4 @@ export class SessionManager {
   delete(channelId: string, userId: string): void {
     this.sessions.delete(sessionKey(channelId, userId));
   }
-
-  isGenerating(session: OnboardingSession): boolean {
-    return (
-      session.state === OnboardingState.GENERATING_BASE ||
-      session.state === OnboardingState.GENERATING_EMOTION
-    );
-  }
 }

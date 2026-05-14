@@ -5,6 +5,8 @@
 OpenClaw `message_received` 훅 기반 대화형 온보딩 플로우.
 유저가 "onboarding" 입력 → 캐릭터 설명 → base 생성/확인 → 감정별 1장씩 생성/확인 → 완료.
 
+온보딩은 고정 switch 절차가 아니라 skill registry 기반으로 dispatch한다. 현재 세션 state에 대응하는 skill이 입력을 처리하며, 기본 skill 세트가 기존 UX를 그대로 구현한다.
+
 ---
 
 ## 상태 머신
@@ -18,6 +20,19 @@ AWAITING_CHARACTER
   → AWAITING_EMOTION_CONFIRM(currentIndex) ← 감정 루프
   → COMPLETED
 ```
+
+## Skill Registry
+
+| Skill ID | 담당 state |
+|---|---|
+| `character-intake` | `AWAITING_CHARACTER` |
+| `image-intent` | `AWAITING_IMAGE_INTENT` |
+| `base-confirmation` | `AWAITING_BASE_CONFIRM` |
+| `emotion-confirmation` | `AWAITING_EMOTION_CONFIRM` |
+| `base-generation` | `GENERATING_BASE` |
+| `emotion-generation` | `GENERATING_EMOTION` |
+
+`handleMessage`는 `getOnboardingSkill(session.state)`로 skill을 찾고 해당 skill의 `handle(context)`만 호출한다. 새 온보딩 기능은 skill을 추가하거나 기존 skill을 교체하는 방식으로 확장한다.
 
 ```typescript
 enum OnboardingState {

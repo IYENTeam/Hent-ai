@@ -239,7 +239,9 @@ If neither is set, the plugin logs a warning and does nothing.
 
 ## Onboarding
 
-The onboarding flow lets users generate emotion images interactively through Discord without touching the CLI or filesystem.
+The onboarding flow lets users generate emotion images interactively through Discord without touching the CLI or filesystem. Internally, onboarding is skill-based: each capability (character intake, uploaded-image intent, base confirmation, emotion confirmation, and generation busy handling) is registered as an onboarding skill and dispatched by the current session state instead of a single fixed procedure. This keeps the default flow unchanged while making new onboarding capabilities pluggable in code.
+
+While onboarding is active in a channel, Hent-ai pauses its normal thinking/cheer image hook for that user's onboarding messages and tells the user that onboarding mode is active. Every onboarding prompt also reminds the user that they can exit with `취소`, `cancel`, `종료`, or `그만`. Other users and other channels continue using OpenClaw normally.
 
 ### Trigger
 
@@ -255,6 +257,16 @@ Send any of these messages in a channel where the bot is active:
 4. **Emotion loop** — The bot generates each of the 6 emotions one at a time. For each one, you can approve, skip, give feedback to regenerate, or attach your own image to replace that emotion before approving.
 5. **Done** — All 7 images (base + 6 emotions) are saved to the configured `imageDir`.
 
+### Built-in onboarding skills
+
+| Skill | Handles |
+|-------|---------|
+| `character-intake` | First character prompt, text input, and initial image attachment detection |
+| `image-intent` | Choosing whether an uploaded image is the base or a generation reference |
+| `base-confirmation` | Approving, regenerating, or giving feedback on the base image |
+| `emotion-confirmation` | Approving, replacing, regenerating, or giving feedback on each emotion image |
+| `base-generation` / `emotion-generation` | Busy responses while image generation is running |
+
 ### Commands during onboarding
 
 | Input | Action |
@@ -264,7 +276,7 @@ Send any of these messages in a channel where the bot is active:
 | `retry` / `again` | Regenerate with same settings |
 | Image attachment during an emotion step | Use the uploaded file as the current emotion image |
 | Any other text | Treated as feedback — regenerates with your note applied |
-| `cancel` | Abort onboarding |
+| `취소` / `cancel` / `종료` / `그만` | Abort onboarding |
 
 ### Labeled image pools
 

@@ -1066,7 +1066,7 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
+    const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1084,10 +1084,12 @@ export default definePluginEntry({
         // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
         const rawTo = metadata?.to as string | undefined;
         if (!rawTo) return;
-         const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
-         if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
+          const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
+          if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
+          const userId = (metadata?.from as string | undefined) ?? "unknown";
+          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
 
-         if (
+          if (
            cheerEnabled &&
            cheerIntentModel &&
            await detectCheerIntentWithLLM(cheerIntentModel, content, api.runtime, api.logger)

@@ -1,6 +1,8 @@
-import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
-import { SessionManager, OnboardingState, EMOTIONS } from "./session.js";
-import { parseIntent, parseImageIntent, isTrigger } from "./parsers.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { registerOnboarding } from "./index.js";
+import { getOnboardingSkill, ONBOARDING_EXIT_HINT, ONBOARDING_SKILLS } from "./flow.js";
+import { isTrigger, parseImageIntent, parseIntent } from "./parsers.js";
+import { OnboardingState, SessionManager } from "./session.js";
 
 describe("parsers", () => {
   describe("isTrigger", () => {
@@ -140,16 +142,6 @@ describe("SessionManager", () => {
     shortManager.destroy();
   });
 
-  it("isGenerating returns true for generating states", () => {
-    const session = manager.create("ch1", "user1");
-    session.state = OnboardingState.GENERATING_BASE;
-    expect(manager.isGenerating(session)).toBe(true);
-    session.state = OnboardingState.GENERATING_EMOTION;
-    expect(manager.isGenerating(session)).toBe(true);
-    session.state = OnboardingState.AWAITING_CHARACTER;
-    expect(manager.isGenerating(session)).toBe(false);
-  });
-
   it("sweep cleans expired sessions", async () => {
     const shortManager = new SessionManager(50);
     shortManager.create("ch1", "user1");
@@ -158,5 +150,80 @@ describe("SessionManager", () => {
     expect(shortManager.get("ch1", "user1")).toBeNull();
     expect(shortManager.get("ch2", "user2")).toBeNull();
     shortManager.destroy();
+  });
+});
+
+describe("onboarding skills", () => {
+  it("registers one skill for each active onboarding state", () => {
+    const states = [
+      OnboardingState.AWAITING_CHARACTER,
+      OnboardingState.AWAITING_IMAGE_INTENT,
+      OnboardingState.AWAITING_BASE_CONFIRM,
+      OnboardingState.AWAITING_EMOTION_CONFIRM,
+      OnboardingState.GENERATING_BASE,
+      OnboardingState.GENERATING_EMOTION,
+    ];
+
+    for (const state of states) {
+      expect(getOnboardingSkill(state)?.id).toBeTruthy();
+    }
+  });
+
+  it("marks generation skills as busy handlers", () => {
+    expect(getOnboardingSkill(OnboardingState.GENERATING_BASE)?.busy).toBe(true);
+    expect(getOnboardingSkill(OnboardingState.GENERATING_EMOTION)?.busy).toBe(true);
+    expect(getOnboardingSkill(OnboardingState.AWAITING_CHARACTER)?.busy).toBeFalsy();
+  });
+
+  it("does not use duplicate skill ids", () => {
+    const ids = ONBOARDING_SKILLS.map((skill) => skill.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("onboarding runtime", () => {
+  it("exposes the accepted exit commands in the shared hint", () => {
+    expect(ONBOARDING_EXIT_HINT).toContain("취소");
+    expect(ONBOARDING_EXIT_HINT).toContain("cancel");
+    expect(ONBOARDING_EXIT_HINT).toContain("종료");
+    expect(ONBOARDING_EXIT_HINT).toContain("그만");
+  });
+
+  it("identifies trigger and active-session messages for normal-hook suppression", async () => {
+    const handlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = [];
+    const runtime = registerOnboarding(
+      {
+        on: (_event, handler) => handlers.push(handler),
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      },
+      "token",
+      "/tmp/hent-ai-test-assets",
+      {},
+    );
+
+    expect(runtime?.isOnboardingMessage("123", "user1", "onboarding")).toBe(true);
+    expect(runtime?.isOnboardingMessage("123", "user1", "hello")).toBe(false);
+
+    await handlers[0]?.({
+      content: "onboarding",
+      metadata: { to: "channel:123", from: "user1", messageId: "msg1" },
+    }, {});
+
+    expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(true);
+    expect(runtime?.isOnboardingMessage("123", "user2", "cute cat")).toBe(false);
+  });
+
+  it("returns null when onboarding is disabled", () => {
+    const runtime = registerOnboarding(
+      {
+        on: () => {},
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      },
+      "token",
+      "/tmp/hent-ai-test-assets",
+      { enabled: false },
+    );
+
+    expect(runtime).toBeNull();
   });
 });
