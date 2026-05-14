@@ -13,7 +13,11 @@ import {
   extractBooleanIntent,
   extractEmotion,
   handleCheerRequest,
+  imageLabelMatchesContext,
+  inferAutomaticImageLabel,
   MEDIA_LINE_RE,
+  normalizeEmotionImageConfig,
+  selectEmotionImageVariant,
 } from "./index.js";
 
 vi.mock("@hent-ai/generate", () => ({
@@ -142,8 +146,10 @@ describe("cheer request helpers", () => {
     const prompt = buildCheerPrompt("orange cat idol");
     expect(prompt).toContain("orange cat idol");
     expect(prompt).toContain("화이팅");
-    expect(prompt).toContain("fully clothed");
+    expect(prompt).toContain("more visible skin");
+    expect(prompt).toContain("adult character");
     expect(prompt).toContain("no nudity");
+    expect(prompt).toContain("no nipples");
   });
 
   it("generates and sends a cheer image through the Discord surface", async () => {
@@ -210,6 +216,60 @@ describe("cheer request helpers", () => {
     );
 
     expect(result).toBe(false);
+  });
+});
+
+describe("emotion image variants", () => {
+  it("normalizes legacy single filename config", () => {
+    expect(normalizeEmotionImageConfig("happy.png")).toEqual([
+      { filename: "happy.png", weight: 1 },
+    ]);
+  });
+
+  it("normalizes labeled image pools", () => {
+    expect(normalizeEmotionImageConfig([
+      "happy.png",
+      { file: "happy-stage.png", label: "stage", weight: 3 },
+      { filename: "happy-soft.png", label: "soft" },
+    ])).toEqual([
+      { filename: "happy.png", weight: 1 },
+      { filename: "happy-stage.png", label: "stage", weight: 3 },
+      { filename: "happy-soft.png", label: "soft", weight: 1 },
+    ]);
+  });
+
+  it("infers labels from custom image filenames", () => {
+    expect(inferAutomaticImageLabel("happy-stage-light.png")).toBe("stage light");
+    expect(inferAutomaticImageLabel("neutral.png")).toBeUndefined();
+    expect(normalizeEmotionImageConfig({ file: "happy-date-night.png" })).toEqual([
+      { filename: "happy-date-night.png", label: "date night", weight: 1 },
+    ]);
+  });
+
+  it("matches labels against response context", () => {
+    expect(imageLabelMatchesContext("stage light", "The stage is ready now.")).toBe(true);
+    expect(imageLabelMatchesContext("date night", "오늘 데이트 준비 끝")).toBe(false);
+    expect(imageLabelMatchesContext(undefined, "stage")).toBe(false);
+  });
+
+  it("selects a weighted random variant", () => {
+    const variants = normalizeEmotionImageConfig([
+      { file: "first.png", weight: 1 },
+      { file: "second.png", weight: 3 },
+    ]);
+
+    expect(selectEmotionImageVariant(variants, () => 0.1)?.filename).toBe("first.png");
+    expect(selectEmotionImageVariant(variants, () => 0.9)?.filename).toBe("second.png");
+  });
+
+  it("prefers label-matching variants before weighted fallback", () => {
+    const variants = normalizeEmotionImageConfig([
+      { file: "happy-generic.png", weight: 100 },
+      { file: "happy-stage.png", label: "stage", weight: 1 },
+    ]);
+
+    expect(selectEmotionImageVariant(variants, () => 0, "Stage deployment complete")?.filename).toBe("happy-stage.png");
+    expect(selectEmotionImageVariant(variants, () => 0, "General update")?.filename).toBe("happy-generic.png");
   });
 });
 

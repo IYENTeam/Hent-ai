@@ -365,7 +365,24 @@ export async function detectCheerIntentWithLLM(
  * No OpenClaw core patches required.
  */
 
-const DEFAULT_EMOTION_MAP: Record<string, string> = {
+type EmotionImageInput =
+  | string
+  | {
+    file?: string;
+    filename?: string;
+    label?: string;
+    weight?: number;
+  };
+
+type EmotionImageConfig = EmotionImageInput | EmotionImageInput[];
+
+interface EmotionImageVariant {
+  filename: string;
+  label?: string;
+  weight: number;
+}
+
+const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = {
   happy: "happy.png",
   neutral: "neutral.png",
   loyalty: "loyalty.png",
@@ -373,6 +390,17 @@ const DEFAULT_EMOTION_MAP: Record<string, string> = {
   confused: "confused.png",
   focused: "focused.png",
 };
+
+const LABEL_TOKEN_RE = /[\p{L}\p{N}]+/gu;
+const FILENAME_LABEL_SEPARATORS_RE = /[-_\s]+/g;
+const IMAGE_EXTENSION_RE = /\.(png|jpe?g|webp|gif)$/i;
+const AUTO_LABEL_STOPWORDS = new Set([
+  ...Object.keys(DEFAULT_EMOTION_MAP),
+  "image",
+  "img",
+  "emotion",
+  "variant",
+]);
 
 const EMOTION_RULES: Array<{ emotion: string; patterns: RegExp[] }> = [
   {
@@ -429,11 +457,72 @@ export function buildCheerPrompt(character?: string): string {
     "Create a polished single-scene 2D anime illustration for cheering up the user.",
     subject,
     "Scene: the character warmly cheers for the viewer with an energetic pose, bright smile, direct eye contact, supportive body language, and celebratory props such as glow sticks, pom-poms, ribbons, or a small encouragement banner reading \"화이팅!\".",
-    "Mood: uplifting, affectionate, playful fanservice energy, confidence boost, personal support from the character to the user.",
+    "Outfit: tasteful adult fanservice fashion with more visible skin, such as an off-shoulder top, crop top, short skirt, high slit dress, festival outfit, or swimsuit-inspired stage costume; stylish, confident, and non-explicit.",
+    "Mood: uplifting, affectionate, playful fanservice energy, confidence boost, personal support from the character to the user, glamorous but wholesome.",
     "Style: modern Japanese visual novel CG art, bishoujo dating sim game illustration, high-quality 2D anime game CG, hand-drawn anime illustration, clean thin lineart, refined cel shading, soft ambient lighting, expressive glossy anime eyes, delicate facial features, cinematic composition.",
-    "Safety requirements: tasteful and non-explicit, fully clothed, no nudity, no lingerie, no sexual act, no fetish focus, no minors, no suggestive camera angle, no exposed underwear, no erotic text.",
+    "Safety requirements: adult character, tasteful and non-explicit, no nudity, no nipples, no genitals, no lingerie, no sexual act, no fetish focus, no minors, no explicit pose, no exposed underwear, no erotic text.",
     "Format requirements: single coherent illustration, square format, no panels, no character sheet, no turnaround views, no text other than the short Korean cheer banner if included.",
   ].join(" ");
+}
+
+export function normalizeEmotionImageConfig(config: EmotionImageConfig): EmotionImageVariant[] {
+  const entries = Array.isArray(config) ? config : [config];
+  return entries.flatMap((entry) => {
+    if (typeof entry === "string") return [{ filename: entry, weight: 1 }];
+
+    const filename = entry.file ?? entry.filename;
+    if (!filename) return [];
+    const label = entry.label ?? inferAutomaticImageLabel(filename);
+    return [{
+      filename,
+      ...(label ? { label } : {}),
+      weight: entry.weight && entry.weight > 0 ? entry.weight : 1,
+    }];
+  });
+}
+
+export function inferAutomaticImageLabel(filename: string): string | undefined {
+  const basename = filename.split(/[\\/]/).pop() ?? filename;
+  const stem = basename.replace(IMAGE_EXTENSION_RE, "");
+  const tokens = stem
+    .split(FILENAME_LABEL_SEPARATORS_RE)
+    .map((token) => token.trim().toLowerCase())
+    .filter((token) => token && !AUTO_LABEL_STOPWORDS.has(token));
+
+  return tokens.length > 0 ? tokens.join(" ") : undefined;
+}
+
+export function imageLabelMatchesContext(label: string | undefined, contextText: string): boolean {
+  if (!label || !contextText.trim()) return false;
+
+  const labelText = label.trim().toLowerCase();
+  const context = contextText.toLowerCase();
+  if (!labelText) return false;
+  if (context.includes(labelText)) return true;
+
+  const labelTokens = labelText.match(LABEL_TOKEN_RE) ?? [];
+  const contextTokens = new Set(context.match(LABEL_TOKEN_RE) ?? []);
+  return labelTokens.some((token) => contextTokens.has(token));
+}
+
+export function selectEmotionImageVariant(
+  variants: EmotionImageVariant[],
+  random = Math.random,
+  contextText = "",
+): EmotionImageVariant | null {
+  const pool = contextText
+    ? variants.filter((variant) => imageLabelMatchesContext(variant.label, contextText))
+    : [];
+  const candidates = pool.length > 0 ? pool : variants;
+
+  if (candidates.length === 0) return null;
+  const totalWeight = candidates.reduce((sum, variant) => sum + variant.weight, 0);
+  let cursor = random() * totalWeight;
+  for (const variant of candidates) {
+    cursor -= variant.weight;
+    if (cursor <= 0) return variant;
+  }
+  return candidates[candidates.length - 1] ?? null;
 }
 
 function pngBufferToDataUrl(buffer: Buffer): string {
@@ -526,6 +615,7 @@ async function detectEmotionWithLLM(
     logger.warn(`emotion-image: no apiKey resolved for provider "${providerName}"`);
     return null;
   }
+  const resolvedApiKey = apiKey;
 
   const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
   const apiType: ApiType = detectApiType(providerCfg.api);
@@ -535,9 +625,9 @@ async function detectEmotionWithLLM(
     const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
     try {
       if (apiType === "anthropic-messages") {
-        return await classifyEmotionViaAnthropic(baseUrl, apiKey, modelId, text, validEmotions, controller.signal, logger);
+        return await classifyEmotionViaAnthropic(baseUrl, resolvedApiKey, modelId, text, validEmotions, controller.signal, logger);
       }
-      return await classifyEmotionViaOpenAI(baseUrl, apiKey, modelId, text, validEmotions, controller.signal, logger);
+      return await classifyEmotionViaOpenAI(baseUrl, resolvedApiKey, modelId, text, validEmotions, controller.signal, logger);
     } catch (err) {
       logger.warn(`emotion-image: LLM call error: ${err}`);
       return null;
@@ -546,7 +636,7 @@ async function detectEmotionWithLLM(
     }
   }
 
-  logger.warn(`emotion-image: calling ${apiType} at ${baseUrl}, model=${modelId}, apiKey len=${apiKey.length}`);
+  logger.warn(`emotion-image: calling ${apiType} at ${baseUrl}, model=${modelId}, apiKey len=${resolvedApiKey.length}`);
 
   let emotion = await attemptOnce();
   if (emotion === null) {
@@ -911,7 +1001,7 @@ export default definePluginEntry({
     const pluginConfig = (api.pluginConfig ?? {}) as {
       enabled?: boolean;
       imageDir?: string;
-      emotionMap?: Record<string, string>;
+      emotionMap?: Record<string, EmotionImageConfig>;
       defaultEmotion?: string;
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
@@ -927,20 +1017,29 @@ export default definePluginEntry({
       ? resolve(pluginConfig.imageDir)
       : resolve(extensionDir, "..", "assets");
 
-     const emotionMap: Record<string, string> = {
+     const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
+       Object.entries({
        ...DEFAULT_EMOTION_MAP,
        ...pluginConfig.emotionMap,
-     };
+       }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
+     );
 
-     for (const [emotion, filename] of Object.entries(emotionMap)) {
-       if (isAbsolute(filename)) {
-         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" must be a filename relative to imageDir, not an absolute path. Skipping.`);
+     for (const [emotion, variants] of Object.entries(emotionMap)) {
+       const safeVariants = variants.filter((variant) => {
+         if (isAbsolute(variant.filename)) {
+           api.logger.error(`emotion-image: emotionMap["${emotion}"]="${variant.filename}" must be a filename relative to imageDir, not an absolute path. Skipping.`);
+           return false;
+         }
+         if (assertPathInside(imageDir, variant.filename) === null) {
+           api.logger.error(`emotion-image: emotionMap["${emotion}"]="${variant.filename}" escapes imageDir="${imageDir}". Skipping.`);
+           return false;
+         }
+         return true;
+       });
+       if (safeVariants.length === 0) {
          delete emotionMap[emotion];
-         continue;
-       }
-       if (assertPathInside(imageDir, filename) === null) {
-         api.logger.error(`emotion-image: emotionMap["${emotion}"]="${filename}" escapes imageDir="${imageDir}". Skipping.`);
-         delete emotionMap[emotion];
+       } else {
+         emotionMap[emotion] = safeVariants;
        }
      }
 
@@ -974,8 +1073,8 @@ export default definePluginEntry({
       const cheerIntentModel = cheerConfig.intentModel ?? classifierModel;
 
       // Phase 1: On user message received, immediately send focused (thinking) image
-      const thinkingFilename = emotionMap.focused ?? "focused.png";
-      const thinkingImagePath = assertPathInside(imageDir, thinkingFilename);
+      const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
+      const thinkingImagePath = thinkingVariant ? assertPathInside(imageDir, thinkingVariant.filename) : null;
 
       if (cheerEnabled || (thinkingImagePath && existsSync(thinkingImagePath))) {
        api.on("message_received", async (event) => {
@@ -1066,8 +1165,16 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-         const finalFilename = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? "neutral.png";
-         const finalImagePath = assertPathInside(imageDir, finalFilename);
+          const finalVariant = selectEmotionImageVariant(
+            emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png"),
+            Math.random,
+            cleaned,
+          );
+         if (!finalVariant) {
+           api.logger.warn(`emotion-image: no image variants configured for "${finalEmotion}"; skipping`);
+           return;
+         }
+         const finalImagePath = assertPathInside(imageDir, finalVariant.filename);
          if (!finalImagePath) {
            api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
            return;
@@ -1077,7 +1184,7 @@ export default definePluginEntry({
            return;
          }
 
-         api.logger.info(`emotion-image: appending ${finalEmotion} image for msg=${messageId}`);
+         api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
           await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
        };
 
