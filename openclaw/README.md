@@ -35,9 +35,43 @@ cd ~/.openclaw/extensions
 git clone https://github.com/IYENTeam/Hent-ai.git emotion-image
 ```
 
-### Step 2: Add Your Emotion Images
+### Step 2: Generate Emotion Images (Onboarding)
 
-Place your 6 emotion images in the `assets/` directory:
+The easiest way to set up emotion images is through the built-in onboarding flow. Just send `onboarding` in Discord:
+
+```
+You:  onboarding
+Bot:  🎨 Starting Hent-ai onboarding!
+      Describe your character.
+
+You:  cute orange cat
+Bot:  ⏳ Generating base character...
+Bot:  [base.png] Do you like this character?
+
+You:  good
+Bot:  ⏳ Generating happy... [1/6]
+Bot:  [happy.png] Do you like it?
+
+You:  make it brighter
+Bot:  ⏳ Regenerating happy...
+Bot:  [happy.png] How about this?
+
+You:  ok
+Bot:  ⏳ Generating neutral... [2/6]
+...
+
+Bot:  ✅ Onboarding complete!
+```
+
+The onboarding will:
+1. Generate (or accept) a base character image
+2. Use the base as reference to generate each emotion variant one by one
+3. Let you provide feedback or regenerate any image you don't like
+4. Save all images to the `assets/` directory automatically
+
+You can also attach an image instead of describing a character — the bot will ask whether to use it directly as the base or as a style reference for generation.
+
+**Alternatively**, place your own 6 emotion images in the `assets/` directory manually:
 
 ```
 assets/
@@ -48,8 +82,6 @@ assets/
 ├── confused.png
 └── focused.png
 ```
-
-You can generate these with any image generation tool — just make sure each file is named exactly as shown above. See the [Creating Emotion Images](#creating-emotion-images) section for tips.
 
 ### Step 3: Configure OpenClaw
 
@@ -126,6 +158,11 @@ Send a message in Discord. You should see:
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
 | `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename. **Filenames only** — paths that escape `imageDir` are rejected. |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
+| `onboarding.enabled` | `boolean` | `true` | Enable/disable the onboarding flow |
+| `onboarding.model` | `string` | — | Provider/model for image generation (e.g. `"provider/gpt-5.4"`) |
+| `onboarding.size` | `string` | `"1024x1024"` | Generated image dimensions |
+| `onboarding.sessionTimeoutMs` | `number` | `1800000` | Session timeout in ms (default: 30 min) |
+| `onboarding.allowedUsers` | `string[]` | `[]` | User IDs allowed to run onboarding (empty = everyone) |
 
 ## How It Works
 
@@ -186,6 +223,53 @@ If neither is set, the plugin logs a warning and does nothing.
 > removed for security and portability — plugins should not read host-internal
 > config paths. If you were relying on the auto-detect behavior, set
 > `EMOTION_IMAGE_DISCORD_TOKEN` or `discordToken` explicitly.
+
+## Onboarding
+
+The onboarding flow lets users generate emotion images interactively through Discord without touching the CLI or filesystem.
+
+### Trigger
+
+Send any of these messages in a channel where the bot is active:
+- `onboarding`
+- `setup`
+
+### Flow
+
+1. **Character input** — Describe your character in text, attach a reference image, or both.
+2. **Image intent** — If you attached an image, the bot asks: use it as-is for the base, or use it as a style reference to generate a new one?
+3. **Base confirmation** — Review the base character image. Approve, regenerate, or provide feedback (e.g. "make the eyes bigger").
+4. **Emotion loop** — The bot generates each of the 6 emotions one at a time. For each one, you can approve, skip, or give feedback to regenerate.
+5. **Done** — All 7 images (base + 6 emotions) are saved to the configured `imageDir`.
+
+### Commands during onboarding
+
+| Input | Action |
+|-------|--------|
+| `ok` / `good` / `yes` | Approve current image, move to next |
+| `skip` | Save current result as-is, move to next |
+| `retry` / `again` | Regenerate with same settings |
+| Any other text | Treated as feedback — regenerates with your note applied |
+| `cancel` | Abort onboarding |
+
+### Config example
+
+```jsonc
+{
+  "onboarding": {
+    "enabled": true,
+    "model": "your-provider/gpt-5.4",
+    "size": "1024x1024",
+    "allowedUsers": ["123456789"]  // empty array = everyone can onboard
+  }
+}
+```
+
+### Requirements
+
+- Codex authentication on the server (`codex login`)
+- The `@hent-ai/generate` module installed alongside the plugin
+- Bot must have `SEND_MESSAGES` and `ATTACH_FILES` permissions in the channel
 
 ## Troubleshooting
 

@@ -29,7 +29,11 @@ Choose your platform:
 
 ## Creating Emotion Images
 
-You need 6 images that visually represent each emotion. You can generate them automatically with the CLI tool, or create them manually.
+You need 6 images that visually represent each emotion. There are three ways to set them up:
+
+- **Discord Onboarding (easiest)** — Send `onboarding` in Discord and the bot walks you through generating each image interactively with feedback. See [`openclaw/README.md`](./openclaw/README.md#onboarding).
+- **CLI** — Run `hent-ai generate` from the command line (Option A below).
+- **Manual** — Create images yourself with any tool (Option B below).
 
 ### Option A: Auto-Generate with Codex (Recommended)
 
