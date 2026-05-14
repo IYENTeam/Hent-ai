@@ -3,6 +3,7 @@ import { resolve, dirname, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { registerOnboarding, type OnboardingConfig } from "./onboarding/index.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -642,6 +643,8 @@ export default definePluginEntry({
       defaultEmotion?: string;
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
+      discordToken?: string;
+      onboarding?: OnboardingConfig;
     };
 
     if (pluginConfig.enabled === false) return;
@@ -690,6 +693,8 @@ export default definePluginEntry({
      }
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
+
+    registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
 
      // Phase 1: On user message received, immediately send focused (thinking) image
      const thinkingFilename = emotionMap["focused"] ?? "focused.png";

@@ -16,6 +16,9 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "@hent-ai/generate": "file:../generate"
+  },
   "peerDependencies": {
     "@openclaw/plugin-sdk": ">=2026.4.0"
   },
