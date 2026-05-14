@@ -29,9 +29,37 @@ Choose your platform:
 
 ## Creating Emotion Images
 
-You need 6 images that visually represent each emotion. Here's how to create a cohesive set.
+You need 6 images that visually represent each emotion. You can generate them automatically with the CLI tool, or create them manually.
 
-### Recommended Approach: Character + Reference-Based Generation
+### Option A: Auto-Generate with Codex (Recommended)
+
+Generate all 6 emotion images with a single command using Codex image generation:
+
+```bash
+# Prerequisites: log in with Codex CLI
+codex login
+
+# Install and run
+cd generate && npm install && npm run build
+node dist/cli.js --prompt "cute orange cat character"
+
+# Or with a reference image for style consistency
+node dist/cli.js --prompt "cute orange cat character" --reference ./base-character.png
+```
+
+This generates `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, and `focused.png` in the `assets/` directory.
+
+**CLI Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-p, --prompt` | Base character description | (required) |
+| `-o, --output` | Output directory | `./assets` |
+| `-m, --model` | Codex model | `gpt-5.4` |
+| `-s, --size` | Image size (e.g. `1024x1024`) | `1024x1024` |
+| `-r, --reference` | Reference image path for style consistency | — |
+
+### Option B: Manual Creation
 
 The best results come from designing a single character first, then generating emotion variants using that image as a reference.
 
