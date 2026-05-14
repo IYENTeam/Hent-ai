@@ -1,0 +1,31 @@
+{
+  "name": "hent-ai-cursor",
+  "displayName": "Hent-ai for Cursor",
+  "description": "AI 에이전트 응답의 감정을 분류하여 캐릭터 이미지로 표현하는 Cursor 플러그인",
+  "version": "0.2.0",
+  "license": "MIT",
+  "bin": {
+    "hent-ai": "./bin/hent-ai.js"
+  },
+  "files": [
+    "bin/hent-ai.js",
+    "dist-cli/install.js",
+    "assets/optimized/*.png"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cli.json",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": ["cursor", "emotion", "character", "ai-agent", "hent-ai", "cursor-plugin"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IYENTeam/Hent-ai"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

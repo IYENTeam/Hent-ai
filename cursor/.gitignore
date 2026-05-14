@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-cli/
+*.vsix
+*.tgz
+.omc/
