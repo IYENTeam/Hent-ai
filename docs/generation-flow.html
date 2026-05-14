@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hent-ai Generation Flow</title>
+<style>
+:root {
+  --bg-base: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-elevated: #111111;
+  --bg-highlight: #1a1a1a;
+  --text-primary: #ededed;
+  --text-secondary: #a1a1a1;
+  --text-tertiary: #666666;
+  --border-subtle: #222222;
+  --border-strong: #333333;
+  --accent-color: #0070f3;
+  --accent-glow: rgba(0, 112, 243, 0.15);
+  --success-color: #00d26a;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 64px 24px;
+}
+
+.header {
+  margin-bottom: 64px;
+  position: relative;
+}
+
+.header::before {
+  content: "";
+  position: absolute;
+  top: -100px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 300px;
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+  z-index: -1;
+  pointer-events: none;
+}
+
+h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  margin-bottom: 16px;
+  background: linear-gradient(to right, #fff, #888);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+h2 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  margin-top: 48px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+}
+
+h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 32px;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
+p {
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
+.card {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 24px;
+  transition: border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+}
+
+.card h3 {
+  margin-top: 0;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card p {
+  margin-bottom: 0;
+  font-size: 0.95rem;
+}
+
+.timeline {
+  position: relative;
+  padding-left: 32px;
+  margin-top: 32px;
+  margin-bottom: 48px;
+}
+
+.timeline::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  background-color: var(--border-subtle);
+}
+
+.timeline-step {
+  position: relative;
+  margin-bottom: 48px;
+}
+
+.timeline-step:last-child {
+  margin-bottom: 0;
+}
+
+.timeline-step::before {
+  content: "";
+  position: absolute;
+  left: -32px;
+  top: 6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background-color: var(--bg-base);
+  border: 4px solid var(--accent-color);
+  box-shadow: 0 0 0 4px var(--bg-base);
+}
+
+.timeline-content h3 {
+  margin-top: 0;
+  color: #fff;
+}
+
+.timeline-content ul {
+  list-style-type: none;
+  padding: 0;
+}
+
+.timeline-content li {
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  padding-left: 20px;
+  position: relative;
+}
+
+.timeline-content li::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background-color: var(--bg-elevated);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  color: #fff;
+}
+
+pre {
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  margin-bottom: 24px;
+}
+
+pre code {
+  background-color: transparent;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.highlight {
+  color: var(--accent-color);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 32px;
+  font-size: 0.95rem;
+}
+
+th, td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+th {
+  color: var(--text-primary);
+  font-weight: 500;
+  background-color: var(--bg-surface);
+}
+
+td {
+  color: var(--text-secondary);
+}
+
+td:first-child {
+  font-family: var(--font-mono);
+  color: #fff;
+  width: 120px;
+}
+
+.chat-container {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-message {
+  display: flex;
+  gap: 16px;
+}
+
+.chat-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 0.8rem;
+}
+
+.avatar-user {
+  background-color: #333;
+  color: #fff;
+}
+
+.avatar-bot {
+  background-color: var(--accent-color);
+  color: #fff;
+}
+
+.chat-content {
+  flex: 1;
+}
+
+.chat-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.chat-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.chat-bot-tag {
+  background-color: var(--accent-color);
+  color: #fff;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+
+.chat-text {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.chat-image {
+  margin-top: 8px;
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  width: 200px;
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.tech-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.tech-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.tech-key {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  min-width: 140px;
+}
+
+.tech-value {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+@media (max-width: 600px) {
+  .container {
+    padding: 32px 16px;
+  }
+  h1 {
+    font-size: 2.25rem;
+  }
+  .tech-item {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tech-key {
+    min-width: auto;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h1>Hent-ai Generation Flow</h1>
+    <p>A technical overview of the complete image generation lifecycle and prompt architecture.</p>
+  </div>
+
+  <section id="overview">
+    <h2>1. Overview</h2>
+    <div class="card-grid">
+      <div class="card">
+        <h3>7 Total Images</h3>
+        <p>The system generates exactly one base anchor image followed by six distinct emotional variants.</p>
+      </div>
+      <div class="card">
+        <h3>Reference Anchor</h3>
+        <p>The base character is generated first and rigidly used as a structural reference for style consistency across all emotions.</p>
+      </div>
+      <div class="card">
+        <h3>Entry Points</h3>
+        <p>The pipeline can be initiated via the CLI utility (<code>hent-ai generate</code>) or through the conversational Discord onboarding flow.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="generation-flow">
+    <h2>2. Generation Flow</h2>
+    <p>The systematic progression from textual input to the finalized asset bundle.</p>
+    
+    <div class="timeline">
+      <div class="timeline-step">
+        <div class="timeline-content">
+          <h3>Step 1: Character Input</h3>
+          <ul>
+            <li>User provides a text description (e.g., <code>"cute orange cat"</code>).</li>
+            <li>System optionally accepts an attached reference image to guide the initial generation.</li>
+          </ul>
+        </div>
+      </div>
+      
+      <div class="timeline-step">
+        <div class="timeline-content">
+          <h3>Step 2: Base Character Generation</h3>
+          <ul>
+            <li>Generates a neutral-pose character acting as the absolute style anchor.</li>
+            <li>The user is prompted to approve, provide refinement feedback, or regenerate.</li>
+            <li>System exposes the core prompt template used for the anchor.</li>
+          </ul>
+        </div>
+      </div>
+      
+      <div class="timeline-step">
+        <div class="timeline-content">
+          <h3>Step 3: Emotion Variants (×6)</h3>
+          <ul>
+            <li>Generates six specific emotions sequentially using the approved base as a visual reference.</li>
+            <li>User approves each emotional variant individually.</li>
+            <li>Per-emotion feedback is supported for targeted regeneration without affecting the base.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="prompts-reference">
+    <h2>3. Prompts Reference</h2>
+    <p>The core structural prompts used to interact with the Codex image generation API.</p>
+
+    <h3>Base Anchor Prompt</h3>
+<pre><code>{character}, standing in a neutral pose facing forward. Simple clean background, consistent art style, square format, high quality PNG. This is a character reference sheet — no extreme emotion, just the character clearly visible.</code></pre>
+
+    <h3>Emotion Variant Template</h3>
+<pre><code>{character}, expressing {emotion}: {descriptor}. Simple clean background, consistent art style, square format, high quality PNG.</code></pre>
+
+    <h3>Feedback Modifier</h3>
+    <p>When user feedback is provided during regeneration, the following modifier is appended to the prompt:</p>
+<pre><code>Additional requirements: {feedback}.</code></pre>
+
+    <h3>Emotion Descriptors</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Emotion</th>
+          <th>Descriptor Binding</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>happy</td>
+          <td>smiling brightly, giving a thumbs up, celebrating with joy</td>
+        </tr>
+        <tr>
+          <td>neutral</td>
+          <td>calm and relaxed, default resting expression, at ease</td>
+        </tr>
+        <tr>
+          <td>loyalty</td>
+          <td>saluting attentively, nodding with respect, ready to help</td>
+        </tr>
+        <tr>
+          <td>sorry</td>
+          <td>looking apologetic, bowing slightly, sheepish expression</td>
+        </tr>
+        <tr>
+          <td>confused</td>
+          <td>tilting head with a puzzled look, question mark above head</td>
+        </tr>
+        <tr>
+          <td>focused</td>
+          <td>concentrating intensely, determined expression, working hard</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="discord-onboarding">
+    <h2>4. Discord Onboarding Flow</h2>
+    <p>Example interaction via the Discord conversational interface.</p>
+
+    <div class="chat-container">
+      <div class="chat-message">
+        <div class="chat-avatar avatar-user">U</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">User</span>
+          </div>
+          <div class="chat-text">onboarding</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-bot">H</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">Hent-ai</span>
+            <span class="chat-bot-tag">BOT</span>
+          </div>
+          <div class="chat-text">🎨 Starting Hent-ai onboarding! Describe your character.</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-user">U</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">User</span>
+          </div>
+          <div class="chat-text">cute orange cat</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-bot">H</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">Hent-ai</span>
+            <span class="chat-bot-tag">BOT</span>
+          </div>
+          <div class="chat-text">⏳ Generating base character...</div>
+          <div class="chat-image">[image]</div>
+          <div class="chat-text" style="margin-top: 8px;">Do you like this character?</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-user">U</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">User</span>
+          </div>
+          <div class="chat-text">make it cuter</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-bot">H</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">Hent-ai</span>
+            <span class="chat-bot-tag">BOT</span>
+          </div>
+          <div class="chat-text">⏳ Regenerating...</div>
+          <div class="chat-image">[image]</div>
+          <div class="chat-text" style="margin-top: 8px;">How about this?</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-user">U</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">User</span>
+          </div>
+          <div class="chat-text">good</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-bot">H</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">Hent-ai</span>
+            <span class="chat-bot-tag">BOT</span>
+          </div>
+          <div class="chat-text">⏳ Generating happy [1/6]...</div>
+          <div class="chat-image">[image]</div>
+          <div class="chat-text" style="margin-top: 8px;">Do you like it?</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-user">U</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">User</span>
+          </div>
+          <div class="chat-text">ok</div>
+        </div>
+      </div>
+
+      <div class="chat-message">
+        <div class="chat-avatar avatar-bot">H</div>
+        <div class="chat-content">
+          <div class="chat-header">
+            <span class="chat-name">Hent-ai</span>
+            <span class="chat-bot-tag">BOT</span>
+          </div>
+          <div class="chat-text">...continues for each emotion...<br><br>✅ Onboarding complete! 7 images saved.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="image-requirements">
+    <h2>5. Image Requirements</h2>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Format</h3>
+        <p><strong>PNG</strong> format with transparency support required.</p>
+      </div>
+      <div class="card">
+        <h3>Dimensions</h3>
+        <p>Strictly <strong>1024×1024</strong> square aspect ratio.</p>
+      </div>
+      <div class="card">
+        <h3>File Size</h3>
+        <p>Target payload under <strong>500KB</strong> per image.</p>
+      </div>
+      <div class="card">
+        <h3>Background</h3>
+        <p>Simple/clean environment ensuring readability as small Discord thumbnails.</p>
+      </div>
+    </div>
+    <div class="card" style="margin-top: -8px;">
+      <h3>Style Consistency</h3>
+      <p>All 6 emotions must inherently respect the character constraints, physical proportions, and art style defined by the base anchor image.</p>
+    </div>
+  </section>
+
+  <section id="technical-details">
+    <h2>6. Technical Details</h2>
+    <div class="tech-list">
+      <div class="tech-item">
+        <div class="tech-key">Provider</div>
+        <div class="tech-value">Codex image generation API (<code>chatgpt.com/backend-api/codex/responses</code>)</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-key">Model</div>
+        <div class="tech-value"><code>gpt-5.4</code> (default)</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-key">SDK Core</div>
+        <div class="tech-value"><code>god-tibo-imagen</code> for request building and SSE parsing</div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-key">Fallback Logic</div>
+        <div class="tech-value">If <code>tool_choice "auto"</code> fails to generate an output, the system retries with <code>"required"</code></div>
+      </div>
+      <div class="tech-item">
+        <div class="tech-key">Authentication</div>
+        <div class="tech-value">Requires local execution of <code>codex login</code> to populate <code>~/.codex/auth.json</code></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>
