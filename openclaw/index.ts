@@ -1002,6 +1002,7 @@ export default definePluginEntry({
       enabled?: boolean;
       imageDir?: string;
       emotionMap?: Record<string, EmotionImageConfig>;
+      channels?: { mode?: "allowlist" | "blocklist"; list?: string[] };
       defaultEmotion?: string;
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
@@ -1011,6 +1012,15 @@ export default definePluginEntry({
     };
 
     if (pluginConfig.enabled === false) return;
+
+    // Per-channel toggle
+    const channelMode = pluginConfig.channels?.mode ?? "blocklist";
+    const channelList = new Set(pluginConfig.channels?.list ?? []);
+    function isChannelEnabled(channelId: string): boolean {
+      if (channelList.size === 0) return true; // no list = all enabled
+      if (channelMode === "allowlist") return channelList.has(channelId);
+      return !channelList.has(channelId); // blocklist
+    }
 
     const extensionDir = dirname(fileURLToPath(import.meta.url));
     const imageDir = pluginConfig.imageDir
@@ -1086,6 +1096,7 @@ export default definePluginEntry({
         if (!rawTo) return;
           const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
+          if (!isChannelEnabled(discordChannelId)) return;
           const userId = (metadata?.from as string | undefined) ?? "unknown";
           if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
 
@@ -1143,6 +1154,9 @@ export default definePluginEntry({
 
       // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
       const channelId = to.startsWith("channel:") ? to.slice(8) : to;
+
+      // Per-channel toggle check
+      if (!isChannelEnabled(channelId)) return;
 
       // LLM classifies emotion and appends result image to the sent message
       const classifyAndAppend = async () => {

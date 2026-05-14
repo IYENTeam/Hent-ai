@@ -45,6 +45,25 @@
           ]
         }
       },
+      "channels": {
+        "type": "object",
+        "description": "Per-channel toggle. Use 'mode' to set default behavior and 'list' for exceptions.",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["allowlist", "blocklist"],
+            "description": "'allowlist' = only listed channels get images. 'blocklist' = all channels except listed ones get images.",
+            "default": "blocklist"
+          },
+          "list": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of Discord channel IDs affected by the mode.",
+            "default": []
+          }
+        }
+      },
       "defaultEmotion": {
         "type": "string",
         "description": "Fallback emotion when no keyword matches (default: \"neutral\").",
