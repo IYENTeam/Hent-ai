@@ -694,7 +694,7 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-     registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
+    registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
 
      // Phase 1: On user message received, immediately send focused (thinking) image
      const thinkingFilename = emotionMap["focused"] ?? "focused.png";

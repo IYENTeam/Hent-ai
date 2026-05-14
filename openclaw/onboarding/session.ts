@@ -41,9 +41,28 @@ function sessionKey(channelId: string, userId: string): string {
 export class SessionManager {
   private sessions = new Map<string, OnboardingSession>();
   private timeoutMs: number;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(timeoutMs = 30 * 60 * 1000) {
     this.timeoutMs = timeoutMs;
+    this.sweepTimer = setInterval(() => this.sweep(), timeoutMs);
+    if (this.sweepTimer.unref) this.sweepTimer.unref();
+  }
+
+  destroy(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    for (const [key, session] of this.sessions) {
+      if (now - session.lastActivityAt > this.timeoutMs) {
+        this.sessions.delete(key);
+      }
+    }
   }
 
   get(channelId: string, userId: string): OnboardingSession | null {

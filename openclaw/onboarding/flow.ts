@@ -16,7 +16,7 @@ import {
   downloadUrl,
   type Logger,
 } from "./discord-utils.js";
-import { generateImage, type GenerateOptions } from "../../generate/src/index.js";
+import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 
 export interface FlowConfig {
   token: string;
