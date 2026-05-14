@@ -41,23 +41,24 @@ codex login
 
 # Install and run
 cd generate && npm install && npm run build
-node dist/cli.js --prompt "cute orange cat character"
+node dist/cli.js --character "cute orange cat"
 
-# Or with a reference image for style consistency
-node dist/cli.js --prompt "cute orange cat character" --reference ./base-character.png
+# Or with an existing base image (skips base generation)
+node dist/cli.js --character "cute orange cat" --base ./my-base.png
 ```
 
-This generates `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, and `focused.png` in the `assets/` directory.
+The tool first generates a base character image, then uses it as a reference to generate 6 emotion variants — ensuring style consistency across all images. Output: `base.png`, `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, and `focused.png` in the `assets/` directory.
 
 **CLI Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-p, --prompt` | Base character description | (required) |
+| `-c, --character` | Character description | (required) |
+| `-b, --base` | Existing base image (skips base generation) | — |
 | `-o, --output` | Output directory | `./assets` |
 | `-m, --model` | Codex model | `gpt-5.4` |
 | `-s, --size` | Image size (e.g. `1024x1024`) | `1024x1024` |
-| `-r, --reference` | Reference image path for style consistency | — |
+| `--no-keep-base` | Don't save base.png to output | — |
 
 ### Option B: Manual Creation
 

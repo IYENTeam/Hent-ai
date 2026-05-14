@@ -1,38 +1,35 @@
-#!/usr/bin/env node
-
 import { resolve } from "node:path";
-import { readFile } from "node:fs/promises";
 import { generateAllEmotions, EMOTIONS } from "./generator.js";
 
 interface CliArgs {
-  prompt: string;
+  character: string;
   outputDir: string;
   model?: string;
   size?: string;
-  reference?: string;
+  baseImage?: string;
+  keepBase: boolean;
 }
 
-function parseArgs(argv: string[]): CliArgs | null {
-  const args = argv.slice(2);
-
+function parseArgs(args: string[]): CliArgs | null {
   if (args.includes("--help") || args.includes("-h") || args.length === 0) {
     return null;
   }
 
-  let prompt = "";
+  let character = "";
   let outputDir = resolve("assets");
   let model: string | undefined;
   let size: string | undefined;
-  let reference: string | undefined;
+  let baseImage: string | undefined;
+  let keepBase = true;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
 
     switch (arg) {
-      case "--prompt":
-      case "-p":
-        prompt = next ?? "";
+      case "--character":
+      case "-c":
+        character = next ?? "";
         i++;
         break;
       case "--output":
@@ -50,95 +47,89 @@ function parseArgs(argv: string[]): CliArgs | null {
         size = next;
         i++;
         break;
-      case "--reference":
-      case "-r":
-        reference = next;
+      case "--base":
+      case "-b":
+        baseImage = next;
         i++;
         break;
+      case "--no-keep-base":
+        keepBase = false;
+        break;
       default:
-        if (!prompt && !arg.startsWith("-")) {
-          prompt = arg;
+        if (!character && !arg.startsWith("-")) {
+          character = arg;
         }
         break;
     }
   }
 
-  if (!prompt) return null;
+  if (!character) return null;
 
-  return { prompt, outputDir, model, size, reference };
+  return { character, outputDir, model, size, baseImage, keepBase };
 }
 
 function printUsage(): void {
   console.log(`
-hent-ai-generate — Generate 6 emotion images using Codex
+hent-ai generate — Generate 6 emotion images using Codex
 
 Usage:
-  hent-ai-generate --prompt "cute orange cat character"
-  hent-ai-generate -p "pixel art robot" -o ./my-assets
-  hent-ai-generate -p "anime girl" -r ./base-character.png
+  hent-ai generate --character "cute orange cat"
+  hent-ai generate -c "pixel art robot" -o ./my-assets
+  hent-ai generate -c "anime girl" -b ./base-character.png
 
 Options:
-  -p, --prompt <text>       Base character description (required)
+  -c, --character <text>    Character description (required)
+  -b, --base <path>         Existing base image (skips base generation)
   -o, --output <dir>        Output directory (default: ./assets)
   -m, --model <model>       Codex model (default: gpt-5.4)
   -s, --size <WxH>          Image size (default: 1024x1024)
-  -r, --reference <path>    Reference image for style consistency
+      --no-keep-base        Don't save base.png to output directory
   -h, --help                Show this help
+
+Flow:
+  1. Generates a base character image (or uses --base if provided)
+  2. Uses the base as reference to generate ${EMOTIONS.length} emotion variants
+  3. Outputs: base.png + ${EMOTIONS.join(", ")}.png
 
 Prerequisites:
   Log in with Codex CLI first: codex login
   Auth is read from ~/.codex/auth.json
-
-Output:
-  Creates ${EMOTIONS.join(", ")}.png in the output directory.
 `);
 }
 
-async function loadReferenceImage(path: string): Promise<string> {
-  const buf = await readFile(resolve(path));
-  const ext = path.split(".").pop()?.toLowerCase() ?? "png";
-  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : "image/png";
-  return `data:${mime};base64,${buf.toString("base64")}`;
-}
-
-async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv);
+export async function run(args: string[]): Promise<void> {
+  const parsed = parseArgs(args);
   if (!parsed) {
     printUsage();
-    process.exit(parsed === null ? 1 : 0);
+    process.exit(1);
   }
 
-  const { prompt, outputDir, model, size, reference } = parsed;
+  const { character, outputDir, model, size, baseImage, keepBase } = parsed;
 
-  let referenceImage: string | undefined;
-  if (reference) {
-    try {
-      referenceImage = await loadReferenceImage(reference);
-      console.log(`Using reference image: ${reference}`);
-    } catch (err) {
-      console.error(`Failed to load reference image: ${reference}`);
-      process.exit(1);
-    }
+  console.log(`Generating emotion images for: "${character}"`);
+  if (baseImage) {
+    console.log(`Using existing base: ${baseImage}`);
+  } else {
+    console.log("Generating base character image first...");
   }
-
-  console.log(`Generating 6 emotion images for: "${prompt}"`);
   console.log(`Output: ${outputDir}\n`);
 
   try {
     const results = await generateAllEmotions({
-      prompt,
+      character,
       outputDir,
       model,
       size,
-      referenceImage,
-      onProgress(emotion, index, total) {
-        console.log(`[${index + 1}/${total}] Generating ${emotion}...`);
+      baseImage,
+      keepBase,
+      onProgress(step, index, total) {
+        console.log(`[${index + 1}/${total}] Generating ${step}...`);
       },
     });
 
     console.log(`\nDone! Generated ${results.size} images:`);
-    for (const [emotion, path] of results) {
-      console.log(`  ${emotion} → ${path}`);
+    for (const [name, path] of results) {
+      console.log(`  ${name} → ${path}`);
     }
   } catch (err) {
     console.error(
@@ -147,5 +138,3 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
-
-main();
