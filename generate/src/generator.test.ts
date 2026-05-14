@@ -1,9 +1,9 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { existsSync } from "node:fs";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
-import { EMOTIONS, type Emotion } from "./generator.js";
+import { EMOTIONS } from "./generator.js";
 
 vi.mock("./codex.js", () => ({
   generateImage: vi.fn(async () => {
@@ -37,13 +37,14 @@ describe("generateAllEmotions", () => {
     await rm(testDir, { recursive: true, force: true }).catch(() => {});
   });
 
-  it("generates one image per emotion and saves to output directory", async () => {
+  it("generates base + 6 emotion images when no baseImage provided", async () => {
     const results = await generateAllEmotions({
-      prompt: "cute cat",
+      character: "cute cat",
       outputDir: testDir,
     });
 
-    expect(results.size).toBe(6);
+    expect(results.size).toBe(7);
+    expect(results.has("base")).toBe(true);
     for (const emotion of EMOTIONS) {
       const filePath = results.get(emotion);
       expect(filePath).toBeDefined();
@@ -53,25 +54,67 @@ describe("generateAllEmotions", () => {
     }
   });
 
-  it("calls generateImage with emotion-specific prompts", async () => {
+  it("calls generateImage 7 times (1 base + 6 emotions) without baseImage", async () => {
     await generateAllEmotions({
-      prompt: "pixel robot",
+      character: "pixel robot",
       outputDir: testDir,
     });
 
     const mock = vi.mocked(generateImage);
-    expect(mock).toHaveBeenCalledTimes(6);
+    expect(mock).toHaveBeenCalledTimes(7);
 
-    for (let i = 0; i < EMOTIONS.length; i++) {
+    const baseCall = mock.mock.calls[0][0];
+    expect(baseCall.prompt).toContain("pixel robot");
+    expect(baseCall.prompt).toContain("neutral pose");
+
+    for (let i = 1; i <= EMOTIONS.length; i++) {
       const call = mock.mock.calls[i][0];
       expect(call.prompt).toContain("pixel robot");
-      expect(call.prompt).toContain(EMOTIONS[i]);
+      expect(call.prompt).toContain(EMOTIONS[i - 1]);
+      expect(call.referenceImages).toHaveLength(1);
     }
   });
 
-  it("passes model and size options to generateImage", async () => {
+  it("skips base generation when baseImage is provided", async () => {
+    const baseDir = join(testDir, "existing");
+    await mkdir(baseDir, { recursive: true });
+    const basePath = join(baseDir, "my-base.png");
+    await writeFile(basePath, Buffer.from("EXISTING_BASE"));
+
+    const results = await generateAllEmotions({
+      character: "test",
+      outputDir: testDir,
+      baseImage: basePath,
+    });
+
+    const mock = vi.mocked(generateImage);
+    expect(mock).toHaveBeenCalledTimes(6);
+    expect(results.has("base")).toBe(false);
+    expect(results.size).toBe(6);
+
+    for (const call of mock.mock.calls) {
+      expect(call[0].referenceImages).toHaveLength(1);
+      expect(call[0].referenceImages![0]).toContain("RVhJU1RJTkdfQkFTRQ==");
+    }
+  });
+
+  it("does not save base.png when keepBase is false", async () => {
+    const results = await generateAllEmotions({
+      character: "test",
+      outputDir: testDir,
+      keepBase: false,
+    });
+
+    expect(results.has("base")).toBe(false);
+    expect(existsSync(resolve(testDir, "base.png"))).toBe(false);
+
+    const mock = vi.mocked(generateImage);
+    expect(mock).toHaveBeenCalledTimes(7);
+  });
+
+  it("passes model and size options to all generateImage calls", async () => {
     await generateAllEmotions({
-      prompt: "test",
+      character: "test",
       outputDir: testDir,
       model: "gpt-5.4",
       size: "2048x2048",
@@ -86,7 +129,7 @@ describe("generateAllEmotions", () => {
 
   it("uses 1024x1024 as default size", async () => {
     await generateAllEmotions({
-      prompt: "test",
+      character: "test",
       outputDir: testDir,
     });
 
@@ -96,36 +139,23 @@ describe("generateAllEmotions", () => {
     }
   });
 
-  it("passes reference image when provided", async () => {
-    const refDataUrl = "data:image/png;base64,AAAA";
-    await generateAllEmotions({
-      prompt: "test",
-      outputDir: testDir,
-      referenceImage: refDataUrl,
-    });
-
-    const mock = vi.mocked(generateImage);
-    for (const call of mock.mock.calls) {
-      expect(call[0].referenceImages).toEqual([refDataUrl]);
-    }
-  });
-
-  it("calls onProgress for each emotion", async () => {
-    const progress: Array<{ emotion: Emotion; index: number; total: number }> = [];
+  it("calls onProgress for base + each emotion", async () => {
+    const progress: Array<{ step: string; index: number; total: number }> = [];
 
     await generateAllEmotions({
-      prompt: "test",
+      character: "test",
       outputDir: testDir,
-      onProgress(emotion, index, total) {
-        progress.push({ emotion, index, total });
+      onProgress(step, index, total) {
+        progress.push({ step, index, total });
       },
     });
 
-    expect(progress).toHaveLength(6);
+    expect(progress).toHaveLength(7);
+    expect(progress[0].step).toBe("base");
+    expect(progress[0].total).toBe(7);
     for (let i = 0; i < EMOTIONS.length; i++) {
-      expect(progress[i].emotion).toBe(EMOTIONS[i]);
-      expect(progress[i].index).toBe(i);
-      expect(progress[i].total).toBe(6);
+      expect(progress[i + 1].step).toBe(EMOTIONS[i]);
+      expect(progress[i + 1].index).toBe(i + 1);
     }
   });
 
@@ -134,7 +164,7 @@ describe("generateAllEmotions", () => {
     expect(existsSync(nestedDir)).toBe(false);
 
     await generateAllEmotions({
-      prompt: "test",
+      character: "test",
       outputDir: nestedDir,
     });
 
@@ -143,12 +173,23 @@ describe("generateAllEmotions", () => {
 
   it("writes files named after each emotion", async () => {
     await generateAllEmotions({
-      prompt: "test",
+      character: "test",
       outputDir: testDir,
     });
 
     for (const emotion of EMOTIONS) {
       expect(existsSync(resolve(testDir, `${emotion}.png`))).toBe(true);
     }
+  });
+
+  it("saves base.png to output directory by default", async () => {
+    await generateAllEmotions({
+      character: "test",
+      outputDir: testDir,
+    });
+
+    expect(existsSync(resolve(testDir, "base.png"))).toBe(true);
+    const content = await readFile(resolve(testDir, "base.png"));
+    expect(content.toString()).toBe("FAKE_PNG_DATA");
   });
 });
