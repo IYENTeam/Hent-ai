@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { SessionManager, OnboardingState, EMOTIONS } from "./session.js";
-import { isTrigger } from "./parsers.js";
+import { parseIntent } from "./parsers.js";
 import { handleMessage, ONBOARDING_EXIT_HINT, type FlowConfig } from "./flow.js";
 import { sendTextMessage, type Logger } from "./discord-utils.js";
 
@@ -60,10 +60,23 @@ export function registerOnboarding(
     logger,
   };
 
+  // Inline trigger detection to avoid jiti cache staleness.
+  // jiti hashes only the entry file (index.ts), not transitive deps like parsers.ts.
+  // When parsers.ts changes but index.ts doesn't, the old compiled code is served.
+  const TRIGGER_KEYWORDS = /봇|캐릭터|이미지|셋업|setup|onboarding|온보딩|생성|만들|바꾸/i;
+  const TRIGGER_ACTIONS = /하고|하자|해줘|해줄|시작|할래|하고파|할까|start|begin|want|원해|해봐|해보|만들|새로|다시|바꾸/i;
+  const TRIGGER_EXACT = /^(onboarding|온보딩|셋업|setup)[\s!.]*$/i;
+
+  function isOnboardingTrigger(text: string): boolean {
+    const trimmed = text.trim();
+    if (TRIGGER_EXACT.test(trimmed)) return true;
+    return TRIGGER_KEYWORDS.test(trimmed) && TRIGGER_ACTIONS.test(trimmed);
+  }
+
   const runtime: OnboardingRuntime = {
     isOnboardingMessage: (channelId, userId, content) => {
       const trimmed = content.trim();
-      if (isTrigger(trimmed)) return true;
+      if (isOnboardingTrigger(trimmed)) return true;
       return sessions.get(channelId, userId) !== null;
     },
   };
@@ -87,7 +100,7 @@ export function registerOnboarding(
       const messageId = metadata?.messageId as string | undefined;
       const trimmed = content.trim();
 
-      if (isTrigger(trimmed)) {
+      if (isOnboardingTrigger(trimmed)) {
         logger.info(`onboarding: trigger detected from user=${userId} text="${trimmed.slice(0, 50)}"`);
         const existing = sessions.getByChannel(channelId);
         if (existing && existing.userId !== userId) {

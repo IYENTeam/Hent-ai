@@ -1,3 +1,4 @@
+// emotion-image plugin v3.1.0 - broad trigger support
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
@@ -486,7 +487,7 @@ export async function detectOnboardingIntentWithLLM(
   try {
     const auth = await runtime.modelAuth.resolveApiKeyForProvider({
       provider: providerName,
-      cfg: providerCfg,
+      cfg: cfg as unknown as Record<string, unknown> | undefined,
     });
     apiKey = auth.apiKey;
   } catch (err) {
@@ -556,7 +557,7 @@ export async function detectCheerIntentWithLLM(
   try {
     const auth = await runtime.modelAuth.resolveApiKeyForProvider({
       provider: providerName,
-      cfg: providerCfg,
+      cfg: cfg as unknown as Record<string, unknown> | undefined,
     });
     apiKey = auth.apiKey;
   } catch (err) {
@@ -1628,3 +1629,4 @@ export default definePluginEntry({
     }, { name: "emotion-image-sent" });
   },
 });
+
