@@ -85,6 +85,116 @@ export function expandEnvPlaceholder(value: string | undefined): string | undefi
    return process.env[m[1]];
  }
 
+type RuntimeConfigProvider = {
+  config?: {
+    current?: () => unknown;
+  };
+};
+
+export interface ImageDirContext {
+  metadata?: Record<string, unknown>;
+  sessionKey?: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function stringAtPath(root: unknown, path: string[]): string | undefined {
+  let cursor: unknown = root;
+  for (const segment of path) {
+    const record = asRecord(cursor);
+    if (!record) return undefined;
+    cursor = record[segment];
+  }
+  return typeof cursor === "string" && cursor.trim() ? cursor : undefined;
+}
+
+export function resolveProfileWorkspaceDir(config: unknown): string | undefined {
+  const paths = [
+    ["workspace"],
+    ["workspaceDir"],
+    ["agentDir"],
+    ["agent", "workspace"],
+    ["agent", "workspaceDir"],
+    ["agent", "agentDir"],
+    ["profile", "workspace"],
+    ["profile", "workspaceDir"],
+    ["profile", "agentDir"],
+    ["gateway", "workspace"],
+    ["gateway", "workspaceDir"],
+  ];
+
+  for (const path of paths) {
+    const value = stringAtPath(config, path);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function workspaceIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) return undefined;
+  const [first] = sessionKey.split(/[:/]/);
+  return first && first !== sessionKey ? first : undefined;
+}
+
+function resolveProfileWorkspaceId(
+  config: unknown,
+  context?: ImageDirContext,
+): string | undefined {
+  const metadata = context?.metadata;
+  const metadataId =
+    stringAtPath(metadata, ["workspaceId"]) ??
+    stringAtPath(metadata, ["workspace"]) ??
+    stringAtPath(metadata, ["workspace", "id"]) ??
+    stringAtPath(metadata, ["agent", "id"]) ??
+    stringAtPath(metadata, ["agentId"]);
+  if (metadataId) return metadataId;
+
+  const sessionId = workspaceIdFromSessionKey(context?.sessionKey);
+  if (sessionId) return sessionId;
+
+  const configId =
+    stringAtPath(config, ["workspace", "id"]) ??
+    stringAtPath(config, ["agent", "id"]) ??
+    stringAtPath(config, ["agentId"]);
+  return configId;
+}
+
+function sanitizeWorkspaceSegment(value: string): string {
+  return value.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+}
+
+export function resolveImageDir(
+  configuredPath: string | undefined,
+  extensionDir: string,
+  runtime: RuntimeConfigProvider,
+  context?: ImageDirContext,
+): string {
+  const runtimeConfig = runtime.config?.current?.();
+  const workspaceDir = resolveProfileWorkspaceDir(runtimeConfig);
+  const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context);
+
+  if (configuredPath) {
+    let resolved = resolve(configuredPath);
+    if (workspaceDir && !isAbsolute(configuredPath)) {
+      resolved = resolve(workspaceDir, configuredPath);
+    } else if (workspaceId) {
+      resolved = resolve(resolved, sanitizeWorkspaceSegment(workspaceId));
+    }
+    return resolved;
+  }
+
+  const fallback = resolve(extensionDir, "..", "assets");
+  if (workspaceDir) {
+    return resolve(workspaceDir, "emotion-image-assets");
+  }
+  if (workspaceId) {
+    return resolve(fallback, sanitizeWorkspaceSegment(workspaceId));
+  }
+  return fallback;
+}
+
 /**
  * Extract a valid emotion from LLM response text with robust parsing.
  * Handles exact matches, surrounding quotes, extra text/whitespace, and multi-line responses.
@@ -1189,9 +1299,9 @@ export default definePluginEntry({
     }
 
     const extensionDir = dirname(fileURLToPath(import.meta.url));
-    const imageDir = pluginConfig.imageDir
-      ? resolve(pluginConfig.imageDir)
-      : resolve(extensionDir, "..", "assets");
+    const resolveActiveImageDir = (context?: ImageDirContext) =>
+      resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
+    const imageDir = resolveActiveImageDir();
 
      const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
        Object.entries({
@@ -1227,7 +1337,28 @@ export default definePluginEntry({
     // Miracle mode configuration
     const miracleMode = pluginConfig.miracleMode ?? false;
     const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
-    const rateLimiter = new RateLimiter(miracleRateLimit);
+    
+    // Workspace-scoped state for multi-agent isolation
+    const rateLimiters = new Map<string, RateLimiter>();
+    const channelQueuesPerWorkspace = new Map<string, Map<string, Promise<void>>>();
+    
+    function getRateLimiterForWorkspace(workspaceKey: string): RateLimiter {
+      let limiter = rateLimiters.get(workspaceKey);
+      if (!limiter) {
+        limiter = new RateLimiter(miracleRateLimit);
+        rateLimiters.set(workspaceKey, limiter);
+      }
+      return limiter;
+    }
+    
+    function getChannelQueuesForWorkspace(workspaceKey: string): Map<string, Promise<void>> {
+      let queues = channelQueuesPerWorkspace.get(workspaceKey);
+      if (!queues) {
+        queues = new Map<string, Promise<void>>();
+        channelQueuesPerWorkspace.set(workspaceKey, queues);
+      }
+      return queues;
+    }
 
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
@@ -1298,8 +1429,6 @@ export default definePluginEntry({
        }, { name: "emotion-image-thinking" });
      }
 
-     const channelQueues = new Map<string, Promise<void>>();
-
      // Phase 2: On bot message sent, LLM classifies emotion and appends image
      api.on("message_sent", async (event) => {
       const {
@@ -1307,12 +1436,15 @@ export default definePluginEntry({
         content,
         success,
         messageId,
+        metadata,
+        sessionKey,
       } = event as {
         to?: string;
         content?: string;
         success?: boolean;
         messageId?: string;
         metadata?: Record<string, unknown>;
+        sessionKey?: string;
       };
 
       if (!success || !messageId || !content || !to) return;
@@ -1328,6 +1460,14 @@ export default definePluginEntry({
 
       // Per-channel toggle check
       if (!isChannelEnabled(channelId)) return;
+
+      // Resolve workspace context for isolation
+      const context: ImageDirContext = { metadata, sessionKey };
+      const runtimeConfig = api.runtime.config?.current?.();
+      const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context) ?? "default";
+      const activeImageDir = resolveActiveImageDir(context);
+      const rateLimiter = getRateLimiterForWorkspace(workspaceId);
+      const channelQueues = getChannelQueuesForWorkspace(workspaceId);
 
       // LLM classifies emotion and appends result image to the sent message
       const classifyAndAppend = async () => {
@@ -1374,7 +1514,7 @@ export default definePluginEntry({
           // Check if we got a variant with filename (cached) or a generated buffer
           const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
           if (finalVariant?.filename) {
-            const finalImagePath = assertPathInside(imageDir, finalVariant.filename);
+            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
             if (finalImagePath && existsSync(finalImagePath)) {
               api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
               await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
