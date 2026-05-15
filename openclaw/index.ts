@@ -1578,10 +1578,6 @@ export default definePluginEntry({
     const onboardingIntentDetector: IntentDetector | undefined = classifierModel
       ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
       : undefined;
-
-    const onboardingIntentDetector = async (text: string): Promise<boolean> => {
-      return detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger);
-    };
     const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
 
       const cheerConfig = pluginConfig.cheer ?? {};
