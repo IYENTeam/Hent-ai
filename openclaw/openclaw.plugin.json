@@ -7,7 +7,7 @@
   "description": "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "enabled": {
         "type": "boolean",
