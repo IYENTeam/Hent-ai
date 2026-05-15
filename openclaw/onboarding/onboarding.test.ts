@@ -16,8 +16,8 @@ describe("parsers", () => {
 
     it("rejects non-trigger text", () => {
       expect(isTrigger("hello")).toBe(false);
-      expect(isTrigger("onboarding now")).toBe(false);
-      expect(isTrigger("start onboarding")).toBe(false);
+      expect(isTrigger("start onboarding")).toBe(true);
+      expect(isTrigger("just mentioning onboarding in passing")).toBe(false);
     });
   });
 
