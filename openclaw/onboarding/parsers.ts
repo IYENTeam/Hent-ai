@@ -37,4 +37,14 @@ export function parseImageIntent(text: string): UserIntent {
   return { type: "feedback", text: trimmed };
 }
 
-// isTrigger removed — onboarding intent is now detected via LLM classifier
+// Broad trigger — temporary until tool-based approach replaces this
+const TRIGGER = /봇|캐릭터|이미지|셋업|setup|onboarding|온보딩|생성|만들|바꾸/i;
+
+export function isTrigger(text: string): boolean {
+  // Must also contain an action-like intent, not just mention a keyword in passing
+  const actionWords = /하고|하자|해줘|해줄|시작|할래|하고파|할까|start|begin|want|원해|해봐|해보|만들|새로|다시|바꾸/i;
+  const exactTrigger = /^(onboarding|온보딩|셋업|setup)[\s!.]*$/i;
+  const trimmed = text.trim();
+  if (exactTrigger.test(trimmed)) return true;
+  return TRIGGER.test(trimmed) && actionWords.test(trimmed);
+}
