@@ -1493,6 +1493,10 @@ export default definePluginEntry({
           const userId = (metadata?.from as string | undefined) ?? "unknown";
           if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
 
+          // Agent-driven onboarding: skip emotion images when lock file exists
+          const onboardingLockPath = resolve(imageDir, ".onboarding-active");
+          if (existsSync(onboardingLockPath)) return;
+
           if (
            cheerEnabled &&
            cheerIntentModel &&
