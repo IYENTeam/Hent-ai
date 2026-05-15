@@ -39,12 +39,15 @@ export interface PluginApi {
   logger: Logger;
 }
 
+export type IntentDetector = (text: string) => Promise<boolean>;
+
 export function registerOnboarding(
   api: PluginApi,
   botToken: string,
   imageDir: string,
   onboardingConfig: OnboardingConfig,
   detectIntent?: IntentDetector,
+  detectOnboardingIntent?: IntentDetector,
 ): OnboardingRuntime | null {
   if (onboardingConfig.enabled === false) return null;
 
@@ -63,6 +66,10 @@ export function registerOnboarding(
     isOnboardingMessage: (channelId, userId, content) => {
       // For sync check, only look at active sessions.
       // Trigger detection is async (LLM) and handled in the message_received hook.
+      const trimmed = content.trim();
+      // Keep regex as fast-path for exact keywords
+      if (isTrigger(trimmed)) return true;
+      // Active session check (sync)
       return sessions.get(channelId, userId) !== null;
     },
   };
@@ -91,6 +98,13 @@ export function registerOnboarding(
 
       if (isOnboardingRequest) {
         logger.info(`onboarding: LLM detected onboarding intent from user=${userId} text="${trimmed.slice(0, 50)}"`);
+      // Fast-path: exact keyword match, or LLM intent detection
+      const isExactTrigger = isTrigger(trimmed);
+      const isLlmTrigger = !isExactTrigger && detectOnboardingIntent
+        ? await detectOnboardingIntent(trimmed).catch(() => false)
+        : false;
+
+      if (isExactTrigger || isLlmTrigger) {
         const existing = sessions.getByChannel(channelId);
         if (existing && existing.userId !== userId) {
           await sendTextMessage(
