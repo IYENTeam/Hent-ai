@@ -1,0 +1,82 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+jobs:
+  label:
+    name: Auto-label PR
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Label by changed files
+        uses: actions/labeler@v5
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+        continue-on-error: true
+
+  size:
+    name: PR Size Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check PR size
+        run: |
+          ADDITIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$1} END {print sum+0}')
+          DELETIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$2} END {print sum+0}')
+          TOTAL=$((ADDITIONS + DELETIONS))
+          echo "📊 PR Size: +$ADDITIONS / -$DELETIONS (total: $TOTAL lines)"
+
+          if [ "$TOTAL" -gt 1000 ]; then
+            echo "::warning::Large PR ($TOTAL lines). Consider splitting into smaller PRs."
+          elif [ "$TOTAL" -gt 500 ]; then
+            echo "::notice::Medium PR ($TOTAL lines)."
+          else
+            echo "✅ Small PR ($TOTAL lines)."
+          fi
+
+  changeset:
+    name: Changeset Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for breaking changes
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD)
+
+          # Check if configSchema changed (potential breaking for existing users)
+          if echo "$CHANGED" | grep -q "openclaw.plugin.json"; then
+            echo "::warning::Plugin manifest changed. Verify backward compatibility of configSchema."
+          fi
+
+          # Check if entry point signature changed
+          if echo "$CHANGED" | grep -q "openclaw/index.ts"; then
+            echo "::notice::Plugin entry point changed. Ensure definePluginEntry contract is preserved."
+          fi
+
+          # Check if assets were removed
+          REMOVED=$(git diff --name-only --diff-filter=D origin/main...HEAD | grep "^assets/" || true)
+          if [ -n "$REMOVED" ]; then
+            echo "::error::Asset files removed. This may break emotion image display:"
+            echo "$REMOVED"
+            exit 1
+          fi
+
+          echo "✅ No breaking changes detected."
