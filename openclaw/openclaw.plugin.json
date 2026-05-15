@@ -114,6 +114,16 @@
              "default": "1024x1024"
            }
          }
+       },
+       "miracleMode": {
+         "type": "boolean",
+         "description": "Enable miracle mode: auto-generate emotion images when no file match exists.",
+         "default": false
+       },
+       "miracleRateLimit": {
+         "type": "number",
+         "description": "Max number of miracle mode generations per hour.",
+         "default": 10
        }
     }
   }
