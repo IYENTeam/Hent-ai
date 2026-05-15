@@ -1,7 +1,20 @@
-import { SessionManager, OnboardingState } from "./session.js";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { SessionManager, OnboardingState, EMOTIONS } from "./session.js";
 import { isTrigger } from "./parsers.js";
 import { handleMessage, ONBOARDING_EXIT_HINT, type FlowConfig } from "./flow.js";
 import { sendTextMessage, type Logger } from "./discord-utils.js";
+
+/**
+ * Check if emotion images already exist in the image directory.
+ * Returns the list of existing emotion filenames.
+ */
+function detectExistingAssets(imageDir: string): string[] {
+  return EMOTIONS.filter((e) => {
+    const filePath = resolve(imageDir, `${e}.png`);
+    return existsSync(filePath);
+  });
+}
 
 export interface OnboardingConfig {
   enabled?: boolean;
@@ -107,7 +120,29 @@ export function registerOnboarding(
           return;
         }
 
+        // Check for existing assets (returning user detection)
+        const existingAssets = detectExistingAssets(imageDir);
+        const isReturningUser = existingAssets.length >= EMOTIONS.length;
+
         sessions.create(channelId, userId);
+
+        if (isReturningUser) {
+          // Returning user — offer upgrade path instead of full onboard
+          await sendTextMessage(
+            botToken,
+            channelId,
+            "🎨 Hent-ai 온보딩 — 이미 세팅되어 있어요!\n\n" +
+              `현재 ${existingAssets.length}개 감정 이미지가 설치되어 있습니다: ${existingAssets.join(", ")}\n\n` +
+              "선택해주세요:\n" +
+              '1\ufe0f\u20e3 "처음부터" — 새 캐릭터로 전체 다시 생성\n' +
+              '2\ufe0f\u20e3 "업데이트" — 특정 감정만 다시 생성\n' +
+              '3\ufe0f\u20e3 "취소" — 온보딩 종료\n\n' +
+              ONBOARDING_EXIT_HINT,
+            logger,
+          );
+          return;
+        }
+
         await sendTextMessage(
           botToken,
           channelId,

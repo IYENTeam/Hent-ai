@@ -10,41 +10,6 @@ import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-ut
 const LLM_TIMEOUT_MS = 15_000;
 
 /**
- * Rate limiter for miracle mode image generation.
- * Tracks generation count per hour and resets every hour.
- */
-class RateLimiter {
-  private count = 0;
-  private windowStart = Date.now();
-  private readonly windowMs = 60 * 60 * 1000; // 1 hour
-
-  constructor(private readonly limit: number) {}
-
-  canGenerate(): boolean {
-    this.resetIfNeeded();
-    return this.count < this.limit;
-  }
-
-  recordGeneration(): void {
-    this.resetIfNeeded();
-    this.count++;
-  }
-
-  private resetIfNeeded(): void {
-    const now = Date.now();
-    if (now - this.windowStart >= this.windowMs) {
-      this.count = 0;
-      this.windowStart = now;
-    }
-  }
-
-  getRemainingCount(): number {
-    this.resetIfNeeded();
-    return Math.max(0, this.limit - this.count);
-  }
-}
-
-/**
  * Ensure a candidate path resolves to a location inside (or equal to) the
  * trusted root directory. Prevents path traversal via `imageDir` or
  * `emotionMap` values smuggling something like "../../etc/passwd".
@@ -79,11 +44,11 @@ export function detectApiType(apiFromConfig?: string): ApiType {
  * the referenced env var is missing.
  */
 export function expandEnvPlaceholder(value: string | undefined): string | undefined {
-   if (!value) return undefined;
-   const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
-   if (!m) return value;
-   return process.env[m[1]];
- }
+    if (!value) return undefined;
+    const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
+    if (!m) return value;
+    return process.env[m[1]];
+  }
 
 type RuntimeConfigProvider = {
   config?: {
@@ -146,53 +111,45 @@ function resolveProfileWorkspaceId(
   const metadataId =
     stringAtPath(metadata, ["workspaceId"]) ??
     stringAtPath(metadata, ["workspace"]) ??
-    stringAtPath(metadata, ["workspace", "id"]) ??
-    stringAtPath(metadata, ["agent", "id"]) ??
-    stringAtPath(metadata, ["agentId"]);
+    stringAtPath(metadata, ["profileId"]) ??
+    stringAtPath(metadata, ["profile"]);
   if (metadataId) return metadataId;
 
-  const sessionId = workspaceIdFromSessionKey(context?.sessionKey);
-  if (sessionId) return sessionId;
+  const sessionWorkspace = workspaceIdFromSessionKey(context?.sessionKey);
+  if (sessionWorkspace) return sessionWorkspace;
 
   const configId =
-    stringAtPath(config, ["workspace", "id"]) ??
+    stringAtPath(config, ["workspaceId"]) ??
+    stringAtPath(config, ["profileId"]) ??
     stringAtPath(config, ["agent", "id"]) ??
-    stringAtPath(config, ["agentId"]);
-  return configId;
+    stringAtPath(config, ["profile", "id"]);
+  if (configId) return configId;
+
+  return process.env.OPENCLAW_WORKSPACE ?? process.env.OPENCLAW_PROFILE;
 }
 
-function sanitizeWorkspaceSegment(value: string): string {
-  return value.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "unknown";
 }
 
 export function resolveImageDir(
-  configuredPath: string | undefined,
+  configuredImageDir: string | undefined,
   extensionDir: string,
-  runtime: RuntimeConfigProvider,
+  runtime?: RuntimeConfigProvider,
   context?: ImageDirContext,
 ): string {
-  const runtimeConfig = runtime.config?.current?.();
-  const workspaceDir = resolveProfileWorkspaceDir(runtimeConfig);
-  const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context);
+  if (configuredImageDir) return resolve(configuredImageDir);
 
-  if (configuredPath) {
-    let resolved = resolve(configuredPath);
-    if (workspaceDir && !isAbsolute(configuredPath)) {
-      resolved = resolve(workspaceDir, configuredPath);
-    } else if (workspaceId) {
-      resolved = resolve(resolved, sanitizeWorkspaceSegment(workspaceId));
-    }
-    return resolved;
-  }
+  const config = runtime?.config?.current?.();
+  const workspaceDir = resolveProfileWorkspaceDir(config);
+  if (workspaceDir) return resolve(workspaceDir, ".hent-ai", "emotion-image-assets");
 
-  const fallback = resolve(extensionDir, "..", "assets");
-  if (workspaceDir) {
-    return resolve(workspaceDir, "emotion-image-assets");
-  }
+  const workspaceId = resolveProfileWorkspaceId(config, context);
   if (workspaceId) {
-    return resolve(fallback, sanitizeWorkspaceSegment(workspaceId));
+    return resolve(extensionDir, "..", "assets", "profiles", sanitizePathSegment(workspaceId));
   }
-  return fallback;
+
+  return resolve(extensionDir, "..", "assets");
 }
 
 /**
@@ -650,72 +607,17 @@ export function imageLabelMatchesContext(label: string | undefined, contextText:
   return labelTokens.some((token) => contextTokens.has(token));
 }
 
-/**
- * Get cached image or generate a new one via miracle mode.
- * Returns the image buffer when successful, or null when rate-limited or generation fails.
- */
-export async function getCachedOrGenerateImage(
-  emotion: string,
-  variants: EmotionImageVariant[],
-  miracleMode: boolean,
-  rateLimiter: RateLimiter,
-  generateOptions: GenerateOptions,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
-  random = Math.random,
-  contextText = "",
-): Promise<Buffer | null> {
-  // Try cached variants first
-  const variant = selectEmotionImageVariant(variants, random, contextText, false);
-  if (variant?.buffer) {
-    return variant.buffer;
-  }
-
-  // If no cached variant and miracle mode is enabled, try to generate
-  if (!miracleMode) {
-    return null;
-  }
-
-  if (!rateLimiter.canGenerate()) {
-    logger.warn(
-      `emotion-image: miracle mode rate limit reached. ` +
-      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
-    );
-    return null;
-  }
-
-  try {
-    logger.info(`emotion-image: miracle mode generating image for emotion="${emotion}"`);
-    const prompt = `A cute anime-style character expressing ${emotion} emotion. ` +
-                   `Simple, clean illustration with soft colors and expressive face.`;
-    const buffer = await generateImage(prompt, generateOptions);
-    rateLimiter.recordGeneration();
-    logger.info(
-      `emotion-image: miracle mode generated image (${buffer.length} bytes). ` +
-      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
-    );
-    return buffer;
-  } catch (err) {
-    logger.warn(`emotion-image: miracle mode generation failed: ${err}`);
-    return null;
-  }
-}
-
 export function selectEmotionImageVariant(
   variants: EmotionImageVariant[],
   random = Math.random,
   contextText = "",
-  miracleMode = false,
 ): EmotionImageVariant | null {
   const pool = contextText
     ? variants.filter((variant) => imageLabelMatchesContext(variant.label, contextText))
     : [];
   const candidates = pool.length > 0 ? pool : variants;
 
-  // If no candidates and miracle mode is enabled, return null so caller can generate
-  if (candidates.length === 0) {
-    return miracleMode ? null : null; // Both return null, but keeping param for clarity
-  }
-
+  if (candidates.length === 0) return null;
   const totalWeight = candidates.reduce((sum, variant) => sum + variant.weight, 0);
   let cursor = random() * totalWeight;
   for (const variant of candidates) {
@@ -1097,82 +999,6 @@ export async function appendImageToMessage(
   }
 }
 
-/**
- * Append an image buffer (e.g., from miracle mode generation) to an existing Discord message.
- */
-export async function appendImageBufferToMessage(
-  token: string,
-  channelId: string,
-  messageId: string,
-  imageBuffer: Buffer,
-  filename: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    // GET current message to preserve existing content and attachments
-    const getRes = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      { headers: { Authorization: `Bot ${token}` } },
-    );
-    if (!getRes.ok) {
-      const errText = await getRes.text();
-      logger.warn(`emotion-image: GET message failed ${getRes.status}: ${errText.slice(0, 200)}`);
-      return;
-    }
-    const msg = (await getRes.json()) as {
-      content?: string;
-      attachments?: Array<{ id: string; filename: string }>;
-    };
-
-    const existingContent = msg.content ?? "";
-    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
-    const newFileIndex = 0;
-
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
-
-    const jsonPayload = JSON.stringify({
-      content: existingContent,
-      attachments: [
-        ...existingAttachments,
-        { id: newFileIndex, filename },
-      ],
-    });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(imageBuffer);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: append image buffer failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: appended generated ${filename} to message ${messageId}`);
-    }
-  } catch (err) {
-    logger.error(`emotion-image: append buffer error: ${err}`);
-  }
-}
-
 export async function editMessageWithTwoImages(
    token: string,
    channelId: string,
@@ -1278,7 +1104,6 @@ export default definePluginEntry({
       enabled?: boolean;
       imageDir?: string;
       emotionMap?: Record<string, EmotionImageConfig>;
-      channels?: { mode?: "allowlist" | "blocklist"; list?: string[] };
       defaultEmotion?: string;
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
@@ -1288,15 +1113,6 @@ export default definePluginEntry({
     };
 
     if (pluginConfig.enabled === false) return;
-
-    // Per-channel toggle
-    const channelMode = pluginConfig.channels?.mode ?? "blocklist";
-    const channelList = new Set(pluginConfig.channels?.list ?? []);
-    function isChannelEnabled(channelId: string): boolean {
-      if (channelList.size === 0) return true; // no list = all enabled
-      if (channelMode === "allowlist") return channelList.has(channelId);
-      return !channelList.has(channelId); // blocklist
-    }
 
     const extensionDir = dirname(fileURLToPath(import.meta.url));
     const resolveActiveImageDir = (context?: ImageDirContext) =>
@@ -1334,32 +1150,6 @@ export default definePluginEntry({
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
 
-    // Miracle mode configuration
-    const miracleMode = pluginConfig.miracleMode ?? false;
-    const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
-    
-    // Workspace-scoped state for multi-agent isolation
-    const rateLimiters = new Map<string, RateLimiter>();
-    const channelQueuesPerWorkspace = new Map<string, Map<string, Promise<void>>>();
-    
-    function getRateLimiterForWorkspace(workspaceKey: string): RateLimiter {
-      let limiter = rateLimiters.get(workspaceKey);
-      if (!limiter) {
-        limiter = new RateLimiter(miracleRateLimit);
-        rateLimiters.set(workspaceKey, limiter);
-      }
-      return limiter;
-    }
-    
-    function getChannelQueuesForWorkspace(workspaceKey: string): Map<string, Promise<void>> {
-      let queues = channelQueuesPerWorkspace.get(workspaceKey);
-      if (!queues) {
-        queues = new Map<string, Promise<void>>();
-        channelQueuesPerWorkspace.set(workspaceKey, queues);
-      }
-      return queues;
-    }
-
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
     }
@@ -1378,7 +1168,7 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
+    const onboardingRuntime = registerOnboarding(api, botToken, resolveActiveImageDir, pluginConfig.onboarding ?? {});
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1386,11 +1176,15 @@ export default definePluginEntry({
 
       // Phase 1: On user message received, immediately send focused (thinking) image
       const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
-      const thinkingImagePath = thinkingVariant ? assertPathInside(imageDir, thinkingVariant.filename) : null;
 
-      if (cheerEnabled || (thinkingImagePath && existsSync(thinkingImagePath))) {
-       api.on("message_received", async (event) => {
-         const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
+      if (cheerEnabled || thinkingVariant) {
+        api.on("message_received", async (event) => {
+         const { content, metadata, senderId, sessionKey } = event as {
+           content?: string;
+           metadata?: Record<string, unknown>;
+           senderId?: string;
+           sessionKey?: string;
+         };
          if (!content || content.trim() === "NO_REPLY") return;
 
         // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
@@ -1398,9 +1192,9 @@ export default definePluginEntry({
         if (!rawTo) return;
           const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
-          if (!isChannelEnabled(discordChannelId)) return;
-          const userId = (metadata?.from as string | undefined) ?? "unknown";
-          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
+          const userId = senderId ?? (metadata?.from as string | undefined) ?? "unknown";
+          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content, sessionKey)) return;
+          const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
 
           if (
            cheerEnabled &&
@@ -1409,16 +1203,17 @@ export default definePluginEntry({
          ) {
            await handleCheerRequest({
               token: botToken,
-             channelId: discordChannelId,
-             imageDir,
-             config: cheerConfig,
-             onboardingConfig: pluginConfig.onboarding,
-             logger: api.logger,
+              channelId: discordChannelId,
+              imageDir: activeImageDir,
+              config: cheerConfig,
+              onboardingConfig: pluginConfig.onboarding,
+              logger: api.logger,
            });
            return;
          }
 
-         if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
+          const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
+          if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
 
          api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
          try {
@@ -1429,6 +1224,8 @@ export default definePluginEntry({
        }, { name: "emotion-image-thinking" });
      }
 
+     const channelQueues = new Map<string, Promise<void>>();
+
      // Phase 2: On bot message sent, LLM classifies emotion and appends image
      api.on("message_sent", async (event) => {
       const {
@@ -1436,8 +1233,6 @@ export default definePluginEntry({
         content,
         success,
         messageId,
-        metadata,
-        sessionKey,
       } = event as {
         to?: string;
         content?: string;
@@ -1457,17 +1252,7 @@ export default definePluginEntry({
 
       // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
       const channelId = to.startsWith("channel:") ? to.slice(8) : to;
-
-      // Per-channel toggle check
-      if (!isChannelEnabled(channelId)) return;
-
-      // Resolve workspace context for isolation
-      const context: ImageDirContext = { metadata, sessionKey };
-      const runtimeConfig = api.runtime.config?.current?.();
-      const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context) ?? "default";
-      const activeImageDir = resolveActiveImageDir(context);
-      const rateLimiter = getRateLimiterForWorkspace(workspaceId);
-      const channelQueues = getChannelQueuesForWorkspace(workspaceId);
+      const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
 
       // LLM classifies emotion and appends result image to the sent message
       const classifyAndAppend = async () => {
@@ -1492,39 +1277,27 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-          const variants = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
-          
-          // Try to get cached or generate via miracle mode
-          const imageBuffer = await getCachedOrGenerateImage(
-            finalEmotion,
-            variants,
-            miracleMode,
-            rateLimiter,
-            {}, // generateOptions - will use defaults
-            api.logger,
+          const finalVariant = selectEmotionImageVariant(
+            emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png"),
             Math.random,
             cleaned,
           );
+         if (!finalVariant) {
+           api.logger.warn(`emotion-image: no image variants configured for "${finalEmotion}"; skipping`);
+           return;
+         }
+          const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
+         if (!finalImagePath) {
+           api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
+           return;
+         }
+         if (!existsSync(finalImagePath)) {
+           api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
+           return;
+         }
 
-          if (!imageBuffer) {
-            api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
-            return;
-          }
-
-          // Check if we got a variant with filename (cached) or a generated buffer
-          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
-          if (finalVariant?.filename) {
-            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
-            if (finalImagePath && existsSync(finalImagePath)) {
-              api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
-              await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
-              return;
-            }
-          }
-
-          // Use the generated buffer
-          api.logger.info(`emotion-image: appending miracle-generated ${finalEmotion} image for msg=${messageId}`);
-          await appendImageBufferToMessage(botToken, channelId, messageId, imageBuffer, "emotion.png", api.logger);
+         api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
+          await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
        };
 
        const prev = channelQueues.get(channelId) ?? Promise.resolve();
