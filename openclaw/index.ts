@@ -10,6 +10,41 @@ import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-ut
 const LLM_TIMEOUT_MS = 15_000;
 
 /**
+ * Rate limiter for miracle mode image generation.
+ * Tracks generation count per hour and resets every hour.
+ */
+class RateLimiter {
+  private count = 0;
+  private windowStart = Date.now();
+  private readonly windowMs = 60 * 60 * 1000; // 1 hour
+
+  constructor(private readonly limit: number) {}
+
+  canGenerate(): boolean {
+    this.resetIfNeeded();
+    return this.count < this.limit;
+  }
+
+  recordGeneration(): void {
+    this.resetIfNeeded();
+    this.count++;
+  }
+
+  private resetIfNeeded(): void {
+    const now = Date.now();
+    if (now - this.windowStart >= this.windowMs) {
+      this.count = 0;
+      this.windowStart = now;
+    }
+  }
+
+  getRemainingCount(): number {
+    this.resetIfNeeded();
+    return Math.max(0, this.limit - this.count);
+  }
+}
+
+/**
  * Ensure a candidate path resolves to a location inside (or equal to) the
  * trusted root directory. Prevents path traversal via `imageDir` or
  * `emotionMap` values smuggling something like "../../etc/passwd".
@@ -505,17 +540,72 @@ export function imageLabelMatchesContext(label: string | undefined, contextText:
   return labelTokens.some((token) => contextTokens.has(token));
 }
 
+/**
+ * Get cached image or generate a new one via miracle mode.
+ * Returns the image buffer when successful, or null when rate-limited or generation fails.
+ */
+export async function getCachedOrGenerateImage(
+  emotion: string,
+  variants: EmotionImageVariant[],
+  miracleMode: boolean,
+  rateLimiter: RateLimiter,
+  generateOptions: GenerateOptions,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
+  random = Math.random,
+  contextText = "",
+): Promise<Buffer | null> {
+  // Try cached variants first
+  const variant = selectEmotionImageVariant(variants, random, contextText, false);
+  if (variant?.buffer) {
+    return variant.buffer;
+  }
+
+  // If no cached variant and miracle mode is enabled, try to generate
+  if (!miracleMode) {
+    return null;
+  }
+
+  if (!rateLimiter.canGenerate()) {
+    logger.warn(
+      `emotion-image: miracle mode rate limit reached. ` +
+      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
+    );
+    return null;
+  }
+
+  try {
+    logger.info(`emotion-image: miracle mode generating image for emotion="${emotion}"`);
+    const prompt = `A cute anime-style character expressing ${emotion} emotion. ` +
+                   `Simple, clean illustration with soft colors and expressive face.`;
+    const buffer = await generateImage(prompt, generateOptions);
+    rateLimiter.recordGeneration();
+    logger.info(
+      `emotion-image: miracle mode generated image (${buffer.length} bytes). ` +
+      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
+    );
+    return buffer;
+  } catch (err) {
+    logger.warn(`emotion-image: miracle mode generation failed: ${err}`);
+    return null;
+  }
+}
+
 export function selectEmotionImageVariant(
   variants: EmotionImageVariant[],
   random = Math.random,
   contextText = "",
+  miracleMode = false,
 ): EmotionImageVariant | null {
   const pool = contextText
     ? variants.filter((variant) => imageLabelMatchesContext(variant.label, contextText))
     : [];
   const candidates = pool.length > 0 ? pool : variants;
 
-  if (candidates.length === 0) return null;
+  // If no candidates and miracle mode is enabled, return null so caller can generate
+  if (candidates.length === 0) {
+    return miracleMode ? null : null; // Both return null, but keeping param for clarity
+  }
+
   const totalWeight = candidates.reduce((sum, variant) => sum + variant.weight, 0);
   let cursor = random() * totalWeight;
   for (const variant of candidates) {
@@ -897,6 +987,82 @@ export async function appendImageToMessage(
   }
 }
 
+/**
+ * Append an image buffer (e.g., from miracle mode generation) to an existing Discord message.
+ */
+export async function appendImageBufferToMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  imageBuffer: Buffer,
+  filename: string,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+) {
+  try {
+    // GET current message to preserve existing content and attachments
+    const getRes = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      { headers: { Authorization: `Bot ${token}` } },
+    );
+    if (!getRes.ok) {
+      const errText = await getRes.text();
+      logger.warn(`emotion-image: GET message failed ${getRes.status}: ${errText.slice(0, 200)}`);
+      return;
+    }
+    const msg = (await getRes.json()) as {
+      content?: string;
+      attachments?: Array<{ id: string; filename: string }>;
+    };
+
+    const existingContent = msg.content ?? "";
+    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
+    const newFileIndex = 0;
+
+    const boundary = `----EmotionImage${Date.now()}`;
+    const parts: Buffer[] = [];
+
+    const jsonPayload = JSON.stringify({
+      content: existingContent,
+      attachments: [
+        ...existingAttachments,
+        { id: newFileIndex, filename },
+      ],
+    });
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
+    ));
+
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
+    ));
+    parts.push(imageBuffer);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const res = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bot ${token}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      }
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      logger.warn(`emotion-image: append image buffer failed ${res.status}: ${text.slice(0, 200)}`);
+    } else {
+      logger.info(`emotion-image: appended generated ${filename} to message ${messageId}`);
+    }
+  } catch (err) {
+    logger.error(`emotion-image: append buffer error: ${err}`);
+  }
+}
+
 export async function editMessageWithTwoImages(
    token: string,
    channelId: string,
@@ -1058,6 +1224,11 @@ export default definePluginEntry({
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
 
+    // Miracle mode configuration
+    const miracleMode = pluginConfig.miracleMode ?? false;
+    const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
+    const rateLimiter = new RateLimiter(miracleRateLimit);
+
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
     }
@@ -1181,27 +1352,39 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-          const finalVariant = selectEmotionImageVariant(
-            emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png"),
+          const variants = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
+          
+          // Try to get cached or generate via miracle mode
+          const imageBuffer = await getCachedOrGenerateImage(
+            finalEmotion,
+            variants,
+            miracleMode,
+            rateLimiter,
+            {}, // generateOptions - will use defaults
+            api.logger,
             Math.random,
             cleaned,
           );
-         if (!finalVariant) {
-           api.logger.warn(`emotion-image: no image variants configured for "${finalEmotion}"; skipping`);
-           return;
-         }
-         const finalImagePath = assertPathInside(imageDir, finalVariant.filename);
-         if (!finalImagePath) {
-           api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
-           return;
-         }
-         if (!existsSync(finalImagePath)) {
-           api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
-           return;
-         }
 
-         api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
-          await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
+          if (!imageBuffer) {
+            api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
+            return;
+          }
+
+          // Check if we got a variant with filename (cached) or a generated buffer
+          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
+          if (finalVariant?.filename) {
+            const finalImagePath = assertPathInside(imageDir, finalVariant.filename);
+            if (finalImagePath && existsSync(finalImagePath)) {
+              api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
+              await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
+              return;
+            }
+          }
+
+          // Use the generated buffer
+          api.logger.info(`emotion-image: appending miracle-generated ${finalEmotion} image for msg=${messageId}`);
+          await appendImageBufferToMessage(botToken, channelId, messageId, imageBuffer, "emotion.png", api.logger);
        };
 
        const prev = channelQueues.get(channelId) ?? Promise.resolve();

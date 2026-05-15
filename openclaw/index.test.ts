@@ -12,6 +12,7 @@ import {
   expandEnvPlaceholder,
   extractBooleanIntent,
   extractEmotion,
+  getCachedOrGenerateImage,
   handleCheerRequest,
   imageLabelMatchesContext,
   inferAutomaticImageLabel,
@@ -870,3 +871,132 @@ describe("appendImageToMessage attachment schema", () => {
      expect(attachments[1].filename).toBe("emotion.png");
    });
  });
+
+describe("miracle mode", () => {
+  describe("getCachedOrGenerateImage", () => {
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+
+    const mockRateLimiter = {
+      canGenerate: vi.fn(() => true),
+      recordGeneration: vi.fn(),
+      getRemainingCount: vi.fn(() => 5),
+      limit: 10,
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it("returns cached variant buffer when available", async () => {
+      const cachedBuffer = Buffer.from("CACHED_IMAGE");
+      const variants = [{ filename: "happy.png", weight: 1, buffer: cachedBuffer }];
+
+      const result = await getCachedOrGenerateImage(
+        "happy",
+        variants,
+        false, // miracleMode disabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBe(cachedBuffer);
+      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
+    });
+
+    it("returns null when no cached variant and miracle mode is disabled", async () => {
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [], // no variants
+        false, // miracleMode disabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
+    });
+
+    it("generates image when miracle mode is enabled and no cached variant", async () => {
+      const generatedBuffer = Buffer.from("FAKE_CHEER_PNG");
+      vi.mocked(generateImage).mockResolvedValueOnce(generatedBuffer);
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [], // no variants
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        { size: "1024x1024" },
+        mockLogger,
+      );
+
+      expect(result).toBe(generatedBuffer);
+      expect(mockRateLimiter.canGenerate).toHaveBeenCalled();
+      expect(mockRateLimiter.recordGeneration).toHaveBeenCalled();
+      expect(generateImage).toHaveBeenCalledWith(
+        expect.stringContaining("excited"),
+        { size: "1024x1024" },
+      );
+    });
+
+    it("returns null when rate limit is exceeded", async () => {
+      mockRateLimiter.canGenerate.mockReturnValueOnce(false);
+      mockRateLimiter.getRemainingCount.mockReturnValueOnce(0);
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [],
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("rate limit reached"),
+      );
+      expect(generateImage).not.toHaveBeenCalled();
+    });
+
+    it("returns null when generation fails", async () => {
+      vi.mocked(generateImage).mockRejectedValueOnce(new Error("API error"));
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [],
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("generation failed"),
+      );
+    });
+  });
+
+  describe("selectEmotionImageVariant with miracleMode parameter", () => {
+    it("returns null when no variants and miracleMode is true", () => {
+      const result = selectEmotionImageVariant([], Math.random, "", true);
+      expect(result).toBeNull();
+    });
+
+    it("returns null when no variants and miracleMode is false", () => {
+      const result = selectEmotionImageVariant([], Math.random, "", false);
+      expect(result).toBeNull();
+    });
+
+    it("returns variant normally when variants exist regardless of miracleMode", () => {
+      const variants = [{ filename: "happy.png", weight: 1 }];
+      const result = selectEmotionImageVariant(variants, () => 0.5, "", true);
+      expect(result).toEqual({ filename: "happy.png", weight: 1 });
+    });
+  });
+});
