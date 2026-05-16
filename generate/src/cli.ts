@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { generateAllEmotions, EMOTIONS } from "./generator.js";
+import { generateAllEmotions, EMOTIONS, type Emotion } from "./generator.js";
 
 interface CliArgs {
   character: string;
@@ -8,6 +8,7 @@ interface CliArgs {
   size?: string;
   baseImage?: string;
   keepBase: boolean;
+  only?: Emotion[];
 }
 
 function parseArgs(args: string[]): CliArgs | null {
@@ -21,6 +22,7 @@ function parseArgs(args: string[]): CliArgs | null {
   let size: string | undefined;
   let baseImage: string | undefined;
   let keepBase = true;
+  let only: Emotion[] | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -55,6 +57,10 @@ function parseArgs(args: string[]): CliArgs | null {
       case "--no-keep-base":
         keepBase = false;
         break;
+      case "--only":
+        only = (next ?? "").split(",").map((s) => s.trim()).filter(Boolean) as Emotion[];
+        i++;
+        break;
       default:
         if (!character && !arg.startsWith("-")) {
           character = arg;
@@ -65,7 +71,15 @@ function parseArgs(args: string[]): CliArgs | null {
 
   if (!character) return null;
 
-  return { character, outputDir, model, size, baseImage, keepBase };
+  if (only?.length) {
+    const invalid = only.filter((e) => !(EMOTIONS as readonly string[]).includes(e));
+    if (invalid.length) {
+      console.error(`Invalid emotions: ${invalid.join(", ")}\nValid: ${EMOTIONS.join(", ")}`);
+      return null;
+    }
+  }
+
+  return { character, outputDir, model, size, baseImage, keepBase, only };
 }
 
 function printUsage(): void {
@@ -84,6 +98,8 @@ Options:
   -m, --model <model>       Codex model (default: gpt-5.4)
   -s, --size <WxH>          Image size (default: 1024x1024)
       --no-keep-base        Don't save base.png to output directory
+      --only <emotions>     Regenerate specific emotions only (comma-separated)
+                            e.g. --only sorry,confused
   -h, --help                Show this help
 
 Flow:
@@ -104,9 +120,12 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const { character, outputDir, model, size, baseImage, keepBase } = parsed;
+  const { character, outputDir, model, size, baseImage, keepBase, only } = parsed;
 
   console.log(`Generating emotion images for: "${character}"`);
+  if (only?.length) {
+    console.log(`Regenerating only: ${only.join(", ")}`);
+  }
   if (baseImage) {
     console.log(`Using existing base: ${baseImage}`);
   } else {
@@ -122,6 +141,7 @@ export async function run(args: string[]): Promise<void> {
       size,
       baseImage,
       keepBase,
+      only,
       onProgress(step, index, total) {
         console.log(`[${index + 1}/${total}] Generating ${step}...`);
       },

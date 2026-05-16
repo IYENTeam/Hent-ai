@@ -35,6 +35,8 @@ export interface GenerateAllOptions {
   baseImage?: string;
   /** Whether to keep base.png in the output directory (default: true) */
   keepBase?: boolean;
+  /** Only regenerate these specific emotions (default: all) */
+  only?: Emotion[];
   /** Progress callback */
   onProgress?: (step: string, index: number, total: number) => void;
 }
@@ -71,7 +73,8 @@ export async function generateAllEmotions(
     onProgress,
   } = options;
   const results = new Map<string, string>();
-  const totalSteps = EMOTIONS.length + (baseImage ? 0 : 1);
+  const emotionCount = options.only?.length ?? EMOTIONS.length;
+  const totalSteps = emotionCount + (baseImage ? 0 : 1);
 
   await mkdir(outputDir, { recursive: true });
 
@@ -102,8 +105,10 @@ export async function generateAllEmotions(
     stepOffset = 1;
   }
 
-  for (let i = 0; i < EMOTIONS.length; i++) {
-    const emotion = EMOTIONS[i];
+  const emotionsToGenerate = options.only ?? [...EMOTIONS];
+
+  for (let i = 0; i < emotionsToGenerate.length; i++) {
+    const emotion = emotionsToGenerate[i];
     onProgress?.(emotion, i + stepOffset, totalSteps);
 
     const genOptions: GenerateOptions = {
