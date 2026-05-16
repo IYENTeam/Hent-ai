@@ -226,18 +226,26 @@ describe("onboarding runtime", () => {
     expect(runtime?.isOnboardingMessage("123", "user1", "hello")).toBe(false);
     expect(runtime?.hasActiveSession("123")).toBe(false);
 
-    // "onboarding" is an explicit command trigger (Layer 1) — starts session even without LLM
+    // "onboarding" is NOT a trigger — only "/hent-ai-onboarding" is
     await handlers[0]?.({
       content: "onboarding",
       metadata: { to: "channel:123", from: "user1", messageId: "msg1" },
     }, {});
 
-    // Session started via explicit command
+    expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(false);
+    expect(runtime?.hasActiveSession("123")).toBe(false);
+
+    // "/hent-ai-onboarding" IS the trigger
+    await handlers[0]?.({
+      content: "/hent-ai-onboarding",
+      metadata: { to: "channel:123", from: "user1", messageId: "msg2" },
+    }, {});
+
     expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(true);
     expect(runtime?.hasActiveSession("123")).toBe(true);
   });
 
-  it("starts onboarding when LLM intent detector returns true", async () => {
+  it("ignores natural language even with LLM intent detector", async () => {
     const handlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = [];
     const runtime = registerOnboarding(
       {
@@ -247,17 +255,17 @@ describe("onboarding runtime", () => {
       "token",
       "/tmp/hent-ai-test-assets",
       {},
-      async () => true, // LLM says: yes, this is onboarding intent
+      async () => true, // LLM would say yes, but it's never called
     );
 
+    // Natural language does NOT trigger onboarding
     await handlers[0]?.({
       content: "캐릭터 이미지 만들어줘",
       metadata: { to: "channel:789", from: "user1", messageId: "msg1" },
     }, {});
 
-    expect(runtime?.isOnboardingMessage("789", "user1", "cute cat")).toBe(true);
-    expect(runtime?.hasActiveSession("789")).toBe(true);
-    expect(runtime?.hasActiveSession("000")).toBe(false);
+    expect(runtime?.isOnboardingMessage("789", "user1", "cute cat")).toBe(false);
+    expect(runtime?.hasActiveSession("789")).toBe(false);
   });
 
   it("uses OpenClaw session keys for onboarding isolation when available", async () => {
@@ -270,11 +278,10 @@ describe("onboarding runtime", () => {
       "token",
       "/tmp/hent-ai-test-assets",
       {},
-      async () => true, // LLM intent detector
     );
 
     await handlers[0]?.({
-      content: "onboarding",
+      content: "/hent-ai-onboarding",
       senderId: "same-user",
       sessionKey: "agent-session-a",
       metadata: { to: "channel:123", messageId: "msg1" },

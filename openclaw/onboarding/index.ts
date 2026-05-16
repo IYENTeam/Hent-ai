@@ -77,37 +77,12 @@ export function registerOnboarding(
   // Onboarding trigger detection is fully LLM-based.
   // No keyword/regex matching — the LLM reads the user's actual intent.
   // This avoids false positives from normal messages that happen to contain
-  // Trigger architecture inspired by Rasa's 4-layer flow activation:
-  //   1. Explicit command (direct link) — highest priority, zero ambiguity
-  //   2. LLM intent + confidence gate — only for short, directed messages
-  //   3. Flow guard — channel must be enabled, user must be allowed
-  //   4. Never triggers on long conversational messages
-  //
-  // Layer 1: Explicit commands (slash, prefix, or bare keyword)
-  const COMMAND_TRIGGER = /^(?:[\/!](?:onboarding|온보딩|셋업|setup)|onboarding|온보딩)\s*$/i;
+  // Single explicit command trigger. No NLP, no LLM, no ambiguity.
+  // Onboarding starts ONLY when the user types this exact command.
+  const COMMAND_TRIGGER = /^\/hent-ai-onboarding\s*$/i;
 
-  async function shouldStartOnboarding(trimmed: string): Promise<boolean> {
-    // Layer 1: Explicit command — always triggers, no ambiguity
-    if (COMMAND_TRIGGER.test(trimmed)) return true;
-
-    // Layer 2: LLM intent detection with guards
-    if (!detectIntent) return false;
-
-    // Guard: message length. Onboarding requests are short and directed.
-    // Long messages (>80 chars) are conversational, not commands.
-    if (trimmed.length > 80) return false;
-
-    // Guard: message must look like a request, not a statement or question about something.
-    // If it contains multiple sentences or paragraphs, it's conversation.
-    const sentenceCount = trimmed.split(/[.!?\n]/).filter(s => s.trim().length > 0).length;
-    if (sentenceCount > 2) return false;
-
-    try {
-      return await detectIntent(trimmed);
-    } catch (err) {
-      logger.warn(`onboarding: intent detector failed: ${err}`);
-      return false;
-    }
+  function shouldStartOnboarding(trimmed: string): boolean {
+    return COMMAND_TRIGGER.test(trimmed);
   }
 
   const runtime: OnboardingRuntime = {
