@@ -226,16 +226,15 @@ describe("onboarding runtime", () => {
     expect(runtime?.isOnboardingMessage("123", "user1", "hello")).toBe(false);
     expect(runtime?.hasActiveSession("123")).toBe(false);
 
-    // Without a detectIntent function, shouldStartOnboarding always returns false,
-    // so sending "onboarding" won't start a session.
+    // "onboarding" is an explicit command trigger (Layer 1) — starts session even without LLM
     await handlers[0]?.({
       content: "onboarding",
       metadata: { to: "channel:123", from: "user1", messageId: "msg1" },
     }, {});
 
-    // No session started (no LLM intent detector provided)
-    expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(false);
-    expect(runtime?.hasActiveSession("123")).toBe(false);
+    // Session started via explicit command
+    expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(true);
+    expect(runtime?.hasActiveSession("123")).toBe(true);
   });
 
   it("starts onboarding when LLM intent detector returns true", async () => {

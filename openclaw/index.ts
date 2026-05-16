@@ -1,4 +1,4 @@
-// emotion-image plugin v3.3.0 - asset sets + channel filter fix
+// emotion-image plugin v3.4.0 - asset sets + channel filter fix
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
@@ -432,22 +432,28 @@ async function classifyCheerIntentViaAnthropic(
 }
 
 function buildOnboardingIntentPrompt(text: string): string {
+  // Rasa-inspired: flow description + positive/negative examples for precise intent matching.
+  // The LLM acts as an NLU intent classifier with implicit confidence gating via examples.
   return [
-    "You are an intent classifier. Decide if the user's PRIMARY INTENT is to start the bot's character image onboarding flow.",
+    "You are a strict intent classifier. The flow you are checking for is:",
+    '"Start the bot character image onboarding — user wants to create, regenerate, or change the bot\'s emotion/character images right now."',
     "",
-    "Onboarding means the user DIRECTLY wants to:",
-    "- Create, generate, or set up the bot's character/emotion images",
-    "- Start the onboarding/setup process for the bot's appearance",
-    "- Change or regenerate the bot's avatar/character design",
+    "YES examples (direct request to start onboarding):",
+    '- "캐릭터 이미지 만들어줘"',
+    '- "온보딩 시작"',
+    '- "감정 이미지 새로 생성해줘"',
+    '- "봇 이미지 바꾸고 싶어"',
+    '- "setup character"',
     "",
-    "NOT onboarding (answer no):",
-    "- Talking ABOUT images, characters, or bots in general conversation",
-    "- Discussing system architecture, code, features, or bugs",
-    "- Asking questions, giving feedback, sharing links or articles",
-    "- Messages that merely MENTION images/characters but aren't requesting the onboarding flow",
-    "- Any message where the primary intent is something other than starting onboarding",
+    "NO examples (not onboarding — even if they mention images/characters):",
+    '- "이미지가 이상하게 보여" (bug report)',
+    '- "봇이 지가 한 일을 로그로 남기고..." (general conversation)',
+    '- "이미지 온보딩 코드를 수정해야 해" (discussing code)',
+    '- "캐릭터 디자인 트렌드가..." (talking about design)',
+    '- "만들면서 배운 것" (reflective writing)',
+    '- Any message discussing, describing, or analyzing — not requesting',
     "",
-    "The message must be a DIRECT REQUEST to start onboarding. Mentioning related words is not enough.",
+    "Rule: The user must be ASKING the bot TO DO the onboarding. Talking ABOUT it is not a request.",
     "Return ONLY yes or no.",
     `Message: ${text}`,
   ].join("\n");
