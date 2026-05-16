@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "activeSet": "gothic-v1",
+  "sets": {
+    "gothic-v1": {
+      "name": "Dark Gothic Girl v1",
+      "character": "anime girl with long dark burgundy/wine wavy hair, red-pink eyes, black off-shoulder gothic dress exposing collarbone and shoulders with dark red ribbon accents and black lace trim, circular hair ornament, drop earrings",
+      "model": "openai/gpt-image-2",
+      "createdAt": "2026-05-16T10:00:00+09:00",
+      "emotions": {
+        "happy": ["happy.png"],
+        "neutral": ["neutral.png"],
+        "loyalty": ["loyalty.png"],
+        "sorry": ["sorry.png"],
+        "confused": ["confused.png"],
+        "focused": ["focused.png"]
+      }
+    }
+  }
+}

@@ -8,3 +8,4 @@ __pycache__/
 target/
 dist/
 build/
+openclaw/index.js

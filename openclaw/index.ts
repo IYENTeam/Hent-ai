@@ -1,4 +1,4 @@
-// emotion-image plugin v3.1.0 - broad trigger support
+// emotion-image plugin v3.2.0 - asset sets + channel filter fix
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
@@ -7,6 +7,7 @@ import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
 import { registerOnboarding, type IntentDetector, type OnboardingConfig } from "./onboarding/index.js";
+import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -1383,6 +1384,7 @@ export default definePluginEntry({
     // Per-channel toggle
     const channelMode = pluginConfig.channels?.mode ?? "blocklist";
     const channelList = new Set((pluginConfig.channels?.list ?? []).map(normalizeDiscordChannelId));
+    api.logger.info(`emotion-image: channel filter mode=${channelMode} list=[${[...channelList].join(',')}] (${channelList.size} entries)`);
     function isChannelEnabled(channelId: string): boolean {
       if (channelList.size === 0) return true; // no list = all enabled
       if (channelMode === "allowlist") return channelList.has(channelId);
@@ -1394,9 +1396,21 @@ export default definePluginEntry({
       resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
     const imageDir = resolveActiveImageDir();
 
+     // Build emotionMap: manifest-based sets take priority, then config, then defaults
+     let manifestEmotionMap: Record<string, EmotionImageConfig> = {};
+     const manifest = loadManifestSync(imageDir);
+     if (manifest) {
+       const active = getActiveSet(manifest);
+       if (active) {
+         manifestEmotionMap = buildEmotionMapFromSet(active.id, active.set) as unknown as Record<string, EmotionImageConfig>;
+         api.logger.info(`emotion-image: loaded asset set "${active.id}" (${active.set.name}) with ${Object.keys(active.set.emotions).length} emotions`);
+       }
+     }
+
      const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
        Object.entries({
        ...DEFAULT_EMOTION_MAP,
+       ...manifestEmotionMap,
        ...pluginConfig.emotionMap,
        }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
      );
