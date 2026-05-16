@@ -159,7 +159,7 @@ Send a message in Discord. You should see:
 | `enabled` | `boolean` | `true` | Enable/disable the plugin |
 | `discordToken` | `string` | — | Discord bot token. Supports literal value or `${ENV_VAR}` placeholder. Required. |
 | `classifierModel` | `string` | — | OpenClaw `provider/model` ID for LLM classification. **Required for LLM mode.** If not set, uses rule-based keyword matching only. |
-| `imageDir` | `string` | `../assets` | Directory containing emotion image files |
+| `imageDir` | `string` | profile workspace `.hent-ai/emotion-image-assets`, then `../assets` fallback | Directory containing emotion image files |
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
 | `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename or labeled image pool. **Filenames only** — paths that escape `imageDir` are rejected. |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
@@ -242,6 +242,10 @@ If neither is set, the plugin logs a warning and does nothing.
 The onboarding flow lets users generate emotion images interactively through Discord without touching the CLI or filesystem. Internally, onboarding is skill-based: each capability (character intake, uploaded-image intent, base confirmation, emotion confirmation, and generation busy handling) is registered as an onboarding skill and dispatched by the current session state instead of a single fixed procedure. This keeps the default flow unchanged while making new onboarding capabilities pluggable in code.
 
 While onboarding is active in a channel, Hent-ai pauses its normal thinking/cheer image hook for that user's onboarding messages and tells the user that onboarding mode is active. Every onboarding prompt also reminds the user that they can exit with `취소`, `cancel`, `종료`, or `그만`. Other users and other channels continue using OpenClaw normally.
+
+When `imageDir` is omitted, Hent-ai stores assets under the active OpenClaw profile/workspace at `.hent-ai/emotion-image-assets`. This keeps gateway profiles from sharing or overwriting each other's emotion assets. Set `imageDir` explicitly only when you intentionally want a shared asset directory.
+
+Each onboarding session stages generated files in an isolated workspace under `imageDir/.onboarding-workspaces/<channel>-<session>`. Files are copied into the shared emotion asset directory only when onboarding completes, and cancelled sessions clean up their temporary workspace.
 
 ### Trigger
 

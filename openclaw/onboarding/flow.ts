@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import {
@@ -43,6 +43,7 @@ export interface OnboardingSkill {
 }
 
 export const ONBOARDING_EXIT_HINT = '언제든 "취소", "cancel", "종료", "그만"을 입력하면 온보딩을 종료할 수 있어요.';
+const ONBOARDING_FILENAMES = ["base.png", ...EMOTIONS.map((emotion) => `${emotion}.png`)];
 
 function bufferToDataUrl(buffer: Buffer): string {
   return `data:image/png;base64,${buffer.toString("base64")}`;
@@ -140,8 +141,7 @@ async function handleAwaitingCharacter(
   const intent = parseIntent(content);
 
   if (intent.type === "cancel") {
-    sessions.delete(session.channelId, session.userId);
-    await sendTextMessage(token, channelId, "온보딩을 취소했습니다.", logger);
+    await cancelOnboarding(session, sessions, channelId, config);
     return;
   }
 
@@ -189,8 +189,7 @@ async function handleAwaitingImageIntent(
   const intent = parseImageIntent(content);
 
   if (intent.type === "cancel") {
-    sessions.delete(session.channelId, session.userId);
-    await sendTextMessage(token, channelId, "온보딩을 취소했습니다.", logger);
+    await cancelOnboarding(session, sessions, channelId, config);
     return;
   }
 
@@ -245,12 +244,10 @@ async function handleAwaitingBaseConfirm(
   channelId: string,
   config: FlowConfig,
 ): Promise<void> {
-  const { token, logger } = config;
   const intent = parseIntent(content);
 
   if (intent.type === "cancel") {
-    sessions.delete(session.channelId, session.userId);
-    await sendTextMessage(token, channelId, "온보딩을 취소했습니다.", logger);
+    await cancelOnboarding(session, sessions, channelId, config);
     return;
   }
 
@@ -280,7 +277,6 @@ async function handleAwaitingEmotionConfirm(
   channelId: string,
   config: FlowConfig,
 ): Promise<void> {
-  const { token, logger, imageDir } = config;
   const intent = parseIntent(content);
   const emotion = EMOTIONS[session.currentEmotionIndex];
 
@@ -289,15 +285,14 @@ async function handleAwaitingEmotionConfirm(
   }
 
   if (intent.type === "cancel") {
-    sessions.delete(session.channelId, session.userId);
-    await sendTextMessage(token, channelId, "온보딩을 취소했습니다.", logger);
+    await cancelOnboarding(session, sessions, channelId, config);
     return;
   }
 
   if (intent.type === "positive" || intent.type === "skip") {
     if (session.currentEmotionBuffer) {
-      await mkdir(imageDir, { recursive: true });
-      await writeFile(resolve(imageDir, `${emotion}.png`), session.currentEmotionBuffer);
+      await mkdir(session.workspaceDir, { recursive: true });
+      await writeFile(resolve(session.workspaceDir, `${emotion}.png`), session.currentEmotionBuffer);
     }
     session.currentEmotionBuffer = null;
     session.currentEmotionIndex++;
@@ -477,10 +472,16 @@ async function completeOnboarding(
 ): Promise<void> {
   const { token, logger, imageDir } = config;
 
+  await mkdir(session.workspaceDir, { recursive: true });
   if (session.baseImageBuffer) {
-    await mkdir(imageDir, { recursive: true });
-    await writeFile(resolve(imageDir, "base.png"), session.baseImageBuffer);
+    await writeFile(resolve(session.workspaceDir, "base.png"), session.baseImageBuffer);
   }
+
+  await mkdir(imageDir, { recursive: true });
+  for (const filename of ONBOARDING_FILENAMES) {
+    await copyFile(resolve(session.workspaceDir, filename), resolve(imageDir, filename));
+  }
+  await removeWorkspace(session, logger);
 
   const emotionList = EMOTIONS.map((e) => `${e}.png`).join(", ");
   await sendTextMessage(
@@ -491,6 +492,25 @@ async function completeOnboarding(
   );
 
   sessions.delete(session.channelId, session.userId);
+}
+
+async function cancelOnboarding(
+  session: OnboardingSession,
+  sessions: SessionManager,
+  channelId: string,
+  config: FlowConfig,
+): Promise<void> {
+  sessions.delete(session.channelId, session.userId);
+  await removeWorkspace(session, config.logger);
+  await sendTextMessage(config.token, channelId, "온보딩을 취소했습니다. 임시 작업공간도 정리했어요.", config.logger);
+}
+
+async function removeWorkspace(session: OnboardingSession, logger: Logger): Promise<void> {
+  try {
+    await rm(session.workspaceDir, { recursive: true, force: true });
+  } catch (err) {
+    logger.warn(`onboarding: failed to remove workspace ${session.workspaceDir}: ${err}`);
+  }
 }
 
 async function checkForAttachment(

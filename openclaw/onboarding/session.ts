@@ -22,6 +22,7 @@ export enum OnboardingState {
 export interface OnboardingSession {
   channelId: string;
   userId: string;
+  workspaceDir: string;
   state: OnboardingState;
   character: string;
   baseFeedback: string[];
@@ -88,11 +89,12 @@ export class SessionManager {
     return null;
   }
 
-  create(channelId: string, userId: string): OnboardingSession {
+  create(channelId: string, userId: string, workspaceDir: string): OnboardingSession {
     const now = Date.now();
     const session: OnboardingSession = {
       channelId,
       userId,
+      workspaceDir,
       state: OnboardingState.AWAITING_CHARACTER,
       character: "",
       baseFeedback: [],

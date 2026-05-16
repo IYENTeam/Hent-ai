@@ -18,6 +18,8 @@ import {
   inferAutomaticImageLabel,
   MEDIA_LINE_RE,
   normalizeEmotionImageConfig,
+  resolveImageDir,
+  resolveProfileWorkspaceDir,
   selectEmotionImageVariant,
 } from "./index.js";
 
@@ -725,7 +727,65 @@ describe("assertPathInside", () => {
      const candidate = "happy.png";
      const result = assertPathInside(root, candidate);
      expect(result).toBe("/home/user/assets/happy.png");
-   });
+});
+
+describe("resolveProfileWorkspaceDir", () => {
+  it("reads workspace from common OpenClaw profile config shapes", () => {
+    expect(resolveProfileWorkspaceDir({ workspace: "/profiles/alpha" })).toBe("/profiles/alpha");
+    expect(resolveProfileWorkspaceDir({ agent: { workspaceDir: "/profiles/beta" } })).toBe("/profiles/beta");
+    expect(resolveProfileWorkspaceDir({ profile: { agentDir: "/profiles/gamma" } })).toBe("/profiles/gamma");
+  });
+
+  it("returns undefined when no workspace field exists", () => {
+    expect(resolveProfileWorkspaceDir({ models: { providers: {} } })).toBeUndefined();
+  });
+});
+
+describe("resolveImageDir", () => {
+  it("uses explicit imageDir before profile workspace", () => {
+    const dir = resolveImageDir("/custom/assets", "/extension/dist", {
+      config: { current: () => ({ workspace: "/profiles/alpha" }) },
+    });
+
+    expect(dir).toBe("/custom/assets");
+  });
+
+  it("isolates default assets under the active profile workspace", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ workspace: "/profiles/alpha" }) },
+    });
+
+    expect(dir).toBe("/profiles/alpha/.hent-ai/emotion-image-assets");
+  });
+
+  it("uses event metadata workspace id when no workspace directory is available", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    }, {
+      metadata: { workspaceId: "team/alpha" },
+    });
+
+    expect(dir).toBe("/extension/assets/profiles/team_alpha");
+  });
+
+  it("uses sessionKey workspace prefix when metadata is absent", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    }, {
+      sessionKey: "workspace-a:run-1",
+    });
+
+    expect(dir).toBe("/extension/assets/profiles/workspace-a");
+  });
+
+  it("falls back to bundled assets without a profile workspace", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    });
+
+    expect(dir).toBe("/extension/assets");
+  });
+});
 
    it("returns null when candidate escapes root via parent traversal", () => {
      const root = "/home/user/assets";
@@ -937,10 +997,10 @@ describe("miracle mode", () => {
       expect(result).toBe(generatedBuffer);
       expect(mockRateLimiter.canGenerate).toHaveBeenCalled();
       expect(mockRateLimiter.recordGeneration).toHaveBeenCalled();
-      expect(generateImage).toHaveBeenCalledWith(
-        expect.stringContaining("excited"),
-        { size: "1024x1024" },
-      );
+      expect(generateImage).toHaveBeenCalledWith({
+        prompt: expect.stringContaining("excited"),
+        size: "1024x1024",
+      });
     });
 
     it("returns null when rate limit is exceeded", async () => {

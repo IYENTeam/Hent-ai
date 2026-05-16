@@ -80,11 +80,12 @@ export function detectApiType(apiFromConfig?: string): ApiType {
  * the referenced env var is missing.
  */
 export function expandEnvPlaceholder(value: string | undefined): string | undefined {
-   if (!value) return undefined;
-   const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
-   if (!m) return value;
-   return process.env[m[1]];
- }
+    if (!value) return undefined;
+    const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
+    if (!m) return value;
+    return process.env[m[1]];
+  }
+
 
 type RuntimeConfigProvider = {
   config?: {
@@ -147,53 +148,45 @@ function resolveProfileWorkspaceId(
   const metadataId =
     stringAtPath(metadata, ["workspaceId"]) ??
     stringAtPath(metadata, ["workspace"]) ??
-    stringAtPath(metadata, ["workspace", "id"]) ??
-    stringAtPath(metadata, ["agent", "id"]) ??
-    stringAtPath(metadata, ["agentId"]);
+    stringAtPath(metadata, ["profileId"]) ??
+    stringAtPath(metadata, ["profile"]);
   if (metadataId) return metadataId;
 
-  const sessionId = workspaceIdFromSessionKey(context?.sessionKey);
-  if (sessionId) return sessionId;
+  const sessionWorkspace = workspaceIdFromSessionKey(context?.sessionKey);
+  if (sessionWorkspace) return sessionWorkspace;
 
   const configId =
-    stringAtPath(config, ["workspace", "id"]) ??
+    stringAtPath(config, ["workspaceId"]) ??
+    stringAtPath(config, ["profileId"]) ??
     stringAtPath(config, ["agent", "id"]) ??
-    stringAtPath(config, ["agentId"]);
-  return configId;
+    stringAtPath(config, ["profile", "id"]);
+  if (configId) return configId;
+
+  return process.env.OPENCLAW_WORKSPACE ?? process.env.OPENCLAW_PROFILE;
 }
 
-function sanitizeWorkspaceSegment(value: string): string {
-  return value.replace(/[^a-z0-9_-]/gi, "_").slice(0, 64);
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "unknown";
 }
 
 export function resolveImageDir(
-  configuredPath: string | undefined,
+  configuredImageDir: string | undefined,
   extensionDir: string,
-  runtime: RuntimeConfigProvider,
+  runtime?: RuntimeConfigProvider,
   context?: ImageDirContext,
 ): string {
-  const runtimeConfig = runtime.config?.current?.();
-  const workspaceDir = resolveProfileWorkspaceDir(runtimeConfig);
-  const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context);
+  if (configuredImageDir) return resolve(configuredImageDir);
 
-  if (configuredPath) {
-    let resolved = resolve(configuredPath);
-    if (workspaceDir && !isAbsolute(configuredPath)) {
-      resolved = resolve(workspaceDir, configuredPath);
-    } else if (workspaceId) {
-      resolved = resolve(resolved, sanitizeWorkspaceSegment(workspaceId));
-    }
-    return resolved;
-  }
+  const config = runtime?.config?.current?.();
+  const workspaceDir = resolveProfileWorkspaceDir(config);
+  if (workspaceDir) return resolve(workspaceDir, ".hent-ai", "emotion-image-assets");
 
-  const fallback = resolve(extensionDir, "..", "assets");
-  if (workspaceDir) {
-    return resolve(workspaceDir, "emotion-image-assets");
-  }
+  const workspaceId = resolveProfileWorkspaceId(config, context);
   if (workspaceId) {
-    return resolve(fallback, sanitizeWorkspaceSegment(workspaceId));
+    return resolve(extensionDir, "..", "assets", "profiles", sanitizePathSegment(workspaceId));
   }
-  return fallback;
+
+  return resolve(extensionDir, "..", "assets");
 }
 
 /**
@@ -613,6 +606,7 @@ interface EmotionImageVariant {
   filename: string;
   label?: string;
   weight: number;
+  buffer?: Buffer;
 }
 
 const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = {
@@ -747,7 +741,7 @@ export async function getCachedOrGenerateImage(
   variants: EmotionImageVariant[],
   miracleMode: boolean,
   rateLimiter: RateLimiter,
-  generateOptions: GenerateOptions,
+  generateOptions: Omit<GenerateOptions, "prompt">,
   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
   random = Math.random,
   contextText = "",
@@ -775,7 +769,10 @@ export async function getCachedOrGenerateImage(
     logger.info(`emotion-image: miracle mode generating image for emotion="${emotion}"`);
     const prompt = `A cute anime-style character expressing ${emotion} emotion. ` +
                    `Simple, clean illustration with soft colors and expressive face.`;
-    const buffer = await generateImage(prompt, generateOptions);
+    const buffer = await generateImage({
+      ...generateOptions,
+      prompt,
+    });
     rateLimiter.recordGeneration();
     logger.info(
       `emotion-image: miracle mode generated image (${buffer.length} bytes). ` +
@@ -1361,7 +1358,7 @@ export default definePluginEntry({
   name: "Emotion Image Attachment",
   description: "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
 
-  register(api) {
+  register(api: any) {
     const pluginConfig = (api.pluginConfig ?? {}) as {
       enabled?: boolean;
       imageDir?: string;
@@ -1373,6 +1370,8 @@ export default definePluginEntry({
       discordToken?: string;
       onboarding?: OnboardingConfig;
       cheer?: CheerConfig;
+      miracleMode?: boolean;
+      miracleRateLimit?: number;
     };
 
     if (pluginConfig.enabled === false) return;
@@ -1425,11 +1424,11 @@ export default definePluginEntry({
     // Miracle mode configuration
     const miracleMode = pluginConfig.miracleMode ?? false;
     const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
-    
+
     // Workspace-scoped state for multi-agent isolation
     const rateLimiters = new Map<string, RateLimiter>();
     const channelQueuesPerWorkspace = new Map<string, Map<string, Promise<void>>>();
-    
+
     function getRateLimiterForWorkspace(workspaceKey: string): RateLimiter {
       let limiter = rateLimiters.get(workspaceKey);
       if (!limiter) {
@@ -1438,7 +1437,7 @@ export default definePluginEntry({
       }
       return limiter;
     }
-    
+
     function getChannelQueuesForWorkspace(workspaceKey: string): Map<string, Promise<void>> {
       let queues = channelQueuesPerWorkspace.get(workspaceKey);
       if (!queues) {
@@ -1469,7 +1468,7 @@ export default definePluginEntry({
     const onboardingIntentDetector: IntentDetector | undefined = classifierModel
       ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
       : undefined;
-    const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
+    const onboardingRuntime = registerOnboarding(api, botToken, resolveActiveImageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1477,11 +1476,15 @@ export default definePluginEntry({
 
       // Phase 1: On user message received, immediately send focused (thinking) image
       const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
-      const thinkingImagePath = thinkingVariant ? assertPathInside(imageDir, thinkingVariant.filename) : null;
 
-      if (cheerEnabled || (thinkingImagePath && existsSync(thinkingImagePath))) {
-       api.on("message_received", async (event) => {
-         const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
+      if (cheerEnabled || thinkingVariant) {
+        api.on("message_received", async (event: unknown) => {
+         const { content, metadata, senderId, sessionKey } = event as {
+           content?: string;
+           metadata?: Record<string, unknown>;
+           senderId?: string;
+           sessionKey?: string;
+         };
          if (!content || content.trim() === "NO_REPLY") return;
 
         // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
@@ -1490,8 +1493,9 @@ export default definePluginEntry({
           const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
           if (!isChannelEnabled(discordChannelId)) return;
-          const userId = (metadata?.from as string | undefined) ?? "unknown";
-          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
+          const userId = senderId ?? (metadata?.from as string | undefined) ?? "unknown";
+          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content, sessionKey)) return;
+          const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
 
           if (
            cheerEnabled &&
@@ -1500,16 +1504,17 @@ export default definePluginEntry({
          ) {
            await handleCheerRequest({
               token: botToken,
-             channelId: discordChannelId,
-             imageDir,
-             config: cheerConfig,
-             onboardingConfig: pluginConfig.onboarding,
-             logger: api.logger,
+              channelId: discordChannelId,
+              imageDir: activeImageDir,
+              config: cheerConfig,
+              onboardingConfig: pluginConfig.onboarding,
+              logger: api.logger,
            });
            return;
          }
 
-         if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
+          const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
+          if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
 
          api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
          try {
@@ -1521,7 +1526,7 @@ export default definePluginEntry({
      }
 
      // Phase 2: On bot message sent, LLM classifies emotion and appends image
-     api.on("message_sent", async (event) => {
+     api.on("message_sent", async (event: unknown) => {
       const {
         to,
         content,
@@ -1588,7 +1593,7 @@ export default definePluginEntry({
         }
 
           const variants = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
-          
+
           // Try to get cached or generate via miracle mode
           const imageBuffer = await getCachedOrGenerateImage(
             finalEmotion,
@@ -1600,21 +1605,25 @@ export default definePluginEntry({
             Math.random,
             cleaned,
           );
+          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
+          if (finalVariant?.filename) {
+            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
+            if (!finalImagePath) {
+              api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
+              return;
+            }
+            if (!existsSync(finalImagePath)) {
+              api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
+              return;
+            }
+            api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
+            await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
+            return;
+          }
 
           if (!imageBuffer) {
             api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
             return;
-          }
-
-          // Check if we got a variant with filename (cached) or a generated buffer
-          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
-          if (finalVariant?.filename) {
-            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
-            if (finalImagePath && existsSync(finalImagePath)) {
-              api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
-              await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
-              return;
-            }
           }
 
           // Use the generated buffer
@@ -1633,4 +1642,3 @@ export default definePluginEntry({
     }, { name: "emotion-image-sent" });
   },
 });
-

@@ -71,6 +71,10 @@ interface OnboardingSession {
 - Key: `channelId:userId`
 - TTL: 30분 무활동 시 자동 만료
 - GENERATING 상태에서 유저 입력 → "생성중입니다. 잠시 기다려주세요 ⏳"
+- Workspace: `imageDir/.onboarding-workspaces/<channel>-<sessionKey|userId>`에 임시 저장한다.
+- `imageDir`는 게이트웨이 프로필/워크스페이스별 asset root다. 명시 설정이 없으면 OpenClaw profile workspace 아래 `.hent-ai/emotion-image-assets`를 사용한다.
+- 완료 전까지 프로필별 `imageDir`의 `base.png` / 감정 파일을 덮어쓰지 않는다.
+- 완료 시 workspace 파일을 해당 프로필별 `imageDir`로 복사하고, 취소 시 workspace를 삭제한다.
 
 ---
 

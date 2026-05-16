@@ -16,7 +16,7 @@
       },
       "imageDir": {
         "type": "string",
-        "description": "Directory containing emotion image files. Defaults to assets/ inside this extension."
+        "description": "Directory containing emotion image files. If omitted, defaults to a profile-scoped directory under the active OpenClaw workspace, then falls back to assets/ inside this extension."
       },
       "emotionMap": {
         "type": "object",
