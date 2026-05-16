@@ -29,6 +29,8 @@ export type IntentDetector = (text: string) => Promise<boolean>;
 
 export interface OnboardingRuntime {
   isOnboardingMessage: (channelId: string, userId: string, content: string) => boolean;
+  /** Returns true if the given channel has an active onboarding session. */
+  hasActiveSession: (channelId: string) => boolean;
 }
 
 export interface PluginApi {
@@ -79,6 +81,7 @@ export function registerOnboarding(
       if (isOnboardingTrigger(trimmed)) return true;
       return sessions.get(channelId, userId) !== null;
     },
+    hasActiveSession: (channelId) => sessions.getByChannel(channelId) !== null,
   };
 
   api.on(

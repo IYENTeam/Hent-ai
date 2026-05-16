@@ -1552,6 +1552,10 @@ export default definePluginEntry({
       // Per-channel toggle check
       if (!isChannelEnabled(channelId)) return;
 
+      // Skip emotion image attachment for channels with active onboarding sessions
+      // to prevent duplicate images (onboarding sends images directly via Discord API)
+      if (onboardingRuntime?.hasActiveSession(channelId)) return;
+
       // Resolve workspace context for isolation
       const context: ImageDirContext = { metadata, sessionKey };
       const runtimeConfig = api.runtime.config?.current?.();

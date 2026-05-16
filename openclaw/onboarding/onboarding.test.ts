@@ -203,6 +203,7 @@ describe("onboarding runtime", () => {
 
     expect(runtime?.isOnboardingMessage("123", "user1", "onboarding")).toBe(true);
     expect(runtime?.isOnboardingMessage("123", "user1", "hello")).toBe(false);
+    expect(runtime?.hasActiveSession("123")).toBe(false);
 
     await handlers[0]?.({
       content: "onboarding",
@@ -211,6 +212,8 @@ describe("onboarding runtime", () => {
 
     expect(runtime?.isOnboardingMessage("123", "user1", "cute cat")).toBe(true);
     expect(runtime?.isOnboardingMessage("123", "user2", "cute cat")).toBe(false);
+    expect(runtime?.hasActiveSession("123")).toBe(true);
+    expect(runtime?.hasActiveSession("456")).toBe(false);
   });
 
   it("returns null when onboarding is disabled", () => {
