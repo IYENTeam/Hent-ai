@@ -7,6 +7,7 @@ import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { registerOnboarding, type OnboardingConfig, type IntentDetector } from "./onboarding/index.js";
 import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
+import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -1391,9 +1392,21 @@ export default definePluginEntry({
       resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
     const imageDir = resolveActiveImageDir();
 
+     // Build emotionMap: manifest-based sets take priority, then config, then defaults
+     let manifestEmotionMap: Record<string, EmotionImageConfig> = {};
+     const manifest = loadManifestSync(imageDir);
+     if (manifest) {
+       const active = getActiveSet(manifest);
+       if (active) {
+         manifestEmotionMap = buildEmotionMapFromSet(active.id, active.set) as unknown as Record<string, EmotionImageConfig>;
+         api.logger.info(`emotion-image: loaded asset set "${active.id}" (${active.set.name}) with ${Object.keys(active.set.emotions).length} emotions`);
+       }
+     }
+
      const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
        Object.entries({
        ...DEFAULT_EMOTION_MAP,
+       ...manifestEmotionMap,
        ...pluginConfig.emotionMap,
        }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
      );
