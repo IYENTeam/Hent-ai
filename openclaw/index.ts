@@ -5,8 +5,8 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { registerOnboarding, type OnboardingConfig, type IntentDetector } from "./onboarding/index.js";
 import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
+import { registerOnboarding, type IntentDetector, type OnboardingConfig } from "./onboarding/index.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -85,6 +85,10 @@ export function expandEnvPlaceholder(value: string | undefined): string | undefi
     if (!m) return value;
     return process.env[m[1]];
   }
+
+export function normalizeDiscordChannelId(value: string): string {
+  return value.startsWith("channel:") ? value.slice(8) : value;
+}
 
 
 type RuntimeConfigProvider = {
@@ -1378,7 +1382,7 @@ export default definePluginEntry({
 
     // Per-channel toggle
     const channelMode = pluginConfig.channels?.mode ?? "blocklist";
-    const channelList = new Set(pluginConfig.channels?.list ?? []);
+    const channelList = new Set((pluginConfig.channels?.list ?? []).map(normalizeDiscordChannelId));
     function isChannelEnabled(channelId: string): boolean {
       if (channelList.size === 0) return true; // no list = all enabled
       if (channelMode === "allowlist") return channelList.has(channelId);
@@ -1468,7 +1472,14 @@ export default definePluginEntry({
     const onboardingIntentDetector: IntentDetector | undefined = classifierModel
       ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
       : undefined;
-    const onboardingRuntime = registerOnboarding(api, botToken, resolveActiveImageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
+    const onboardingRuntime = registerOnboarding(
+      api,
+      botToken,
+      resolveActiveImageDir,
+      pluginConfig.onboarding ?? {},
+      onboardingIntentDetector,
+      isChannelEnabled,
+    );
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1490,7 +1501,7 @@ export default definePluginEntry({
         // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
         const rawTo = metadata?.to as string | undefined;
         if (!rawTo) return;
-          const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
+          const discordChannelId = normalizeDiscordChannelId(rawTo);
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
           if (!isChannelEnabled(discordChannelId)) return;
           const userId = senderId ?? (metadata?.from as string | undefined) ?? "unknown";
@@ -1552,7 +1563,7 @@ export default definePluginEntry({
       const cleaned = content.replace(MEDIA_LINE_RE, "").trimEnd();
 
       // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
-      const channelId = to.startsWith("channel:") ? to.slice(8) : to;
+      const channelId = normalizeDiscordChannelId(to);
 
       // Per-channel toggle check
       if (!isChannelEnabled(channelId)) return;

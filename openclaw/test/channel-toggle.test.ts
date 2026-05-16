@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { normalizeDiscordChannelId } from "../index.js";
+
 /**
  * Tests for the per-channel toggle logic used inside the plugin register().
  * This mirrors the isChannelEnabled closure in index.ts.
@@ -8,7 +10,7 @@ function makeIsChannelEnabled(
   mode: "allowlist" | "blocklist",
   list: string[],
 ): (channelId: string) => boolean {
-  const channelList = new Set(list);
+  const channelList = new Set(list.map(normalizeDiscordChannelId));
   return (channelId: string) => {
     if (channelList.size === 0) return true;
     if (mode === "allowlist") return channelList.has(channelId);
@@ -45,6 +47,12 @@ describe("per-channel toggle", () => {
   it("defaults to blocklist when mode not specified", () => {
     // The plugin defaults mode to "blocklist" when not specified
     const check = makeIsChannelEnabled("blocklist", ["999"]);
+    expect(check("999")).toBe(false);
+    expect(check("000")).toBe(true);
+  });
+
+  it("normalizes channel: prefixes in configured channel lists", () => {
+    const check = makeIsChannelEnabled("blocklist", ["channel:999"]);
     expect(check("999")).toBe(false);
     expect(check("000")).toBe(true);
   });
