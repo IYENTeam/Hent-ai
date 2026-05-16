@@ -1,4 +1,4 @@
-// emotion-image plugin v3.1.0 - broad trigger support
+// emotion-image plugin v3.2.0 - asset sets + channel filter fix
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
