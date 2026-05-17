@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "team_name": "execute-the-approved-audit-onl",
+  "updated_at": "2026-05-17T23:30:51.170Z",
+  "runtime_commits_are_scaffolding": true,
+  "entries": [
+    {
+      "recorded_at": "2026-05-17T23:30:18.516Z",
+      "operation": "integration_merge",
+      "worker_name": "worker-1",
+      "task_id": "1",
+      "status": "applied",
+      "operational_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "source_commit": "3fbfb2eb3011837e149c85714664ed69ca4796eb",
+      "leader_head_before": "adf52ae52ba2e697cc627f5fb5794d3d15464ad7",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1",
+      "detail": "Leader created a runtime merge commit to integrate worker history."
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:18.663Z",
+      "operation": "cross_rebase",
+      "worker_name": "worker-1",
+      "task_id": "1",
+      "status": "applied",
+      "operational_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worker_head_before": "3fbfb2eb3011837e149c85714664ed69ca4796eb",
+      "worker_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1",
+      "detail": "Runtime rebase rewrote worker history onto the updated leader head."
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:18.722Z",
+      "operation": "cross_rebase",
+      "worker_name": "worker-2",
+      "status": "applied",
+      "operational_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worker_head_before": "adf52ae52ba2e697cc627f5fb5794d3d15464ad7",
+      "worker_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-2",
+      "detail": "Runtime rebase rewrote worker history onto the updated leader head."
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:18.774Z",
+      "operation": "cross_rebase",
+      "worker_name": "worker-3",
+      "status": "applied",
+      "operational_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worker_head_before": "adf52ae52ba2e697cc627f5fb5794d3d15464ad7",
+      "worker_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-3",
+      "detail": "Runtime rebase rewrote worker history onto the updated leader head."
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:51.167Z",
+      "operation": "shutdown_merge",
+      "worker_name": "worker-1",
+      "task_id": "1",
+      "status": "noop",
+      "operational_commit": null,
+      "source_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_before": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1",
+      "report_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1/.omx/diff.md",
+      "detail": "source already reachable from leader HEAD"
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:51.167Z",
+      "operation": "shutdown_merge",
+      "worker_name": "worker-2",
+      "status": "noop",
+      "operational_commit": null,
+      "source_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_before": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-2",
+      "report_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-2/.omx/diff.md",
+      "detail": "source already reachable from leader HEAD"
+    },
+    {
+      "recorded_at": "2026-05-17T23:30:51.167Z",
+      "operation": "shutdown_merge",
+      "worker_name": "worker-3",
+      "status": "noop",
+      "operational_commit": null,
+      "source_commit": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_before": "266a139bb1799e1a0a496c945a87e75927417973",
+      "leader_head_after": "266a139bb1799e1a0a496c945a87e75927417973",
+      "worktree_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-3",
+      "report_path": "/Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-3/.omx/diff.md",
+      "detail": "source already reachable from leader HEAD"
+    }
+  ]
+}
