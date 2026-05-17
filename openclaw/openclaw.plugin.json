@@ -7,7 +7,7 @@
   "description": "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "enabled": {
         "type": "boolean",
@@ -16,7 +16,7 @@
       },
       "imageDir": {
         "type": "string",
-        "description": "Directory containing emotion image files. Defaults to assets/ inside this extension."
+        "description": "Directory containing emotion image files. If omitted, defaults to a profile-scoped directory under the active OpenClaw workspace, then falls back to assets/ inside this extension."
       },
       "emotionMap": {
         "type": "object",
@@ -43,6 +43,25 @@
               }
             }
           ]
+        }
+      },
+      "channels": {
+        "type": "object",
+        "description": "Per-channel toggle. Use 'mode' to set default behavior and 'list' for exceptions.",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["allowlist", "blocklist"],
+            "description": "'allowlist' = only listed channels get images. 'blocklist' = all channels except listed ones get images.",
+            "default": "blocklist"
+          },
+          "list": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of Discord channel IDs affected by the mode.",
+            "default": []
+          }
         }
       },
       "defaultEmotion": {
@@ -95,6 +114,16 @@
              "default": "1024x1024"
            }
          }
+       },
+       "miracleMode": {
+         "type": "boolean",
+         "description": "Enable miracle mode: auto-generate emotion images when no file match exists.",
+         "default": false
+       },
+       "miracleRateLimit": {
+         "type": "number",
+         "description": "Max number of miracle mode generations per hour.",
+         "default": 10
        }
     }
   }

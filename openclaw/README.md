@@ -127,7 +127,7 @@ Send a message in Discord. You should see:
 | `enabled` | `boolean` | `true` | Enable/disable the plugin |
 | `discordToken` | `string` | — | Discord bot token. Supports literal value or `${ENV_VAR}` placeholder. Required. |
 | `classifierModel` | `string` | — | OpenClaw `provider/model` ID for LLM classification. **Required for LLM mode.** If not set, uses rule-based keyword matching only. |
-| `imageDir` | `string` | `../assets` | Directory containing emotion image files |
+| `imageDir` | `string` | profile workspace `.hent-ai/emotion-image-assets`, then `../assets` fallback | Directory containing emotion image files |
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
 | `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename or labeled image pool. **Filenames only** — paths that escape `imageDir` are rejected. |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
@@ -205,6 +205,10 @@ If neither is set, the plugin logs a warning and does nothing.
 Onboarding is handled conversationally by the OpenClaw agent — no coded state machine or intent detection required. The agent reads these instructions and guides the user through the process naturally.
 
 ### How It Works
+
+When `imageDir` is omitted, Hent-ai stores assets under the active OpenClaw profile/workspace at `.hent-ai/emotion-image-assets`. This keeps gateway profiles from sharing or overwriting each other's emotion assets. Set `imageDir` explicitly only when you intentionally want a shared asset directory.
+
+### Trigger
 
 When a user says `onboarding` or `setup` in Discord, the OpenClaw agent should:
 

@@ -1,0 +1,25 @@
+openclaw:
+  - changed-files:
+      - any-glob-to-any-file: "openclaw/**"
+
+generate:
+  - changed-files:
+      - any-glob-to-any-file: "generate/**"
+
+hermes:
+  - changed-files:
+      - any-glob-to-any-file: "hermes/**"
+
+assets:
+  - changed-files:
+      - any-glob-to-any-file: "assets/**"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.md"
+          - "**/*.md"

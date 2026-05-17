@@ -5,3 +5,7 @@ dist-runtime/
 
 __pycache__/
 *.py[cod]
+target/
+dist/
+build/
+openclaw/index.js

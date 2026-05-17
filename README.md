@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai automatically classifies the emotion of every bot response using LLM and attaches a matching emotion image to Discord messages.
+Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. It supports **OpenClaw**, **Hermes Agent**, and **Cursor** platforms.
 
 ### Supported Emotions
 
@@ -22,7 +22,11 @@ Hent-ai automatically classifies the emotion of every bot response using LLM and
 
 ## Getting Started
 
-See [`openclaw/README.md`](./openclaw/README.md) for installation and configuration.
+Choose your platform:
+
+- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md)
+- **Hermes Agent** → see [`hermes/README.md`](./hermes/README.md)
+- **Cursor** → see [`cursor/README.md`](./cursor/README.md)
 
 ## Creating Emotion Images
 

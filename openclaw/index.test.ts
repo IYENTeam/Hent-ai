@@ -12,11 +12,14 @@ import {
   expandEnvPlaceholder,
   extractBooleanIntent,
   extractEmotion,
+  getCachedOrGenerateImage,
   handleCheerRequest,
   imageLabelMatchesContext,
   inferAutomaticImageLabel,
   MEDIA_LINE_RE,
   normalizeEmotionImageConfig,
+  resolveImageDir,
+  resolveProfileWorkspaceDir,
   selectEmotionImageVariant,
 } from "./index.js";
 
@@ -724,7 +727,65 @@ describe("assertPathInside", () => {
      const candidate = "happy.png";
      const result = assertPathInside(root, candidate);
      expect(result).toBe("/home/user/assets/happy.png");
-   });
+});
+
+describe("resolveProfileWorkspaceDir", () => {
+  it("reads workspace from common OpenClaw profile config shapes", () => {
+    expect(resolveProfileWorkspaceDir({ workspace: "/profiles/alpha" })).toBe("/profiles/alpha");
+    expect(resolveProfileWorkspaceDir({ agent: { workspaceDir: "/profiles/beta" } })).toBe("/profiles/beta");
+    expect(resolveProfileWorkspaceDir({ profile: { agentDir: "/profiles/gamma" } })).toBe("/profiles/gamma");
+  });
+
+  it("returns undefined when no workspace field exists", () => {
+    expect(resolveProfileWorkspaceDir({ models: { providers: {} } })).toBeUndefined();
+  });
+});
+
+describe("resolveImageDir", () => {
+  it("uses explicit imageDir before profile workspace", () => {
+    const dir = resolveImageDir("/custom/assets", "/extension/dist", {
+      config: { current: () => ({ workspace: "/profiles/alpha" }) },
+    });
+
+    expect(dir).toBe("/custom/assets");
+  });
+
+  it("isolates default assets under the active profile workspace", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ workspace: "/profiles/alpha" }) },
+    });
+
+    expect(dir).toBe("/profiles/alpha/.hent-ai/emotion-image-assets");
+  });
+
+  it("uses event metadata workspace id when no workspace directory is available", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    }, {
+      metadata: { workspaceId: "team/alpha" },
+    });
+
+    expect(dir).toBe("/extension/assets/profiles/team_alpha");
+  });
+
+  it("uses sessionKey workspace prefix when metadata is absent", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    }, {
+      sessionKey: "workspace-a:run-1",
+    });
+
+    expect(dir).toBe("/extension/assets/profiles/workspace-a");
+  });
+
+  it("falls back to bundled assets without a profile workspace", () => {
+    const dir = resolveImageDir(undefined, "/extension/dist", {
+      config: { current: () => ({ models: { providers: {} } }) },
+    });
+
+    expect(dir).toBe("/extension/assets");
+  });
+});
 
    it("returns null when candidate escapes root via parent traversal", () => {
      const root = "/home/user/assets";
@@ -870,3 +931,132 @@ describe("appendImageToMessage attachment schema", () => {
      expect(attachments[1].filename).toBe("emotion.png");
    });
  });
+
+describe("miracle mode", () => {
+  describe("getCachedOrGenerateImage", () => {
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+
+    const mockRateLimiter = {
+      canGenerate: vi.fn(() => true),
+      recordGeneration: vi.fn(),
+      getRemainingCount: vi.fn(() => 5),
+      limit: 10,
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it("returns cached variant buffer when available", async () => {
+      const cachedBuffer = Buffer.from("CACHED_IMAGE");
+      const variants = [{ filename: "happy.png", weight: 1, buffer: cachedBuffer }];
+
+      const result = await getCachedOrGenerateImage(
+        "happy",
+        variants,
+        false, // miracleMode disabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBe(cachedBuffer);
+      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
+    });
+
+    it("returns null when no cached variant and miracle mode is disabled", async () => {
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [], // no variants
+        false, // miracleMode disabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
+    });
+
+    it("generates image when miracle mode is enabled and no cached variant", async () => {
+      const generatedBuffer = Buffer.from("FAKE_CHEER_PNG");
+      vi.mocked(generateImage).mockResolvedValueOnce(generatedBuffer);
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [], // no variants
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        { size: "1024x1024" },
+        mockLogger,
+      );
+
+      expect(result).toBe(generatedBuffer);
+      expect(mockRateLimiter.canGenerate).toHaveBeenCalled();
+      expect(mockRateLimiter.recordGeneration).toHaveBeenCalled();
+      expect(generateImage).toHaveBeenCalledWith({
+        prompt: expect.stringContaining("excited"),
+        size: "1024x1024",
+      });
+    });
+
+    it("returns null when rate limit is exceeded", async () => {
+      mockRateLimiter.canGenerate.mockReturnValueOnce(false);
+      mockRateLimiter.getRemainingCount.mockReturnValueOnce(0);
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [],
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("rate limit reached"),
+      );
+      expect(generateImage).not.toHaveBeenCalled();
+    });
+
+    it("returns null when generation fails", async () => {
+      vi.mocked(generateImage).mockRejectedValueOnce(new Error("API error"));
+
+      const result = await getCachedOrGenerateImage(
+        "excited",
+        [],
+        true, // miracleMode enabled
+        mockRateLimiter as any,
+        {},
+        mockLogger,
+      );
+
+      expect(result).toBeNull();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("generation failed"),
+      );
+    });
+  });
+
+  describe("selectEmotionImageVariant with miracleMode parameter", () => {
+    it("returns null when no variants and miracleMode is true", () => {
+      const result = selectEmotionImageVariant([], Math.random, "", true);
+      expect(result).toBeNull();
+    });
+
+    it("returns null when no variants and miracleMode is false", () => {
+      const result = selectEmotionImageVariant([], Math.random, "", false);
+      expect(result).toBeNull();
+    });
+
+    it("returns variant normally when variants exist regardless of miracleMode", () => {
+      const variants = [{ filename: "happy.png", weight: 1 }];
+      const result = selectEmotionImageVariant(variants, () => 0.5, "", true);
+      expect(result).toEqual({ filename: "happy.png", weight: 1 });
+    });
+  });
+});

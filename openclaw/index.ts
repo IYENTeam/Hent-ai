@@ -1,3 +1,4 @@
+// emotion-image plugin v3.5.0 - asset sets + channel filter fix
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
@@ -5,8 +6,44 @@ import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendImageBufferMessage, sendTextMessage } from "./discord-utils.js";
+import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 
 const LLM_TIMEOUT_MS = 15_000;
+
+/**
+ * Rate limiter for miracle mode image generation.
+ * Tracks generation count per hour and resets every hour.
+ */
+class RateLimiter {
+  private count = 0;
+  private windowStart = Date.now();
+  private readonly windowMs = 60 * 60 * 1000; // 1 hour
+
+  constructor(private readonly limit: number) {}
+
+  canGenerate(): boolean {
+    this.resetIfNeeded();
+    return this.count < this.limit;
+  }
+
+  recordGeneration(): void {
+    this.resetIfNeeded();
+    this.count++;
+  }
+
+  private resetIfNeeded(): void {
+    const now = Date.now();
+    if (now - this.windowStart >= this.windowMs) {
+      this.count = 0;
+      this.windowStart = now;
+    }
+  }
+
+  getRemainingCount(): number {
+    this.resetIfNeeded();
+    return Math.max(0, this.limit - this.count);
+  }
+}
 
 /**
  * Ensure a candidate path resolves to a location inside (or equal to) the
@@ -43,11 +80,114 @@ export function detectApiType(apiFromConfig?: string): ApiType {
  * the referenced env var is missing.
  */
 export function expandEnvPlaceholder(value: string | undefined): string | undefined {
-   if (!value) return undefined;
-   const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
-   if (!m) return value;
-   return process.env[m[1]];
- }
+    if (!value) return undefined;
+    const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
+    if (!m) return value;
+    return process.env[m[1]];
+  }
+
+
+type RuntimeConfigProvider = {
+  config?: {
+    current?: () => unknown;
+  };
+};
+
+export interface ImageDirContext {
+  metadata?: Record<string, unknown>;
+  sessionKey?: string;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function stringAtPath(root: unknown, path: string[]): string | undefined {
+  let cursor: unknown = root;
+  for (const segment of path) {
+    const record = asRecord(cursor);
+    if (!record) return undefined;
+    cursor = record[segment];
+  }
+  return typeof cursor === "string" && cursor.trim() ? cursor : undefined;
+}
+
+export function resolveProfileWorkspaceDir(config: unknown): string | undefined {
+  const paths = [
+    ["workspace"],
+    ["workspaceDir"],
+    ["agentDir"],
+    ["agent", "workspace"],
+    ["agent", "workspaceDir"],
+    ["agent", "agentDir"],
+    ["profile", "workspace"],
+    ["profile", "workspaceDir"],
+    ["profile", "agentDir"],
+    ["gateway", "workspace"],
+    ["gateway", "workspaceDir"],
+  ];
+
+  for (const path of paths) {
+    const value = stringAtPath(config, path);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function workspaceIdFromSessionKey(sessionKey: string | undefined): string | undefined {
+  if (!sessionKey) return undefined;
+  const [first] = sessionKey.split(/[:/]/);
+  return first && first !== sessionKey ? first : undefined;
+}
+
+function resolveProfileWorkspaceId(
+  config: unknown,
+  context?: ImageDirContext,
+): string | undefined {
+  const metadata = context?.metadata;
+  const metadataId =
+    stringAtPath(metadata, ["workspaceId"]) ??
+    stringAtPath(metadata, ["workspace"]) ??
+    stringAtPath(metadata, ["profileId"]) ??
+    stringAtPath(metadata, ["profile"]);
+  if (metadataId) return metadataId;
+
+  const sessionWorkspace = workspaceIdFromSessionKey(context?.sessionKey);
+  if (sessionWorkspace) return sessionWorkspace;
+
+  const configId =
+    stringAtPath(config, ["workspaceId"]) ??
+    stringAtPath(config, ["profileId"]) ??
+    stringAtPath(config, ["agent", "id"]) ??
+    stringAtPath(config, ["profile", "id"]);
+  if (configId) return configId;
+
+  return process.env.OPENCLAW_WORKSPACE ?? process.env.OPENCLAW_PROFILE;
+}
+
+function sanitizePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "unknown";
+}
+
+export function resolveImageDir(
+  configuredImageDir: string | undefined,
+  extensionDir: string,
+  runtime?: RuntimeConfigProvider,
+  context?: ImageDirContext,
+): string {
+  if (configuredImageDir) return resolve(configuredImageDir);
+
+  const config = runtime?.config?.current?.();
+  const workspaceDir = resolveProfileWorkspaceDir(config);
+  if (workspaceDir) return resolve(workspaceDir, ".hent-ai", "emotion-image-assets");
+
+  const workspaceId = resolveProfileWorkspaceId(config, context);
+  if (workspaceId) {
+    return resolve(extensionDir, "..", "assets", "profiles", sanitizePathSegment(workspaceId));
+  }
+
+  return resolve(extensionDir, "..", "assets");
+}
 
 /**
  * Extract a valid emotion from LLM response text with robust parsing.
@@ -189,13 +329,14 @@ async function classifyEmotionViaAnthropic(
   return emotion;
 }
 
-async function classifyCheerIntentViaOpenAI(
+async function classifyBooleanIntentViaOpenAI(
   baseUrl: string,
   apiKey: string,
   modelId: string,
-  text: string,
+  prompt: string,
   signal: AbortSignal,
   logger: { warn: (...args: any[]) => void },
+  intentName = "cheer",
 ): Promise<boolean | null> {
   const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
   const response = await fetch(url, {
@@ -207,12 +348,7 @@ async function classifyCheerIntentViaOpenAI(
     },
     body: JSON.stringify({
       model: modelId,
-      messages: [
-        {
-          role: "user",
-          content: buildCheerIntentPrompt(text),
-        },
-      ],
+      messages: [{ role: "user", content: prompt }],
       max_tokens: 10,
       temperature: 0,
     }),
@@ -221,7 +357,7 @@ async function classifyCheerIntentViaOpenAI(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: OpenAI cheer intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
+    logger.warn(`emotion-image: OpenAI ${intentName} intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
     return null;
   }
 
@@ -231,18 +367,26 @@ async function classifyCheerIntentViaOpenAI(
   const content = data?.choices?.[0]?.message?.content;
   const intent = extractBooleanIntent(content);
   if (intent === null) {
-    logger.warn(`emotion-image: OpenAI cheer intent parse failed, raw="${content ?? "(no content)"}"`);
+    logger.warn(`emotion-image: OpenAI ${intentName} intent parse failed, raw="${content ?? "(no content)"}"`);
   }
   return intent;
 }
 
-async function classifyCheerIntentViaAnthropic(
+async function classifyCheerIntentViaOpenAI(
+  baseUrl: string, apiKey: string, modelId: string, text: string,
+  signal: AbortSignal, logger: { warn: (...args: any[]) => void },
+): Promise<boolean | null> {
+  return classifyBooleanIntentViaOpenAI(baseUrl, apiKey, modelId, buildCheerIntentPrompt(text), signal, logger, "cheer");
+}
+
+async function classifyBooleanIntentViaAnthropic(
   baseUrl: string,
   apiKey: string,
   modelId: string,
-  text: string,
+  prompt: string,
   signal: AbortSignal,
   logger: { warn: (...args: any[]) => void },
+  intentName = "cheer",
 ): Promise<boolean | null> {
   const url = `${baseUrl.replace(/\/+$/, "")}/messages`;
   const response = await fetch(url, {
@@ -257,19 +401,14 @@ async function classifyCheerIntentViaAnthropic(
       model: modelId,
       max_tokens: 10,
       temperature: 0,
-      messages: [
-        {
-          role: "user",
-          content: buildCheerIntentPrompt(text),
-        },
-      ],
+      messages: [{ role: "user", content: prompt }],
     }),
     signal,
   });
 
   if (!response.ok) {
     const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: Anthropic cheer intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
+    logger.warn(`emotion-image: Anthropic ${intentName} intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
     return null;
   }
 
@@ -279,10 +418,19 @@ async function classifyCheerIntentViaAnthropic(
   const content = data?.content?.[0]?.text;
   const intent = extractBooleanIntent(content);
   if (intent === null) {
-    logger.warn(`emotion-image: Anthropic cheer intent parse failed, raw="${content ?? "(no content)"}"`);
+    logger.warn(`emotion-image: Anthropic ${intentName} intent parse failed, raw="${content ?? "(no content)"}"`);
   }
   return intent;
 }
+
+async function classifyCheerIntentViaAnthropic(
+  baseUrl: string, apiKey: string, modelId: string, text: string,
+  signal: AbortSignal, logger: { warn: (...args: any[]) => void },
+): Promise<boolean | null> {
+  return classifyBooleanIntentViaAnthropic(baseUrl, apiKey, modelId, buildCheerIntentPrompt(text), signal, logger, "cheer");
+}
+
+
 
 export async function detectCheerIntentWithLLM(
   classifierModel: string,
@@ -323,7 +471,7 @@ export async function detectCheerIntentWithLLM(
   try {
     const auth = await runtime.modelAuth.resolveApiKeyForProvider({
       provider: providerName,
-      cfg: providerCfg,
+      cfg: cfg as unknown as Record<string, unknown> | undefined,
     });
     apiKey = auth.apiKey;
   } catch (err) {
@@ -379,6 +527,7 @@ interface EmotionImageVariant {
   filename: string;
   label?: string;
   weight: number;
+  buffer?: Buffer;
 }
 
 const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = {
@@ -504,17 +653,75 @@ export function imageLabelMatchesContext(label: string | undefined, contextText:
   return labelTokens.some((token) => contextTokens.has(token));
 }
 
+/**
+ * Get cached image or generate a new one via miracle mode.
+ * Returns the image buffer when successful, or null when rate-limited or generation fails.
+ */
+export async function getCachedOrGenerateImage(
+  emotion: string,
+  variants: EmotionImageVariant[],
+  miracleMode: boolean,
+  rateLimiter: RateLimiter,
+  generateOptions: Omit<GenerateOptions, "prompt">,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
+  random = Math.random,
+  contextText = "",
+): Promise<Buffer | null> {
+  // Try cached variants first
+  const variant = selectEmotionImageVariant(variants, random, contextText, false);
+  if (variant?.buffer) {
+    return variant.buffer;
+  }
+
+  // If no cached variant and miracle mode is enabled, try to generate
+  if (!miracleMode) {
+    return null;
+  }
+
+  if (!rateLimiter.canGenerate()) {
+    logger.warn(
+      `emotion-image: miracle mode rate limit reached. ` +
+      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
+    );
+    return null;
+  }
+
+  try {
+    logger.info(`emotion-image: miracle mode generating image for emotion="${emotion}"`);
+    const prompt = `A cute anime-style character expressing ${emotion} emotion. ` +
+                   `Simple, clean illustration with soft colors and expressive face.`;
+    const buffer = await generateImage({
+      ...generateOptions,
+      prompt,
+    });
+    rateLimiter.recordGeneration();
+    logger.info(
+      `emotion-image: miracle mode generated image (${buffer.length} bytes). ` +
+      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
+    );
+    return buffer;
+  } catch (err) {
+    logger.warn(`emotion-image: miracle mode generation failed: ${err}`);
+    return null;
+  }
+}
+
 export function selectEmotionImageVariant(
   variants: EmotionImageVariant[],
   random = Math.random,
   contextText = "",
+  miracleMode = false,
 ): EmotionImageVariant | null {
   const pool = contextText
     ? variants.filter((variant) => imageLabelMatchesContext(variant.label, contextText))
     : [];
   const candidates = pool.length > 0 ? pool : variants;
 
-  if (candidates.length === 0) return null;
+  // If no candidates and miracle mode is enabled, return null so caller can generate
+  if (candidates.length === 0) {
+    return miracleMode ? null : null; // Both return null, but keeping param for clarity
+  }
+
   const totalWeight = candidates.reduce((sum, variant) => sum + variant.weight, 0);
   let cursor = random() * totalWeight;
   for (const variant of candidates) {
@@ -895,6 +1102,82 @@ export async function appendImageToMessage(
   }
 }
 
+/**
+ * Append an image buffer (e.g., from miracle mode generation) to an existing Discord message.
+ */
+export async function appendImageBufferToMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  imageBuffer: Buffer,
+  filename: string,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+) {
+  try {
+    // GET current message to preserve existing content and attachments
+    const getRes = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      { headers: { Authorization: `Bot ${token}` } },
+    );
+    if (!getRes.ok) {
+      const errText = await getRes.text();
+      logger.warn(`emotion-image: GET message failed ${getRes.status}: ${errText.slice(0, 200)}`);
+      return;
+    }
+    const msg = (await getRes.json()) as {
+      content?: string;
+      attachments?: Array<{ id: string; filename: string }>;
+    };
+
+    const existingContent = msg.content ?? "";
+    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
+    const newFileIndex = 0;
+
+    const boundary = `----EmotionImage${Date.now()}`;
+    const parts: Buffer[] = [];
+
+    const jsonPayload = JSON.stringify({
+      content: existingContent,
+      attachments: [
+        ...existingAttachments,
+        { id: newFileIndex, filename },
+      ],
+    });
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
+    ));
+
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
+    ));
+    parts.push(imageBuffer);
+    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    const res = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bot ${token}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      }
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      logger.warn(`emotion-image: append image buffer failed ${res.status}: ${text.slice(0, 200)}`);
+    } else {
+      logger.info(`emotion-image: appended generated ${filename} to message ${messageId}`);
+    }
+  } catch (err) {
+    logger.error(`emotion-image: append buffer error: ${err}`);
+  }
+}
+
 export async function editMessageWithTwoImages(
    token: string,
    channelId: string,
@@ -995,28 +1278,53 @@ export default definePluginEntry({
   name: "Emotion Image Attachment",
   description: "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
 
-  register(api) {
+  register(api: any) {
     const pluginConfig = (api.pluginConfig ?? {}) as {
       enabled?: boolean;
       imageDir?: string;
       emotionMap?: Record<string, EmotionImageConfig>;
+      channels?: { mode?: "allowlist" | "blocklist"; list?: string[] };
       defaultEmotion?: string;
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
       discordToken?: string;
       cheer?: CheerConfig;
+      miracleMode?: boolean;
+      miracleRateLimit?: number;
     };
 
     if (pluginConfig.enabled === false) return;
 
+    // Per-channel toggle
+    const channelMode = pluginConfig.channels?.mode ?? "blocklist";
+    const channelList = new Set(pluginConfig.channels?.list ?? []);
+    api.logger.info(`emotion-image: channel filter mode=${channelMode} list=[${[...channelList].join(',')}] (${channelList.size} entries)`);
+    function isChannelEnabled(channelId: string): boolean {
+      if (channelList.size === 0) return true; // no list = all enabled
+      if (channelMode === "allowlist") return channelList.has(channelId);
+      return !channelList.has(channelId); // blocklist
+    }
+
     const extensionDir = dirname(fileURLToPath(import.meta.url));
-    const imageDir = pluginConfig.imageDir
-      ? resolve(pluginConfig.imageDir)
-      : resolve(extensionDir, "..", "assets");
+    const resolveActiveImageDir = (context?: ImageDirContext) =>
+      resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
+    const imageDir = resolveActiveImageDir();
+
+     // Build emotionMap: manifest-based sets take priority, then config, then defaults
+     let manifestEmotionMap: Record<string, EmotionImageConfig> = {};
+     const manifest = loadManifestSync(imageDir);
+     if (manifest) {
+       const active = getActiveSet(manifest);
+       if (active) {
+         manifestEmotionMap = buildEmotionMapFromSet(active.id, active.set) as unknown as Record<string, EmotionImageConfig>;
+         api.logger.info(`emotion-image: loaded asset set "${active.id}" (${active.set.name}) with ${Object.keys(active.set.emotions).length} emotions`);
+       }
+     }
 
      const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
        Object.entries({
        ...DEFAULT_EMOTION_MAP,
+       ...manifestEmotionMap,
        ...pluginConfig.emotionMap,
        }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
      );
@@ -1045,6 +1353,32 @@ export default definePluginEntry({
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
 
+    // Miracle mode configuration
+    const miracleMode = pluginConfig.miracleMode ?? false;
+    const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
+
+    // Workspace-scoped state for multi-agent isolation
+    const rateLimiters = new Map<string, RateLimiter>();
+    const channelQueuesPerWorkspace = new Map<string, Map<string, Promise<void>>>();
+
+    function getRateLimiterForWorkspace(workspaceKey: string): RateLimiter {
+      let limiter = rateLimiters.get(workspaceKey);
+      if (!limiter) {
+        limiter = new RateLimiter(miracleRateLimit);
+        rateLimiters.set(workspaceKey, limiter);
+      }
+      return limiter;
+    }
+
+    function getChannelQueuesForWorkspace(workspaceKey: string): Map<string, Promise<void>> {
+      let queues = channelQueuesPerWorkspace.get(workspaceKey);
+      if (!queues) {
+        queues = new Map<string, Promise<void>>();
+        channelQueuesPerWorkspace.set(workspaceKey, queues);
+      }
+      return queues;
+    }
+
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
     }
@@ -1071,11 +1405,15 @@ export default definePluginEntry({
 
       // Phase 1: On user message received, immediately send focused (thinking) image
       const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
-      const thinkingImagePath = thinkingVariant ? assertPathInside(imageDir, thinkingVariant.filename) : null;
 
-      if (cheerEnabled || (thinkingImagePath && existsSync(thinkingImagePath))) {
-       api.on("message_received", async (event) => {
-         const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
+      if (cheerEnabled || thinkingVariant) {
+        api.on("message_received", async (event: unknown) => {
+         const { content, metadata, senderId, sessionKey } = event as {
+           content?: string;
+           metadata?: Record<string, unknown>;
+           senderId?: string;
+           sessionKey?: string;
+         };
          if (!content || content.trim() === "NO_REPLY") return;
 
         // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
@@ -1083,7 +1421,8 @@ export default definePluginEntry({
         if (!rawTo) return;
           const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
-
+          if (!isChannelEnabled(discordChannelId)) return;
+          const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
 
           if (
            cheerEnabled &&
@@ -1092,15 +1431,16 @@ export default definePluginEntry({
          ) {
            await handleCheerRequest({
               token: botToken,
-             channelId: discordChannelId,
-             imageDir,
-             config: cheerConfig,
-             logger: api.logger,
+              channelId: discordChannelId,
+              imageDir: activeImageDir,
+              config: cheerConfig,
+              logger: api.logger,
            });
            return;
          }
 
-         if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
+          const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
+          if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
 
          api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
          try {
@@ -1111,21 +1451,22 @@ export default definePluginEntry({
        }, { name: "emotion-image-thinking" });
      }
 
-     const channelQueues = new Map<string, Promise<void>>();
-
      // Phase 2: On bot message sent, LLM classifies emotion and appends image
-     api.on("message_sent", async (event) => {
+     api.on("message_sent", async (event: unknown) => {
       const {
         to,
         content,
         success,
         messageId,
+        metadata,
+        sessionKey,
       } = event as {
         to?: string;
         content?: string;
         success?: boolean;
         messageId?: string;
         metadata?: Record<string, unknown>;
+        sessionKey?: string;
       };
 
       if (!success || !messageId || !content || !to) return;
@@ -1138,6 +1479,18 @@ export default definePluginEntry({
 
       // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
       const channelId = to.startsWith("channel:") ? to.slice(8) : to;
+
+      // Per-channel toggle check
+      if (!isChannelEnabled(channelId)) return;
+
+
+      // Resolve workspace context for isolation
+      const context: ImageDirContext = { metadata, sessionKey };
+      const runtimeConfig = api.runtime.config?.current?.();
+      const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context) ?? "default";
+      const activeImageDir = resolveActiveImageDir(context);
+      const rateLimiter = getRateLimiterForWorkspace(workspaceId);
+      const channelQueues = getChannelQueuesForWorkspace(workspaceId);
 
       // LLM classifies emotion and appends result image to the sent message
       const classifyAndAppend = async () => {
@@ -1162,27 +1515,43 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-          const finalVariant = selectEmotionImageVariant(
-            emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png"),
+          const variants = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
+
+          // Try to get cached or generate via miracle mode
+          const imageBuffer = await getCachedOrGenerateImage(
+            finalEmotion,
+            variants,
+            miracleMode,
+            rateLimiter,
+            {}, // generateOptions - will use defaults
+            api.logger,
             Math.random,
             cleaned,
           );
-         if (!finalVariant) {
-           api.logger.warn(`emotion-image: no image variants configured for "${finalEmotion}"; skipping`);
-           return;
-         }
-         const finalImagePath = assertPathInside(imageDir, finalVariant.filename);
-         if (!finalImagePath) {
-           api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
-           return;
-         }
-         if (!existsSync(finalImagePath)) {
-           api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
-           return;
-         }
+          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
+          if (finalVariant?.filename) {
+            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
+            if (!finalImagePath) {
+              api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
+              return;
+            }
+            if (!existsSync(finalImagePath)) {
+              api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
+              return;
+            }
+            api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
+            await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
+            return;
+          }
 
-         api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
-          await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
+          if (!imageBuffer) {
+            api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
+            return;
+          }
+
+          // Use the generated buffer
+          api.logger.info(`emotion-image: appending miracle-generated ${finalEmotion} image for msg=${messageId}`);
+          await appendImageBufferToMessage(botToken, channelId, messageId, imageBuffer, "emotion.png", api.logger);
        };
 
        const prev = channelQueues.get(channelId) ?? Promise.resolve();

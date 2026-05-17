@@ -11,7 +11,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@hent-ai/generate": ["../generate/src/index.ts"],
+      "openclaw/plugin-sdk/plugin-entry": ["test/stubs/plugin-entry.ts"]
+    }
   },
   "include": ["index.ts", "discord-utils.ts"],
   "exclude": ["dist", "node_modules", "**/*.test.ts"]

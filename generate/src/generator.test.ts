@@ -192,4 +192,25 @@ describe("generateAllEmotions", () => {
     const content = await readFile(resolve(testDir, "base.png"));
     expect(content.toString()).toBe("FAKE_PNG_DATA");
   });
+
+  it("generates only requested emotions and reports adjusted progress totals", async () => {
+    const progress: Array<{ step: string; index: number; total: number }> = [];
+
+    const results = await generateAllEmotions({
+      character: "test",
+      outputDir: testDir,
+      only: ["happy", "focused"],
+      onProgress(step, index, total) {
+        progress.push({ step, index, total });
+      },
+    });
+
+    expect(results.size).toBe(3);
+    expect(results.has("base")).toBe(true);
+    expect(results.has("happy")).toBe(true);
+    expect(results.has("focused")).toBe(true);
+    expect(results.has("neutral")).toBe(false);
+    expect(progress.map((entry) => entry.step)).toEqual(["base", "happy", "focused"]);
+    expect(progress.every((entry) => entry.total === 3)).toBe(true);
+  });
 });
