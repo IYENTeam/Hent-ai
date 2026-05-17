@@ -4,8 +4,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { registerOnboarding, type OnboardingConfig } from "./onboarding/index.js";
-import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
+import { sendImageBufferMessage, sendTextMessage } from "./discord-utils.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -778,11 +777,10 @@ export async function handleCheerRequest(
     channelId: string;
     imageDir: string;
     config: CheerConfig;
-    onboardingConfig?: OnboardingConfig;
     logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
   },
 ): Promise<void> {
-  const { token, channelId, imageDir, config, onboardingConfig, logger } = params;
+  const { token, channelId, imageDir, config, logger } = params;
   const baseImagePath = assertPathInside(imageDir, "base.png");
   await sendTextMessage(
     token,
@@ -794,8 +792,8 @@ export async function handleCheerRequest(
   try {
     const options: GenerateOptions = {
       prompt: buildCheerPrompt(config.character),
-      model: config.model ?? onboardingConfig?.model,
-      size: config.size ?? onboardingConfig?.size ?? "1024x1024",
+      model: config.model,
+      size: config.size ?? "1024x1024",
       referenceImages:
         baseImagePath && existsSync(baseImagePath)
           ? [pngBufferToDataUrl(await readFile(baseImagePath))]
@@ -1006,7 +1004,6 @@ export default definePluginEntry({
       emotionRules?: Record<string, string[]>;
       classifierModel?: string;
       discordToken?: string;
-      onboarding?: OnboardingConfig;
       cheer?: CheerConfig;
     };
 
@@ -1066,7 +1063,7 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {});
+
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1086,8 +1083,7 @@ export default definePluginEntry({
         if (!rawTo) return;
           const discordChannelId = rawTo.startsWith("channel:") ? rawTo.slice(8) : rawTo;
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
-          const userId = (metadata?.from as string | undefined) ?? "unknown";
-          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content)) return;
+
 
           if (
            cheerEnabled &&
@@ -1099,7 +1095,6 @@ export default definePluginEntry({
              channelId: discordChannelId,
              imageDir,
              config: cheerConfig,
-             onboardingConfig: pluginConfig.onboarding,
              logger: api.logger,
            });
            return;

@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai automatically classifies the emotion of every bot response using LLM and attaches a matching emotion image to Discord messages. It supports both **OpenClaw** and **Hermes Agent** platforms.
+Hent-ai automatically classifies the emotion of every bot response using LLM and attaches a matching emotion image to Discord messages.
 
 ### Supported Emotions
 
@@ -22,16 +22,13 @@ Hent-ai automatically classifies the emotion of every bot response using LLM and
 
 ## Getting Started
 
-Choose your platform:
-
-- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md)
-- **Hermes Agent** → see [`hermes/README.md`](./hermes/README.md)
+See [`openclaw/README.md`](./openclaw/README.md) for installation and configuration.
 
 ## Creating Emotion Images
 
 You need 6 images that visually represent each emotion. There are three ways to set them up:
 
-- **Discord Onboarding (easiest)** — Send `onboarding` in Discord and the bot walks you through generating each image interactively with feedback. During each emotion step, you can also attach your own image to use it directly. See [`openclaw/README.md`](./openclaw/README.md#onboarding).
+- **Discord Onboarding (easiest)** — Send `onboarding` in Discord and the OpenClaw agent guides you through generating each image interactively. The agent handles the conversation naturally — no coded state machine. See [`openclaw/README.md`](./openclaw/README.md#onboarding-agent-driven).
 - **CLI** — Run `hent-ai generate` from the command line (Option A below).
 - **Manual** — Create images yourself with any tool (Option B below).
 

@@ -9,6 +9,7 @@
   },
   "files": [
     "index.ts",
+    "discord-utils.ts",
     "openclaw.plugin.json",
     "README.md"
   ],
