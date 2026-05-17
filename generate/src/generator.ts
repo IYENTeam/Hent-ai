@@ -1,26 +1,16 @@
 import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { generateImage, type GenerateOptions } from "./codex.js";
+import {
+  EMOTIONS as SHARED_EMOTIONS,
+  EMOTION_PROMPTS as SHARED_EMOTION_PROMPTS,
+  type Emotion,
+} from "@hent-ai/shared";
 
-export const EMOTIONS = [
-  "happy",
-  "neutral",
-  "loyalty",
-  "sorry",
-  "confused",
-  "focused",
-] as const;
+export const EMOTIONS = SHARED_EMOTIONS;
+export type { Emotion };
 
-export type Emotion = (typeof EMOTIONS)[number];
-
-const EMOTION_PROMPTS: Record<Emotion, string> = {
-  happy: "smiling brightly, giving a thumbs up, celebrating with joy",
-  neutral: "calm and relaxed, default resting expression, at ease",
-  loyalty: "saluting attentively, nodding with respect, ready to help",
-  sorry: "looking apologetic, bowing slightly, sheepish expression",
-  confused: "tilting head with a puzzled look, question mark above head",
-  focused: "concentrating intensely, determined expression, working hard",
-};
+const EMOTION_PROMPTS: Record<string, string> = SHARED_EMOTION_PROMPTS;
 
 export interface GenerateAllOptions {
   /** Base character description (e.g. "cute orange cat") */

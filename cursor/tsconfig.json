@@ -4,14 +4,17 @@
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "dist",
-    "rootDir": "src",
     "sourceMap": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true
+    "declaration": true,
+    "baseUrl": ".",
+    "paths": {
+      "@hent-ai/shared": ["../shared/emotions.ts"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "test"]

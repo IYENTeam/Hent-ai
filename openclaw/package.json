@@ -18,7 +18,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@hent-ai/generate": "file:../generate"
+    "@hent-ai/generate": "file:../generate",
+    "@hent-ai/shared": "file:../shared"
   },
   "peerDependencies": {
     "@openclaw/plugin-sdk": ">=2026.4.0"

@@ -18,6 +18,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@hent-ai/shared": "file:../shared",
     "god-tibo-imagen": "^0.3.0"
   },
   "devDependencies": {

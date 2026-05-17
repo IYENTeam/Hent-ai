@@ -11,7 +11,11 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@hent-ai/shared": ["../shared/emotions.ts"]
+    }
   },
   "include": ["src"],
   "exclude": ["dist", "node_modules", "**/*.test.ts"]

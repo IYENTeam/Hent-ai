@@ -1,0 +1,13 @@
+{
+  "name": "@hent-ai/shared",
+  "version": "0.1.0",
+  "description": "Shared emotion definitions and utilities for Hent-ai",
+  "type": "module",
+  "exports": {
+    ".": "./emotions.ts"
+  },
+  "files": [
+    "emotions.ts"
+  ],
+  "license": "MIT"
+}

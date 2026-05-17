@@ -15,6 +15,7 @@
     "baseUrl": ".",
     "paths": {
       "@hent-ai/generate": ["../generate/src/index.ts"],
+      "@hent-ai/shared": ["../shared/emotions.ts"],
       "openclaw/plugin-sdk/plugin-entry": ["test/stubs/plugin-entry.ts"]
     }
   },

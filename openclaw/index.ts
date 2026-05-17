@@ -1,4 +1,3 @@
-// emotion-image plugin v3.5.0 - asset sets + channel filter fix
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
@@ -7,6 +6,11 @@ import { generateImage, type GenerateOptions } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendImageBufferMessage, sendTextMessage } from "./discord-utils.js";
 import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
+import {
+  DEFAULT_EMOTION_MAP as SHARED_DEFAULT_EMOTION_MAP,
+  EMOTION_RULES as SHARED_EMOTION_RULES,
+  DEFAULT_EMOTION as SHARED_DEFAULT_EMOTION,
+} from "@hent-ai/shared";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -530,14 +534,9 @@ interface EmotionImageVariant {
   buffer?: Buffer;
 }
 
-const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = {
-  happy: "happy.png",
-  neutral: "neutral.png",
-  loyalty: "loyalty.png",
-  sorry: "sorry.png",
-  confused: "confused.png",
-  focused: "focused.png",
-};
+const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = Object.fromEntries(
+  Object.entries(SHARED_DEFAULT_EMOTION_MAP).map(([k, v]) => [k, v as EmotionImageConfig]),
+);
 
 const LABEL_TOKEN_RE = /[\p{L}\p{N}]+/gu;
 const FILENAME_LABEL_SEPARATORS_RE = /[-_\s]+/g;
@@ -550,43 +549,9 @@ const AUTO_LABEL_STOPWORDS = new Set([
   "variant",
 ]);
 
-const EMOTION_RULES: Array<{ emotion: string; patterns: RegExp[] }> = [
-  {
-    emotion: "sorry",
-    patterns: [
-      /sorry|apolog|my bad|mistake|messed up|regret|oops/i,
-    ],
-  },
-  {
-    emotion: "happy",
-    patterns: [
-      /done|complete|succeed|fixed|shipped|great|awesome|excellent|perfect|nailed|pass|resolved|✅|🎉|🔥/i,
-      /proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay/i,
-    ],
-  },
-  {
-    emotion: "confused",
-    patterns: [
-      /confused|unclear|not sure|strange|unknown cause|weird|unexpected/i,
-      /question|how do we|what should|any idea/i,
-    ],
-  },
-  {
-    emotion: "focused",
-    patterns: [
-      /investigating|debugging|analyzing|implementing|working on|coding|building/i,
-      /in progress|checking|processing|deploying|testing|verifying/i,
-    ],
-  },
-  {
-    emotion: "loyalty",
-    patterns: [
-      /got it|understood|on it|yes sir|will do|right away|hello|hi there/i,
-    ],
-  },
-];
+const EMOTION_RULES: Array<{ emotion: string; patterns: RegExp[] }> = SHARED_EMOTION_RULES;
 
-const DEFAULT_EMOTION = "neutral";
+const DEFAULT_EMOTION = SHARED_DEFAULT_EMOTION;
 
 export interface CheerConfig {
   enabled?: boolean;
