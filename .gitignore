@@ -9,3 +9,11 @@ target/
 dist/
 build/
 openclaw/index.js
+
+# OMX runtime-local state
+.omx/cache/
+.omx/logs/
+.omx/state/
+.omx/metrics.json
+.omx/tmux-hook.json
+.sisyphus/
