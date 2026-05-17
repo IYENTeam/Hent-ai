@@ -22,6 +22,8 @@ Hent-ai automatically classifies the emotion of every bot response and attaches 
 
 ## Getting Started
 
+> **🤖 Agent setup:** If you're using an AI agent (OpenClaw, Claude Code, Codex, etc.), tell it to read [`SKILL.md`](./SKILL.md) in this repo. The agent will walk you through the entire setup interactively.
+
 Choose your platform:
 
 - **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md)
@@ -32,7 +34,7 @@ Choose your platform:
 
 You need 6 images that visually represent each emotion. There are three ways to set them up:
 
-- **Discord Onboarding (easiest)** — Send `onboarding` in Discord and the OpenClaw agent guides you through generating each image interactively. The agent handles the conversation naturally — no coded state machine. See [`openclaw/README.md`](./openclaw/README.md#onboarding-agent-driven).
+- **Agent-driven setup (easiest)** — Tell your AI agent to read [`SKILL.md`](./SKILL.md) in this repo. It will guide you through generating each image interactively — character description, base image approval, and 6 emotion variants, one by one.
 - **CLI** — Run `hent-ai generate` from the command line (Option A below).
 - **Manual** — Create images yourself with any tool (Option B below).
 
