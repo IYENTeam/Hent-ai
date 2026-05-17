@@ -263,7 +263,6 @@ async function classifyEmotionViaOpenAI(
         },
       ],
       max_tokens: 10,
-      temperature: 0,
     }),
     signal,
   });
@@ -307,7 +306,6 @@ async function classifyEmotionViaAnthropic(
     body: JSON.stringify({
       model: modelId,
       max_tokens: 10,
-      temperature: 0,
       messages: [
         {
           role: "user",
@@ -356,7 +354,6 @@ async function classifyBooleanIntentViaOpenAI(
       model: modelId,
       messages: [{ role: "user", content: prompt }],
       max_tokens: 10,
-      temperature: 0,
     }),
     signal,
   });
@@ -406,7 +403,6 @@ async function classifyBooleanIntentViaAnthropic(
     body: JSON.stringify({
       model: modelId,
       max_tokens: 10,
-      temperature: 0,
       messages: [{ role: "user", content: prompt }],
     }),
     signal,

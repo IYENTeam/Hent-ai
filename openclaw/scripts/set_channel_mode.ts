@@ -32,7 +32,7 @@ for (let i = 0; i < args.length; i++) {
 
 if (!channelId || !mode) usage();
 
-const dir = imageDir ?? resolve(import.meta.dirname ?? ".", "../assets");
+const dir = imageDir ?? resolve(import.meta.dirname ?? ".", "../../assets");
 
 async function main() {
   const overrides = await loadChannelOverrides(dir);
