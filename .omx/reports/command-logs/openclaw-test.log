@@ -1,0 +1,20 @@
+
+> @openclaw/emotion-image@2026.5.6 test
+> vitest run
+
+
+ RUN  v3.2.4 /Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1/openclaw
+
+ ✓ assets/channel-overrides.test.ts (8 tests) 23ms
+ ✓ test/channel-toggle.test.ts (6 tests) 4ms
+ ✓ assets/manifest.test.ts (14 tests) 55ms
+ ✓ index.test.ts (100 tests) 75ms
+ ✓ onboarding/onboarding.test.ts (30 tests) 1322ms
+   ✓ onboarding runtime > identifies trigger and active-session messages for normal-hook suppression  473ms
+   ✓ onboarding runtime > uses OpenClaw session keys for onboarding isolation when available  349ms
+
+ Test Files  5 passed (5)
+      Tests  158 passed (158)
+   Start at  08:17:18
+   Duration  1.92s (transform 567ms, setup 0ms, collect 983ms, tests 1.48s, environment 1ms, prepare 558ms)
+

@@ -1,0 +1,13 @@
+cursor_bin_exists=1
+cursor_dist_cli_exists=0
+cursor/bin:
+total 16
+drwxr-xr-x@  3 billionjaepyo  staff    96 May 18 08:15 .
+drwxr-xr-x@ 16 billionjaepyo  staff   512 May 18 08:17 ..
+-rw-r--r--@  1 billionjaepyo  staff  5328 May 18 08:15 install.ts
+
+cursor/dist-cli:
+total 16
+drwxr-xr-x@  3 billionjaepyo  staff    96 May 18 08:17 .
+drwxr-xr-x@ 16 billionjaepyo  staff   512 May 18 08:17 ..
+-rw-r--r--@  1 billionjaepyo  staff  6884 May 18 08:17 install.js

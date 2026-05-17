@@ -1,0 +1,14 @@
+
+> hent-ai-cursor@0.2.0 test
+> vitest run
+
+
+ RUN  v3.2.4 /Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1/cursor
+
+ ✓ test/classifier.test.ts (22 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+   Start at  08:17:06
+   Duration  349ms (transform 38ms, setup 0ms, collect 41ms, tests 6ms, environment 0ms, prepare 80ms)
+

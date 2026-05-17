@@ -1,0 +1,10 @@
+npm warn deprecated glob@10.5.0: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm error code EEXIST
+npm error syscall mkdir
+npm error path /Users/billionjaepyo/.npm/_cacache/content-v2/sha512/c0/ac
+npm error errno -13
+npm error EACCES: permission denied, mkdir '/Users/billionjaepyo/.npm/_cacache/content-v2/sha512/c0/ac'
+npm error File exists: /Users/billionjaepyo/.npm/_cacache/content-v2/sha512/c0/ac
+npm error Remove the existing file and try again, or run npm
+npm error with --force to overwrite files recklessly.
+npm error A complete log of this run can be found in: /Users/billionjaepyo/.npm/_logs/2026-05-17T23_17_26_515Z-debug-0.log

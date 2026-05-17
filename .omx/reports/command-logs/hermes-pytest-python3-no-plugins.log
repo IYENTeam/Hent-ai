@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Library/Developer/CommandLineTools/usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1
+collecting ... collected 8 items
+
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_appends_media_directive_for_supported_platform PASSED [ 12%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_detects_focused PASSED [ 25%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_detects_happy_completion PASSED [ 37%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_detects_sorry PASSED [ 50%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_falls_back_to_neutral PASSED [ 62%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_missing_image_leaves_response_unchanged PASSED [ 75%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_register_adds_transform_hook PASSED [ 87%]
+tests/hermes/test_hent_ai_plugin.py::HermesPluginTests::test_skips_unsupported_platform PASSED [100%]
+
+============================== 8 passed in 0.01s ===============================

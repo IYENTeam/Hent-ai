@@ -1,0 +1,36 @@
+[
+  {
+    "id": "@openclaw/emotion-image@2026.5.6",
+    "name": "@openclaw/emotion-image",
+    "version": "2026.5.6",
+    "size": 21523,
+    "unpackedSize": 86320,
+    "shasum": "a7be441aec3b815d5f2e32a5f20d1318f546b543",
+    "integrity": "sha512-Y5Z7e/mcBbggdV5U3FuaqFponFFKp5MfXX5s4KYeBWvSbVxtOewplZ28DYB5F9xq1Nlami+rWtUwPRVRYtfy5A==",
+    "filename": "openclaw-emotion-image-2026.5.6.tgz",
+    "files": [
+      {
+        "path": "README.md",
+        "size": 16192,
+        "mode": 420
+      },
+      {
+        "path": "index.ts",
+        "size": 64091,
+        "mode": 420
+      },
+      {
+        "path": "openclaw.plugin.json",
+        "size": 5066,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 971,
+        "mode": 420
+      }
+    ],
+    "entryCount": 4,
+    "bundled": []
+  }
+]

@@ -1,0 +1,161 @@
+[
+  {
+    "id": "@hent-ai/generate@0.1.0",
+    "name": "@hent-ai/generate",
+    "version": "0.1.0",
+    "size": 16423,
+    "unpackedSize": 63465,
+    "shasum": "1a8ef29fee9b73e2ce45f15b5530c2012800de47",
+    "integrity": "sha512-ZEdx4VPDvdDqD6rAwuQjH7b3ewCGODzeugU3peXQAN6T3kqParRiamqlTekgZOIpJW/VYHMlcu9tB7Xeb7vl0g==",
+    "filename": "hent-ai-generate-0.1.0.tgz",
+    "files": [
+      {
+        "path": "dist/generate/src/cli.d.ts",
+        "size": 93,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/cli.d.ts.map",
+        "size": 180,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/cli.js",
+        "size": 4701,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/cli.js.map",
+        "size": 3678,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/codex.d.ts",
+        "size": 619,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/codex.d.ts.map",
+        "size": 501,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/codex.js",
+        "size": 6416,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/codex.js.map",
+        "size": 6294,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/generator.d.ts",
+        "size": 1003,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/generator.d.ts.map",
+        "size": 753,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/generator.js",
+        "size": 4115,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/generator.js.map",
+        "size": 2743,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/index.d.ts",
+        "size": 228,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/index.d.ts.map",
+        "size": 270,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/index.js",
+        "size": 142,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/index.js.map",
+        "size": 204,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/main.d.ts",
+        "size": 65,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/main.d.ts.map",
+        "size": 108,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/main.js",
+        "size": 1096,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/main.js.map",
+        "size": 947,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/sets.d.ts",
+        "size": 98,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/sets.d.ts.map",
+        "size": 182,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/sets.js",
+        "size": 6434,
+        "mode": 420
+      },
+      {
+        "path": "dist/generate/src/sets.js.map",
+        "size": 5910,
+        "mode": 420
+      },
+      {
+        "path": "dist/openclaw/assets/manifest.d.ts",
+        "size": 3009,
+        "mode": 420
+      },
+      {
+        "path": "dist/openclaw/assets/manifest.d.ts.map",
+        "size": 2097,
+        "mode": 420
+      },
+      {
+        "path": "dist/openclaw/assets/manifest.js",
+        "size": 5554,
+        "mode": 420
+      },
+      {
+        "path": "dist/openclaw/assets/manifest.js.map",
+        "size": 5318,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 707,
+        "mode": 420
+      }
+    ],
+    "entryCount": 29,
+    "bundled": []
+  }
+]

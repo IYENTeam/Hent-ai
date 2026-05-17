@@ -1,0 +1,61 @@
+[
+  {
+    "id": "hent-ai-cursor@0.2.0",
+    "name": "hent-ai-cursor",
+    "version": "0.2.0",
+    "size": 630286,
+    "unpackedSize": 634654,
+    "shasum": "c5ae0d33ad1e33a1551c1c28e25495d9b8eeb135",
+    "integrity": "sha512-bDaf4zN16iDGszXGlqAiMZI+5MEKKh4YoIcYkQ75n0636vdloNq5Dw76I4jfENhrEzigxP5oJLZ9UuL39xKT0A==",
+    "filename": "hent-ai-cursor-0.2.0.tgz",
+    "files": [
+      {
+        "path": "README.md",
+        "size": 1888,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/confused.png",
+        "size": 108160,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/focused.png",
+        "size": 110765,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/happy.png",
+        "size": 102082,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/loyalty.png",
+        "size": 100772,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/neutral.png",
+        "size": 99334,
+        "mode": 420
+      },
+      {
+        "path": "assets/optimized/sorry.png",
+        "size": 103919,
+        "mode": 420
+      },
+      {
+        "path": "dist-cli/install.js",
+        "size": 6884,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 850,
+        "mode": 420
+      }
+    ],
+    "entryCount": 9,
+    "bundled": []
+  }
+]

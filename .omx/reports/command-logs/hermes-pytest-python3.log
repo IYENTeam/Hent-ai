@@ -1,0 +1,116 @@
+/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Traceback (most recent call last):
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pytest/__main__.py", line 9, in <module>
+    raise SystemExit(pytest.console_main())
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 201, in console_main
+    code = main()
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 156, in main
+    config = _prepareconfig(args, plugins)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 342, in _prepareconfig
+    config = pluginmanager.hook.pytest_cmdline_parse(
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_callers.py", line 167, in _multicall
+    raise exception
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_callers.py", line 139, in _multicall
+    teardown.throw(exception)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/helpconfig.py", line 112, in pytest_cmdline_parse
+    config = yield
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 1146, in pytest_cmdline_parse
+    self.parse(args)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 1527, in parse
+    self._preparse(args, addopts=addopts)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/config/__init__.py", line 1412, in _preparse
+    self.pluginmanager.load_setuptools_entrypoints("pytest11")
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/pluggy/_manager.py", line 416, in load_setuptools_entrypoints
+    plugin = ep.load()
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/metadata.py", line 77, in load
+    module = import_module(match.group('module'))
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/importlib/__init__.py", line 127, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 972, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 972, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 228, in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1030, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/__init__.py", line 44, in <module>
+    _expose_public_api()
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/__init__.py", line 22, in _expose_public_api
+    from deepeval.evaluate import (
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/evaluate/__init__.py", line 1, in <module>
+    from .evaluate import evaluate, assert_test
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/evaluate/evaluate.py", line 12, in <module>
+    from deepeval.evaluate.configs import (
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/evaluate/configs.py", line 4, in <module>
+    from deepeval.test_run.test_run import TestRunResultDisplay
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/test_run/__init__.py", line 1, in <module>
+    from .test_run import (
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/test_run/test_run.py", line 12, in <module>
+    from deepeval.metrics import BaseMetric
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/metrics/__init__.py", line 26, in <module>
+    from .knowledge_retention.knowledge_retention import KnowledgeRetentionMetric
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/metrics/knowledge_retention/knowledge_retention.py", line 18, in <module>
+    from deepeval.metrics.knowledge_retention.schema import (
+  File "<frozen importlib._bootstrap>", line 1007, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 986, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 680, in _load_unlocked
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/_pytest/assertion/rewrite.py", line 186, in exec_module
+    exec(co, module.__dict__)
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/metrics/knowledge_retention/schema.py", line 5, in <module>
+    class Knowledge(BaseModel):
+  File "/Users/billionjaepyo/Library/Python/3.9/lib/python/site-packages/deepeval/metrics/knowledge_retention/schema.py", line 8, in Knowledge
+    data: Dict[str, Union[str, List[str]]] | None = None
+TypeError: unsupported operand type(s) for |: '_GenericAlias' and 'NoneType'

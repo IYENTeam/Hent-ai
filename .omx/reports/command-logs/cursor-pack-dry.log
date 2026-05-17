@@ -1,0 +1,8 @@
+npm error Invalid package, must have name and version
+{
+  "error": {
+    "summary": "Invalid package, must have name and version",
+    "detail": ""
+  }
+}
+npm error A complete log of this run can be found in: /Users/billionjaepyo/.npm/_logs/2026-05-17T23_17_06_906Z-debug-0.log

@@ -1,0 +1,24 @@
+
+> @hent-ai/generate@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.4 /Users/billionjaepyo/projects/Hent-ai/.omx/team/execute-the-approved-6079860e/worktrees/worker-1/generate
+
+ ✓ src/generator.test.ts (13 tests) 32ms
+stderr | src/codex.test.ts > codex.ts > safety rephrase loop > retries with rephrased prompt on safety rejection
+[hent-ai/generate] Safety rejection (attempt 1/3). Rephrasing...
+
+stderr | src/codex.test.ts > codex.ts > safety rephrase loop > throws after max rephrase attempts exhausted
+[hent-ai/generate] Safety rejection (attempt 1/3). Rephrasing...
+
+stderr | src/codex.test.ts > codex.ts > safety rephrase loop > throws after max rephrase attempts exhausted
+[hent-ai/generate] Safety rejection (attempt 2/3). Rephrasing...
+
+ ✓ src/codex.test.ts (10 tests) 36ms
+
+ Test Files  2 passed (2)
+      Tests  23 passed (23)
+   Start at  08:17:01
+   Duration  1.16s (transform 101ms, setup 0ms, collect 895ms, tests 69ms, environment 0ms, prepare 129ms)
+
