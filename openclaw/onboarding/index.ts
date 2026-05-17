@@ -22,6 +22,7 @@ export interface OnboardingConfig {
   size?: string;
   sessionTimeoutMs?: number;
   allowedUsers?: string[];
+  persistDir?: string;
 }
 
 export type IntentDetector = (text: string) => Promise<boolean>;
@@ -70,7 +71,8 @@ export function registerOnboarding(
 ): OnboardingRuntime | null {
   if (onboardingConfig.enabled === false) return null;
 
-  const sessions = new SessionManager(onboardingConfig.sessionTimeoutMs);
+  const persistDir = onboardingConfig.persistDir ?? undefined;
+  const sessions = new SessionManager(onboardingConfig.sessionTimeoutMs, persistDir);
   const logger = api.logger;
   const resolveImageDir = typeof imageDir === "function" ? imageDir : () => imageDir;
 

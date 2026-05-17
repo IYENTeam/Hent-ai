@@ -1486,11 +1486,15 @@ export default definePluginEntry({
     const onboardingIntentDetector: IntentDetector | undefined = classifierModel
       ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
       : undefined;
+    const onboardingConfig: OnboardingConfig = {
+      ...pluginConfig.onboarding,
+      persistDir: imageDir ? resolve(imageDir, ".onboarding-sessions") : undefined,
+    };
     const onboardingRuntime = registerOnboarding(
       api,
       botToken,
       resolveActiveImageDir,
-      pluginConfig.onboarding ?? {},
+      onboardingConfig,
       onboardingIntentDetector,
       isChannelEnabled,
     );

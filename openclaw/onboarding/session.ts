@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 export const EMOTIONS = [
   "happy",
   "neutral",
@@ -43,9 +46,16 @@ export class SessionManager {
   private sessions = new Map<string, OnboardingSession>();
   private timeoutMs: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private persistDir: string | null;
 
-  constructor(timeoutMs = 30 * 60 * 1000) {
+  constructor(timeoutMs = 30 * 60 * 1000, persistDir?: string) {
     this.timeoutMs = timeoutMs;
+    this.persistDir = persistDir ?? null;
+
+    if (this.persistDir) {
+      this.restoreFromDisk();
+    }
+
     this.sweepTimer = setInterval(() => this.sweep(), timeoutMs);
     if (this.sweepTimer.unref) this.sweepTimer.unref();
   }
@@ -55,6 +65,51 @@ export class SessionManager {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
+    if (this.persistDir) {
+      for (const [key, session] of this.sessions) {
+        this.persistSession(key, session);
+      }
+    }
+  }
+
+  private restoreFromDisk(): void {
+    if (!this.persistDir || !existsSync(this.persistDir)) return;
+    const now = Date.now();
+    for (const file of readdirSync(this.persistDir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const raw = readFileSync(join(this.persistDir, file), "utf-8");
+        const data = JSON.parse(raw) as OnboardingSession;
+        if (now - data.lastActivityAt > this.timeoutMs) {
+          unlinkSync(join(this.persistDir, file));
+          continue;
+        }
+        data.baseImageBuffer = null;
+        data.currentEmotionBuffer = null;
+        const key = file.replace(".json", "");
+        this.sessions.set(key, data);
+      } catch {}
+    }
+  }
+
+  private persistSession(key: string, session: OnboardingSession): void {
+    if (!this.persistDir) return;
+    mkdirSync(this.persistDir, { recursive: true });
+    const serializable = {
+      ...session,
+      baseImageBuffer: null,
+      currentEmotionBuffer: null,
+    };
+    writeFileSync(
+      join(this.persistDir, `${key}.json`),
+      JSON.stringify(serializable, null, 2),
+      "utf-8",
+    );
+  }
+
+  private removePersisted(key: string): void {
+    if (!this.persistDir) return;
+    try { unlinkSync(join(this.persistDir, `${key}.json`)); } catch {}
   }
 
   private sweep(): void {
@@ -62,6 +117,7 @@ export class SessionManager {
     for (const [key, session] of this.sessions) {
       if (now - session.lastActivityAt > this.timeoutMs) {
         this.sessions.delete(key);
+        this.removePersisted(key);
       }
     }
   }
@@ -71,6 +127,7 @@ export class SessionManager {
     const session = this.sessions.get(key) ?? null;
     if (session && Date.now() - session.lastActivityAt > this.timeoutMs) {
       this.sessions.delete(key);
+      this.removePersisted(key);
       return null;
     }
     return session;
@@ -80,7 +137,9 @@ export class SessionManager {
     for (const session of this.sessions.values()) {
       if (session.channelId === channelId) {
         if (Date.now() - session.lastActivityAt > this.timeoutMs) {
-          this.sessions.delete(sessionKey(session.channelId, session.userId));
+          const key = sessionKey(session.channelId, session.userId);
+          this.sessions.delete(key);
+          this.removePersisted(key);
           return null;
         }
         return session;
@@ -106,15 +165,21 @@ export class SessionManager {
       createdAt: now,
       lastActivityAt: now,
     };
-    this.sessions.set(sessionKey(channelId, userId), session);
+    const key = sessionKey(channelId, userId);
+    this.sessions.set(key, session);
+    this.persistSession(key, session);
     return session;
   }
 
   touch(session: OnboardingSession): void {
     session.lastActivityAt = Date.now();
+    const key = sessionKey(session.channelId, session.userId);
+    this.persistSession(key, session);
   }
 
   delete(channelId: string, userId: string): void {
-    this.sessions.delete(sessionKey(channelId, userId));
+    const key = sessionKey(channelId, userId);
+    this.sessions.delete(key);
+    this.removePersisted(key);
   }
 }
