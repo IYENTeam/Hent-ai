@@ -3,11 +3,12 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateImage, type GenerateOptions } from "@hent-ai/generate";
+import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
 import { registerOnboarding, type IntentDetector, type OnboardingConfig } from "./onboarding/index.js";
-import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
+import { loadManifestSync, buildEmotionMapFromSet, getActiveSet, getSetDir } from "./assets/manifest.js";
+import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -1062,6 +1063,128 @@ export async function sendImageMessage(
   }
 }
 
+export function createRephraseProvider(
+  classifierModel: string,
+  runtime: {
+    config: {
+      current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } };
+    };
+    modelAuth: {
+      resolveApiKeyForProvider: (params: {
+        provider: string;
+        cfg?: unknown;
+      }) => Promise<{ apiKey?: string }>;
+    };
+  },
+  logger: { warn: (...args: any[]) => void },
+): RephraseProvider | undefined {
+  const slashIdx = classifierModel.indexOf("/");
+  if (slashIdx === -1) return undefined;
+
+  const providerName = classifierModel.slice(0, slashIdx);
+  const modelId = classifierModel.slice(slashIdx + 1);
+  if (!providerName || !modelId) return undefined;
+
+  return {
+    async rephrase(prompt: string, rejectionReason: string): Promise<string> {
+      const cfg = runtime.config.current();
+      const providerCfg = cfg.models?.providers?.[providerName];
+      if (!providerCfg?.baseUrl) {
+        logger.warn(`emotion-image: rephrase provider "${providerName}" not found`);
+        return prompt;
+      }
+
+      let apiKey: string | undefined;
+      try {
+        const auth = await runtime.modelAuth.resolveApiKeyForProvider({
+          provider: providerName,
+          cfg: cfg as unknown as Record<string, unknown> | undefined,
+        });
+        apiKey = auth.apiKey;
+      } catch {
+        return prompt;
+      }
+      if (!apiKey) return prompt;
+
+      const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
+      const apiType = detectApiType(providerCfg.api);
+
+      const systemPrompt = [
+        "You are a prompt rephrasing assistant.",
+        "The user's image generation prompt was rejected by a content safety filter.",
+        "Rewrite the prompt to preserve the original creative intent while avoiding policy violations.",
+        "Return ONLY the rephrased prompt text, nothing else.",
+        "Do NOT explain what you changed.",
+      ].join(" ");
+
+      const userMessage = [
+        `Original prompt:\n${prompt}`,
+        `\nRejection reason:\n${rejectionReason}`,
+        "\nRewrite the prompt to avoid the safety filter while keeping the same artistic intent.",
+      ].join("");
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+      try {
+        let rephrased: string | undefined;
+
+        if (apiType === "anthropic-messages") {
+          const url = `${baseUrl}/messages`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: modelId,
+              max_tokens: 1024,
+              system: systemPrompt,
+              messages: [{ role: "user", content: userMessage }],
+            }),
+            signal: controller.signal,
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { content?: Array<{ text?: string }> };
+            rephrased = data?.content?.[0]?.text?.trim();
+          }
+        } else {
+          const url = `${baseUrl}/chat/completions`;
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model: modelId,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userMessage },
+              ],
+              max_tokens: 1024,
+              temperature: 0.7,
+            }),
+            signal: controller.signal,
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+            rephrased = data?.choices?.[0]?.message?.content?.trim();
+          }
+        }
+
+        return rephrased || prompt;
+      } catch {
+        return prompt;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
 export async function handleCheerRequest(
   params: {
     token: string;
@@ -1069,10 +1192,11 @@ export async function handleCheerRequest(
     imageDir: string;
     config: CheerConfig;
     onboardingConfig?: OnboardingConfig;
+    rephraseProvider?: RephraseProvider;
     logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
   },
 ): Promise<void> {
-  const { token, channelId, imageDir, config, onboardingConfig, logger } = params;
+  const { token, channelId, imageDir, config, onboardingConfig, rephraseProvider, logger } = params;
   const baseImagePath = assertPathInside(imageDir, "base.png");
   await sendTextMessage(
     token,
@@ -1090,6 +1214,7 @@ export async function handleCheerRequest(
         baseImagePath && existsSync(baseImagePath)
           ? [pngBufferToDataUrl(await readFile(baseImagePath))]
           : undefined,
+      rephraseProvider,
     };
     const buffer = await generateImage(options);
     await sendImageBufferMessage(
@@ -1439,7 +1564,10 @@ export default definePluginEntry({
     const activeRules = buildEmotionRules(pluginConfig.emotionRules);
     const classifierModel = pluginConfig.classifierModel;
 
-    // Miracle mode configuration
+    const rephraseProvider = classifierModel
+      ? createRephraseProvider(classifierModel, api.runtime, api.logger)
+      : undefined;
+
     const miracleMode = pluginConfig.miracleMode ?? false;
     const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
 
@@ -1463,6 +1591,23 @@ export default definePluginEntry({
         channelQueuesPerWorkspace.set(workspaceKey, queues);
       }
       return queues;
+    }
+
+    function getEmotionMapForChannel(channelId: string): Record<string, EmotionImageVariant[]> {
+      const overrides = loadChannelOverridesSync(imageDir);
+      const overrideSetId = overrides[channelId];
+      if (!overrideSetId || !manifest) return emotionMap;
+
+      const overrideSet = manifest.sets[overrideSetId];
+      if (!overrideSet) return emotionMap;
+
+      const overrideEmotionConfig = buildEmotionMapFromSet(overrideSetId, overrideSet) as unknown as Record<string, EmotionImageConfig>;
+      return Object.fromEntries(
+        Object.entries({
+          ...DEFAULT_EMOTION_MAP,
+          ...overrideEmotionConfig,
+        }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
+      );
     }
 
     if (classifierModel) {
@@ -1497,6 +1642,7 @@ export default definePluginEntry({
       onboardingConfig,
       onboardingIntentDetector,
       isChannelEnabled,
+      rephraseProvider,
     );
 
       const cheerConfig = pluginConfig.cheer ?? {};
@@ -1532,13 +1678,14 @@ export default definePluginEntry({
            await detectCheerIntentWithLLM(cheerIntentModel, content, api.runtime, api.logger)
          ) {
            await handleCheerRequest({
-              token: botToken,
-              channelId: discordChannelId,
-              imageDir: activeImageDir,
-              config: cheerConfig,
-              onboardingConfig: pluginConfig.onboarding,
-              logger: api.logger,
-           });
+               token: botToken,
+               channelId: discordChannelId,
+               imageDir: activeImageDir,
+               config: cheerConfig,
+               onboardingConfig: pluginConfig.onboarding,
+               rephraseProvider,
+               logger: api.logger,
+            });
            return;
          }
 
@@ -1577,11 +1724,10 @@ export default definePluginEntry({
       // Skip NO_REPLY messages
       if (content.trim() === "NO_REPLY") return;
 
-      // Strip MEDIA: lines before emotion detection
-      const cleaned = content.replace(MEDIA_LINE_RE, "").trimEnd();
-
       // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
       const channelId = normalizeDiscordChannelId(to);
+
+      const cleaned = content.replace(MEDIA_LINE_RE, "").trimEnd();
 
       // Per-channel toggle check
       if (!isChannelEnabled(channelId)) return;
@@ -1621,7 +1767,8 @@ export default definePluginEntry({
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
 
-          const variants = emotionMap[finalEmotion] ?? emotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
+          const channelEmotionMap = getEmotionMapForChannel(channelId);
+          const variants = channelEmotionMap[finalEmotion] ?? channelEmotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
 
           // Try to get cached or generate via miracle mode
           const imageBuffer = await getCachedOrGenerateImage(

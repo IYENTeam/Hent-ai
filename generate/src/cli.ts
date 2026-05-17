@@ -107,6 +107,12 @@ Flow:
   2. Uses the base as reference to generate ${EMOTIONS.length} emotion variants
   3. Outputs: base.png + ${EMOTIONS.join(", ")}.png
 
+Limits:
+  - Max 3 reference images per request (auto-resized to 768px)
+  - 90s timeout per generation call
+  - Safety rephrase is NOT available in CLI mode (no LLM provider).
+    Use OpenClaw onboarding for automatic prompt rephrasing on policy rejections.
+
 Prerequisites:
   Log in with Codex CLI first: codex login
   Auth is read from ~/.codex/auth.json

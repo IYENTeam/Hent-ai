@@ -210,6 +210,58 @@ Bot generates response
 User sees: [focused.png] → [text response + emotion.png]
 ```
 
+## Image Generation Limits
+
+All image generation calls (onboarding, cheer, miracle mode) enforce the following:
+
+- **Maximum 3 reference images** per request. Exceeding this throws an error.
+- **Auto-resize**: Reference images larger than 768px (either dimension) are automatically resized before sending, preserving aspect ratio. This prevents request timeouts.
+- **90-second timeout**: If the backend doesn't respond within 90s, the request fails with a timeout error.
+- **Safety rephrase**: When `classifierModel` is configured, prompts rejected by the content-policy filter are automatically rephrased by the session's LLM provider and retried (up to 3 total attempts). If all attempts fail, the original error is reported.
+
+## Private Mode (Per-Channel Set Switching)
+
+Hent-ai supports per-channel asset set switching via an agent-driven skill. The agent reads `skills/private-mode.SKILL.md` and executes a script to toggle the active image set for a channel.
+
+### How it works
+
+1. User says "private 모드 켜줘"
+2. Agent reads the skill file and executes:
+   ```bash
+   npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode private
+   ```
+3. The script writes to `imageDir/channel-overrides.json`
+4. On the next emotion image request, the plugin reads the override and uses `imageDir/sets/private/` assets
+
+### Setup
+
+1. Create a `private` set in your image directory:
+   ```
+   imageDir/sets/private/
+   ├── happy.png
+   ├── neutral.png
+   ├── loyalty.png
+   ├── sorry.png
+   ├── confused.png
+   └── focused.png
+   ```
+
+2. Register it in `manifest.json` (or use the CLI/onboarding to generate)
+
+3. Ensure the agent has access to `skills/private-mode.SKILL.md`
+
+### Persistence
+
+Channel overrides are saved to `imageDir/channel-overrides.json` and persist across bot restarts.
+
+### Commands
+
+| Command | Effect |
+|---------|--------|
+| `--mode private` | Switch channel to `private` set |
+| `--mode default` | Revert channel to global default set |
+| `--mode <any-set-id>` | Switch to any registered set |
+
 ## Discord Bot Token
 
 Provide the Discord bot token via one of:

@@ -1,4 +1,4 @@
-export { generateImage, type GenerateOptions } from "./codex.js";
+export { generateImage, type GenerateOptions, type RephraseProvider } from "./codex.js";
 export {
   generateAllEmotions,
   EMOTIONS,

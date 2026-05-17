@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { RephraseProvider } from "@hent-ai/generate";
 import { type Logger, sendTextMessage } from "./discord-utils.js";
 import { type FlowConfig, handleMessage, ONBOARDING_EXIT_HINT } from "./flow.js";
 import { EMOTIONS, OnboardingState, SessionManager } from "./session.js";
@@ -68,6 +69,7 @@ export function registerOnboarding(
   onboardingConfig: OnboardingConfig,
   detectIntent?: IntentDetector,
   isChannelEnabled?: OnboardingChannelGate,
+  rephraseProvider?: RephraseProvider,
 ): OnboardingRuntime | null {
   if (onboardingConfig.enabled === false) return null;
 
@@ -222,6 +224,7 @@ export function registerOnboarding(
         imageDir: activeImageDir,
         model: onboardingConfig.model,
         size: onboardingConfig.size,
+        rephraseProvider,
         logger,
       };
 

@@ -1,6 +1,6 @@
 import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { generateImage, type GenerateOptions } from "@hent-ai/generate";
+import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
 import {
   downloadUrl,
   editTextMessage,
@@ -23,6 +23,7 @@ export interface FlowConfig {
   imageDir: string;
   model?: string;
   size?: string;
+  rephraseProvider?: RephraseProvider;
   logger: Logger;
 }
 
@@ -345,6 +346,7 @@ async function startBaseGeneration(
       model,
       size: size ?? "1024x1024",
       referenceImages: session.referenceImageUrl ? [session.referenceImageUrl] : undefined,
+      rephraseProvider: config.rephraseProvider,
     };
 
     const buffer = await generateImage(options);
@@ -401,6 +403,7 @@ async function startEmotionGeneration(
       model,
       size: size ?? "1024x1024",
       referenceImages: session.baseImageBuffer ? [bufferToDataUrl(session.baseImageBuffer)] : undefined,
+      rephraseProvider: config.rephraseProvider,
     };
 
     const buffer = await generateImage(options);
