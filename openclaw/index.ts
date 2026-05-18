@@ -432,87 +432,6 @@ async function classifyCheerIntentViaAnthropic(
   return classifyBooleanIntentViaAnthropic(baseUrl, apiKey, modelId, buildCheerIntentPrompt(text), signal, logger, "cheer");
 }
 
-function buildOnboardingIntentPrompt(text: string): string {
-  return [
-    "Decide whether the user's message is requesting to set up, configure, create, change, or regenerate the bot's character images or emotion images.",
-    "This includes requests like: starting onboarding, setting up the character, changing the avatar, creating new emotion images, regenerating images, customizing the bot's appearance, etc.",
-    "Return ONLY yes or no.",
-    "Answer yes for any intent related to character/image setup, onboarding, or appearance customization.",
-    "Answer no for normal conversation, questions, commands, greetings, or unrelated requests.",
-    `Message: ${text}`,
-  ].join("\n");
-}
-
-export async function detectOnboardingIntentWithLLM(
-  classifierModel: string,
-  text: string,
-  runtime: {
-    config: {
-      current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } };
-    };
-    modelAuth: {
-      resolveApiKeyForProvider: (params: {
-        provider: string;
-        cfg?: unknown;
-      }) => Promise<{ apiKey?: string }>;
-    };
-  },
-  logger: { warn: (...args: any[]) => void },
-): Promise<boolean> {
-  const slashIdx = classifierModel.indexOf("/");
-  if (slashIdx === -1) {
-    logger.warn(`emotion-image: onboarding intent model "${classifierModel}" missing "/" separator`);
-    return false;
-  }
-  const providerName = classifierModel.slice(0, slashIdx);
-  const modelId = classifierModel.slice(slashIdx + 1);
-  if (!providerName || !modelId) {
-    logger.warn(`emotion-image: onboarding intent model "${classifierModel}" could not be parsed`);
-    return false;
-  }
-
-  const cfg = runtime.config.current();
-  const providerCfg = cfg.models?.providers?.[providerName];
-  if (!providerCfg?.baseUrl) {
-    logger.warn(`emotion-image: onboarding intent provider "${providerName}" not found or missing baseUrl`);
-    return false;
-  }
-
-  let apiKey: string | undefined;
-  try {
-    const auth = await runtime.modelAuth.resolveApiKeyForProvider({
-      provider: providerName,
-      cfg: cfg as unknown as Record<string, unknown> | undefined,
-    });
-    apiKey = auth.apiKey;
-  } catch (err) {
-    logger.warn(`emotion-image: failed to resolve onboarding intent apiKey: ${err}`);
-    return false;
-  }
-
-  if (!apiKey) {
-    logger.warn(`emotion-image: no onboarding intent apiKey resolved for "${providerName}"`);
-    return false;
-  }
-
-  const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
-  const apiType: ApiType = detectApiType(providerCfg.api);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-  try {
-    const prompt = buildOnboardingIntentPrompt(text);
-    const result = apiType === "anthropic-messages"
-      ? await classifyBooleanIntentViaAnthropic(baseUrl, apiKey, modelId, prompt, controller.signal, logger, "onboarding")
-      : await classifyBooleanIntentViaOpenAI(baseUrl, apiKey, modelId, prompt, controller.signal, logger, "onboarding");
-    return result ?? false;
-  } catch (err) {
-    logger.warn(`emotion-image: onboarding intent LLM call error: ${err}`);
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function detectCheerIntentWithLLM(
   classifierModel: string,
   text: string,
@@ -1731,10 +1650,6 @@ export default definePluginEntry({
     const onboardingIntentDetector: IntentDetector | undefined = classifierModel
       ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
       : undefined;
-
-    const onboardingIntentDetector = async (text: string): Promise<boolean> => {
-      return detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger);
-    };
     const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
 
       const cheerConfig = pluginConfig.cheer ?? {};
