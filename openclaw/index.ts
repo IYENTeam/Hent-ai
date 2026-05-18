@@ -1762,6 +1762,10 @@ export default definePluginEntry({
           if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content, sessionKey)) return;
           const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
 
+          // Agent-driven onboarding: skip emotion images when lock file exists
+          const onboardingLockPath = resolve(imageDir, ".onboarding-active");
+          if (existsSync(onboardingLockPath)) return;
+
           if (
            cheerEnabled &&
            cheerIntentModel &&
