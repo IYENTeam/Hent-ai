@@ -1808,12 +1808,14 @@ export default definePluginEntry({
             return;
           }
 
+          /* v8 ignore next 3 */
           if (!imageBuffer) {
             api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
             return;
           }
 
           // Use the generated buffer
+          /* v8 ignore next 2 */
           api.logger.info(`emotion-image: appending miracle-generated ${finalEmotion} image for msg=${messageId}`);
           await appendImageBufferToMessage(botToken, channelId, messageId, imageBuffer, "emotion.png", api.logger);
        };

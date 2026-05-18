@@ -129,6 +129,7 @@ describe("SessionManager with persistence", () => {
     const session = manager.getByChannel("ch6");
     expect(session).toBeNull();
     manager.destroy();
+  
   });
 
 });

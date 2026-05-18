@@ -230,4 +230,12 @@ describe("manifest", () => {
       expect(m.sets["s1"].emotions.nervous).toEqual(["nervous.png"]);
     });
   });
+
+  it("registerSet throws when set directory does not exist", async () => {
+    const m = createEmptyManifest();
+    await expect(
+      registerSet(tempDir, m, "nonexistent-set", { name: "Test" })
+    ).rejects.toThrow("Set directory not found");
+  });
+
 });

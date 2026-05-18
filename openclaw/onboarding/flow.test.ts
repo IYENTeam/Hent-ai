@@ -359,3 +359,49 @@ describe("removeWorkspace error handling", () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("failed to remove workspace"));
   });
 });
+
+
+describe("attachment detection via filename extension (no content_type)", () => {
+  it("detects attachment by filename when content_type is absent", async () => {
+    const { getMessageAttachments, downloadUrl } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/img.png", filename: "img.png", size: 100 }
+      // no content_type field
+    ]);
+    vi.mocked(downloadUrl).mockResolvedValueOnce(Buffer.from("PNG_DATA"));
+    
+    const session = makeSession();
+    await handleMessage(session, mockSessions, "", "ch1", "msg1", makeConfig());
+    
+    expect(session.state).toBe(OnboardingState.AWAITING_IMAGE_INTENT);
+  });
+
+  it("replaceCurrentEmotionWithAttachment: detects by filename extension", async () => {
+    const { getMessageAttachments, downloadUrl } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/photo.jpg", filename: "photo.jpg", size: 200 }
+      // no content_type
+    ]);
+    vi.mocked(downloadUrl).mockResolvedValueOnce(Buffer.from("JPG_DATA"));
+
+    const session = makeSession({ state: OnboardingState.AWAITING_EMOTION_CONFIRM });
+    await handleMessage(session, mockSessions, "좋아", "ch1", "msg1", makeConfig());
+    
+    const { sendImageBufferMessage } = await import("./discord-utils.js");
+    expect(vi.mocked(sendImageBufferMessage)).toHaveBeenCalled();
+  });
+
+  it("returns false when downloadUrl returns null in checkForAttachment", async () => {
+    const { getMessageAttachments, downloadUrl } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/img.png", filename: "img.png", content_type: "image/png", size: 100 }
+    ]);
+    vi.mocked(downloadUrl).mockResolvedValueOnce(null); // download fails
+    
+    const session = makeSession();
+    await handleMessage(session, mockSessions, "cute cat", "ch1", "msg1", makeConfig());
+    
+    // Should set character (text feedback path) since attachment wasn't downloaded
+    expect(session.character).toBe("cute cat");
+  });
+});
