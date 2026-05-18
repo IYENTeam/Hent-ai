@@ -238,4 +238,48 @@ describe("manifest", () => {
     ).rejects.toThrow("Set directory not found");
   });
 
+
+  describe("activateSet edge cases", () => {
+    it("throws when setId not found in manifest", async () => {
+      const m = createEmptyManifest();
+      await expect(activateSet(tempDir, m, "nonexistent")).rejects.toThrow('Set "nonexistent" not found in manifest');
+    });
+
+    it("skips emotions with zero files (files.length === 0)", async () => {
+      const m = createEmptyManifest();
+      const setId = "empty-emotion-set";
+      const setDir = getSetDir(tempDir, setId);
+      await mkdir(setDir, { recursive: true });
+      // Add set manually with an emotion that has 0 files
+      m.sets[setId] = { name: "Test", emotions: { happy: [], neutral: [] } };
+      // Should not throw, just skip the empty emotion
+      await expect(activateSet(tempDir, m, setId)).resolves.not.toThrow();
+    });
+  });
+
+  describe("registerSet with non-image files", () => {
+    it("skips files that don't match image pattern", async () => {
+      const m = createEmptyManifest();
+      const setId = "non-image-set";
+      const setDir = getSetDir(tempDir, setId);
+      await mkdir(setDir, { recursive: true });
+      await writeFile(join(setDir, "README.md"), "docs");  // non-image
+      await writeFile(join(setDir, ".gitkeep"), "");        // non-image
+      await writeFile(join(setDir, "happy.png"), "fake");   // image -> covered
+
+      const set = await registerSet(tempDir, m, setId, { name: "NonImage" });
+      // Only happy.png should be included, not README.md or .gitkeep
+      expect(set.emotions["happy"]).toBeDefined();
+      expect(Object.keys(set.emotions)).not.toContain("readme");
+    });
+  });
+
+  describe("addFilesToSet edge cases", () => {
+    it("throws when setId not found", async () => {
+      const m = createEmptyManifest();
+      await expect(addFilesToSet(tempDir, m, "nonexistent", "happy", ["happy.png"]))
+        .rejects.toThrow('Set "nonexistent" not found');
+    });
+  });
+
 });

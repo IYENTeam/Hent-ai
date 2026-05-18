@@ -130,6 +130,8 @@ describe("SessionManager with persistence", () => {
     expect(session).toBeNull();
     manager.destroy();
   
+  
+    manager.destroy();
   });
 
 });

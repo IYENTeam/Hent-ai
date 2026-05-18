@@ -405,3 +405,71 @@ describe("attachment detection via filename extension (no content_type)", () => 
     expect(session.character).toBe("cute cat");
   });
 });
+
+
+describe("generation error branch (non-Error thrown)", () => {
+  it("handles string error in generation failure (err instanceof Error = false)", async () => {
+    const { generateImage } = await import("@hent-ai/generate");
+    const { sendTextMessage } = await import("./discord-utils.js");
+    vi.mocked(generateImage).mockRejectedValueOnce("plain string error");
+
+    const session = makeSession({
+      state: OnboardingState.AWAITING_EMOTION_CONFIRM,
+      character: "test-char",
+    });
+    // Trigger re-generation via "다시" in AWAITING_EMOTION_CONFIRM
+    await handleMessage(session, mockSessions, "다시", "ch1", "msgX", makeConfig());
+
+    expect(vi.mocked(sendTextMessage)).toHaveBeenCalledWith(
+      expect.anything(), "ch1",
+      expect.stringContaining("생성 실패"),
+      expect.anything(),
+    );
+  });
+});
+
+describe("replaceCurrentEmotionWithAttachment - downloadUrl returns null", () => {
+  it("returns false when attachment found but downloadUrl returns null", async () => {
+    const { getMessageAttachments, downloadUrl } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/img.png", filename: "img.png", content_type: "image/png", size: 100 },
+    ]);
+    vi.mocked(downloadUrl).mockResolvedValueOnce(null); // download fails
+
+    const session = makeSession({ state: OnboardingState.AWAITING_EMOTION_CONFIRM });
+    const prevState = session.state;
+    await handleMessage(session, mockSessions, "some text", "ch1", "msg1", makeConfig());
+
+    // Should NOT have changed to a new state via attachment path
+    // (falls through to intent handling since replaceCurrentEmotionWithAttachment returned false)
+    expect(session.state).toBe(prevState);
+  });
+});
+
+describe("checkForAttachment - attachment found but downloadUrl null", () => {
+  it("returns false and does not set referenceImageUrl when downloadUrl returns null", async () => {
+    const { getMessageAttachments, downloadUrl } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/ref.png", filename: "ref.png", content_type: "image/png", size: 200 },
+    ]);
+    vi.mocked(downloadUrl).mockResolvedValueOnce(null);
+
+    // AWAITING_CHARACTER: checkForAttachment is called to detect reference image
+    const session = makeSession({ state: OnboardingState.AWAITING_CHARACTER, character: "" });
+    await handleMessage(session, mockSessions, "", "ch1", "msg1", makeConfig());
+
+    expect(session.referenceImageUrl).toBeNull();
+  });
+
+  it("skips non-image attachment (no match -> returns false)", async () => {
+    const { getMessageAttachments } = await import("./discord-utils.js");
+    vi.mocked(getMessageAttachments).mockResolvedValueOnce([
+      { id: "a1", url: "https://cdn.example.com/doc.pdf", filename: "doc.pdf", content_type: "application/pdf", size: 100 },
+    ]);
+
+    const session = makeSession({ state: OnboardingState.AWAITING_CHARACTER, character: "" });
+    await handleMessage(session, mockSessions, "", "ch1", "msg1", makeConfig());
+
+    expect(session.referenceImageUrl).toBeNull();
+  });
+});
