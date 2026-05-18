@@ -62,14 +62,15 @@ export interface PluginApi {
   logger: Logger;
 }
 
+export type IntentDetector = (text: string) => Promise<boolean>;
+
 export function registerOnboarding(
   api: PluginApi,
   botToken: string,
   imageDir: string | OnboardingImageDirResolver,
   onboardingConfig: OnboardingConfig,
   detectIntent?: IntentDetector,
-  isChannelEnabled?: OnboardingChannelGate,
-  rephraseProvider?: RephraseProvider,
+  detectOnboardingIntent?: IntentDetector,
 ): OnboardingRuntime | null {
   if (onboardingConfig.enabled === false) return null;
 
@@ -103,10 +104,14 @@ export function registerOnboarding(
   }
 
   const runtime: OnboardingRuntime = {
-    isOnboardingMessage: (channelId, userId, content, sessionKey) => {
+    isOnboardingMessage: (channelId, userId, content) => {
+      // For sync check, only look at active sessions.
+      // Trigger detection is async (LLM) and handled in the message_received hook.
       const trimmed = content.trim();
-      if (isOnboardingTrigger(trimmed)) return true;
-      return sessions.get(channelId, sessionKey ?? userId) !== null;
+      // Keep regex as fast-path for exact keywords
+      if (isTrigger(trimmed)) return true;
+      // Active session check (sync)
+      return sessions.get(channelId, userId) !== null;
     },
     hasActiveSession: (channelId) => sessions.getByChannel(channelId) !== null,
   };
@@ -135,8 +140,18 @@ export function registerOnboarding(
       const trimmed = content.trim();
       const activeImageDir = resolveImageDir({ metadata, sessionKey });
 
-      if (await shouldStartOnboarding(trimmed)) {
-        logger.info(`onboarding: trigger detected from user=${userId} text="${trimmed.slice(0, 50)}"`);
+      // LLM-based intent detection for onboarding trigger
+      const isOnboardingRequest = detectIntent ? await detectIntent(trimmed) : false;
+
+      if (isOnboardingRequest) {
+        logger.info(`onboarding: LLM detected onboarding intent from user=${userId} text="${trimmed.slice(0, 50)}"`);
+      // Fast-path: exact keyword match, or LLM intent detection
+      const isExactTrigger = isTrigger(trimmed);
+      const isLlmTrigger = !isExactTrigger && detectOnboardingIntent
+        ? await detectOnboardingIntent(trimmed).catch(() => false)
+        : false;
+
+      if (isExactTrigger || isLlmTrigger) {
         const existing = sessions.getByChannel(channelId);
         if (existing && existing.userId !== sessionScope) {
           await sendTextMessage(
