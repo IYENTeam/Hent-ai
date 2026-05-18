@@ -1677,8 +1677,9 @@ export default definePluginEntry({
            return;
          }
 
-          const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
-          const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
+           const channelEmotionMap = getEmotionMapForChannel(discordChannelId);
+           const thinkingVariant = selectEmotionImageVariant(channelEmotionMap.focused ?? []);
+           const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
           if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
 
          api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
