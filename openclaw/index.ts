@@ -1640,9 +1640,7 @@ export default definePluginEntry({
       const cheerIntentModel = cheerConfig.intentModel ?? classifierModel;
 
       // Phase 1: On user message received, immediately send focused (thinking) image
-      const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
-
-      if (cheerEnabled || thinkingVariant) {
+      if (cheerEnabled || (emotionMap.focused?.length ?? 0) > 0) {
         api.on("message_received", async (event: unknown) => {
          const { content, metadata, senderId, sessionKey } = event as {
            content?: string;
@@ -1679,6 +1677,7 @@ export default definePluginEntry({
            return;
          }
 
+          const thinkingVariant = selectEmotionImageVariant(emotionMap.focused ?? []);
           const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
           if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
 
