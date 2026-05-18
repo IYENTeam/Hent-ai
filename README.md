@@ -178,6 +178,10 @@ You are a helpful assistant. Polite but not robotic.
 - Greeting/acknowledgment → warm and brief
 ```
 
+## Special Thanks
+
+- [**MoerAI (SungSoo Park)**](https://github.com/MoerAI) — for inspiration and contributions
+
 ## License
 
 MIT
