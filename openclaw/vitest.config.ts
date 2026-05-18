@@ -17,7 +17,17 @@ export default defineConfig({
     environment: "node",
     coverage: {
       provider: "v8",
-      include: ["onboarding/parsers.ts"],
+      include: [
+        "index.ts",
+        "discord-utils.ts",
+        "assets/channel-overrides.ts",
+        "assets/manifest.ts",
+        "onboarding/parsers.ts",
+        "onboarding/flow.ts",
+        "onboarding/index.ts",
+        "onboarding/session.ts",
+        "onboarding/prompts.ts",
+      ],
       thresholds: {
         statements: 100,
         branches: 100,

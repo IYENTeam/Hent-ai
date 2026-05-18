@@ -43,7 +43,25 @@ export interface PluginApi {
   logger: Logger;
 }
 
-export type IntentDetector = (text: string) => Promise<boolean>;
+
+export function buildOnboardingWorkspaceDir(imageDir: string, channelId: string, userId: string): string {
+  // Hash the channel+user combo to avoid path separator issues and collisions
+  const key = stable_hash(`${channelId}:${userId}`);
+  return resolve(imageDir, ".onboarding-workspaces", key);
+}
+
+function stable_hash(input: string): string {
+  // Simple deterministic hash for workspace directory naming
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    const char = input.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash; // 32-bit int
+  }
+  return Math.abs(hash).toString(36);
+}
+
+export type OnboardingImageDirResolver = (ctx: { metadata?: Record<string, unknown>; sessionKey?: string }) => string;
 
 export function registerOnboarding(
   api: PluginApi,
@@ -51,7 +69,7 @@ export function registerOnboarding(
   imageDir: string | OnboardingImageDirResolver,
   onboardingConfig: OnboardingConfig,
   detectIntent?: IntentDetector,
-  detectOnboardingIntent?: IntentDetector,
+  isChannelEnabled?: (channelId: string) => boolean,
 ): OnboardingRuntime | null {
   if (onboardingConfig.enabled === false) return null;
 
@@ -59,30 +77,6 @@ export function registerOnboarding(
   const sessions = new SessionManager(onboardingConfig.sessionTimeoutMs, persistDir);
   const logger = api.logger;
   const resolveImageDir = typeof imageDir === "function" ? imageDir : () => imageDir;
-
-  // Inline trigger detection to avoid jiti cache staleness.
-  // jiti hashes only the entry file (index.ts), not transitive deps like parsers.ts.
-  // When parsers.ts changes but index.ts doesn't, the old compiled code is served.
-  const TRIGGER_KEYWORDS = /봇|캐릭터|이미지|셋업|setup|onboarding|온보딩|생성|만들|바꾸/i;
-  const TRIGGER_ACTIONS = /하고|하자|해줘|해줄|시작|할래|하고파|할까|start|begin|want|원해|해봐|해보|만들|새로|다시|바꾸/i;
-  const TRIGGER_EXACT = /^(onboarding|온보딩|셋업|setup)[\s!.]*$/i;
-
-  function isOnboardingTrigger(text: string): boolean {
-    const trimmed = text.trim();
-    if (TRIGGER_EXACT.test(trimmed)) return true;
-    return TRIGGER_KEYWORDS.test(trimmed) && TRIGGER_ACTIONS.test(trimmed);
-  }
-
-  async function shouldStartOnboarding(trimmed: string): Promise<boolean> {
-    if (isOnboardingTrigger(trimmed)) return true;
-    if (!detectIntent) return false;
-    try {
-      return await detectIntent(trimmed);
-    } catch (err) {
-      logger.warn(`onboarding: intent detector failed: ${err}`);
-      return false;
-    }
-  }
 
   // Inline trigger detection to avoid jiti cache staleness.
   // jiti hashes only the entry file (index.ts), not transitive deps like parsers.ts.
@@ -221,7 +215,6 @@ export function registerOnboarding(
         imageDir: activeImageDir,
         model: onboardingConfig.model,
         size: onboardingConfig.size,
-        rephraseProvider,
         logger,
       };
 

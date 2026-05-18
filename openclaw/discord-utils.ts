@@ -91,3 +91,81 @@ export async function sendImageBufferMessage(
     return null;
   }
 }
+
+export async function editTextMessage(
+  token: string,
+  channelId: string,
+  messageId: string,
+  text: string,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bot ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: text }),
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      logger.warn(`discord-utils: editText failed ${res.status}: ${body.slice(0, 200)}`);
+    }
+  } catch (err) {
+    logger.error(`discord-utils: editText error: ${err}`);
+  }
+}
+
+export interface DiscordAttachment {
+  id: string;
+  url: string;
+  filename: string;
+  content_type?: string;
+  size: number;
+}
+
+export async function getMessageAttachments(
+  token: string,
+  channelId: string,
+  messageId: string | undefined,
+  logger: Logger,
+): Promise<DiscordAttachment[]> {
+  if (!messageId) return [];
+  try {
+    const res = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      {
+        headers: { Authorization: `Bot ${token}` },
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      logger.warn(`discord-utils: getAttachments failed ${res.status}: ${body.slice(0, 200)}`);
+      return [];
+    }
+    const data = (await res.json()) as { attachments?: DiscordAttachment[] };
+    return data.attachments ?? [];
+  } catch (err) {
+    logger.error(`discord-utils: getAttachments error: ${err}`);
+    return [];
+  }
+}
+
+export async function downloadUrl(url: string, logger: Logger): Promise<Buffer | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      logger.warn(`discord-utils: downloadUrl failed ${res.status}: ${url}`);
+      return null;
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (err) {
+    logger.error(`discord-utils: downloadUrl error: ${err}`);
+    return null;
+  }
+}
