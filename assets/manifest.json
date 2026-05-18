@@ -8,12 +8,21 @@
       "model": "openai/gpt-image-2",
       "createdAt": "2026-05-16T10:00:00+09:00",
       "emotions": {
-        "happy": ["happy.png"],
-        "neutral": ["neutral.png"],
-        "loyalty": ["loyalty.png"],
-        "sorry": ["sorry.png"],
-        "confused": ["confused.png"],
-        "focused": ["focused.png"]
+        "happy": [
+          "happy.png"
+        ],
+        "neutral": [
+          "neutral.png"
+        ],
+        "sorry": [
+          "sorry.png"
+        ],
+        "confused": [
+          "confused.png"
+        ],
+        "focused": [
+          "focused.png"
+        ]
       }
     }
   }

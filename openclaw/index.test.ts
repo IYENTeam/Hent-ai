@@ -78,8 +78,8 @@ describe("detectEmotion", () => {
     expect(detectEmotion("Currently debugging the code. Testing in progress")).toBe("focused");
   });
 
-  it("returns 'loyalty' for greeting keywords", () => {
-    expect(detectEmotion("Got it, understood")).toBe("loyalty");
+  it("returns 'neutral' for greeting keywords (loyalty removed)", () => {
+    expect(detectEmotion("Got it, understood")).toBe("neutral");
   });
 
   it("returns 'neutral' when no keywords match (default fallback)", () => {
@@ -467,7 +467,7 @@ describe("detectApiType", () => {
 });
 
 describe("extractEmotion", () => {
-  const emotions = ["happy", "neutral", "sorry", "confused", "focused", "loyalty"];
+  const emotions = ["happy", "neutral", "sorry", "confused", "focused"];
 
   it("returns null for null content", () => {
     expect(extractEmotion(null, emotions)).toBeNull();
@@ -530,7 +530,7 @@ describe("extractEmotion", () => {
   });
 
   it("prefers first matching emotion in text", () => {
-    expect(extractEmotion("loyalty happy focused", emotions)).toBe("loyalty");
+    expect(extractEmotion("happy focused neutral", emotions)).toBe("happy");
   });
 });
 
