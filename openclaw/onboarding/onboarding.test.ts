@@ -235,50 +235,6 @@ describe("onboarding runtime", () => {
     expect(runtime?.hasActiveSession("456")).toBe(false);
   });
 
-  it("uses OpenClaw session keys for onboarding isolation when available", async () => {
-    const handlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = [];
-    const runtime = registerOnboarding(
-      {
-        on: (_event, handler) => handlers.push(handler),
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      },
-      "token",
-      "/tmp/hent-ai-test-assets",
-      {},
-    );
-
-    await handlers[0]?.({
-      content: "onboarding",
-      senderId: "same-user",
-      sessionKey: "agent-session-a",
-      metadata: { to: "channel:123", messageId: "msg1" },
-    }, {});
-
-    expect(runtime?.isOnboardingMessage("123", "same-user", "cute cat", "agent-session-a")).toBe(true);
-    expect(runtime?.isOnboardingMessage("123", "same-user", "cute cat", "agent-session-b")).toBe(false);
-  });
-
-  it("resolves onboarding workspace under the active profile image directory", async () => {
-    const handlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = [];
-    registerOnboarding(
-      {
-        on: (_event, handler) => handlers.push(handler),
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-      },
-      "token",
-      ({ metadata }) => `/tmp/assets/${metadata?.workspaceId as string}`,
-      {},
-    );
-
-    await handlers[0]?.({
-      content: "onboarding",
-      senderId: "user1",
-      metadata: { to: "channel:123", workspaceId: "profile-a", messageId: "msg1" },
-    }, {});
-
-    expect(handlers).toHaveLength(1);
-  });
-
   it("returns null when onboarding is disabled", () => {
     const runtime = registerOnboarding(
       {

@@ -29,28 +29,9 @@ export interface OnboardingConfig {
 export type IntentDetector = (text: string) => Promise<boolean>;
 
 export interface OnboardingRuntime {
-  isOnboardingMessage: (channelId: string, userId: string, content: string, sessionKey?: string) => boolean;
+  isOnboardingMessage: (channelId: string, userId: string, content: string) => boolean;
   /** Returns true if the given channel has an active onboarding session. */
   hasActiveSession: (channelId: string) => boolean;
-}
-
-export type OnboardingImageDirResolver = (context: {
-  metadata?: Record<string, unknown>;
-  sessionKey?: string;
-}) => string;
-
-export type OnboardingChannelGate = (channelId: string) => boolean;
-
-function sanitizeWorkspaceSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "unknown";
-}
-
-export function buildOnboardingWorkspaceDir(imageDir: string, channelId: string, scopeId: string): string {
-  return [
-    imageDir.replace(/\/+$/, ""),
-    ".onboarding-workspaces",
-    `${sanitizeWorkspaceSegment(channelId)}-${sanitizeWorkspaceSegment(scopeId)}`,
-  ].join("/");
 }
 
 export interface PluginApi {
