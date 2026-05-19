@@ -20,7 +20,7 @@ User says any of:
 ### Enable private mode
 
 ```bash
-npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode private
+cd ~/.clawhip/github/IYENTeam/Hent-ai && npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode private
 ```
 
 Then confirm to the user: "이 채널은 private 모드로 전환되었습니다."
@@ -28,7 +28,7 @@ Then confirm to the user: "이 채널은 private 모드로 전환되었습니다
 ### Disable private mode (revert to default)
 
 ```bash
-npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode default
+cd ~/.clawhip/github/IYENTeam/Hent-ai && npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode default
 ```
 
 Then confirm: "일반 모드로 돌아갑니다."
@@ -36,15 +36,7 @@ Then confirm: "일반 모드로 돌아갑니다."
 ### Switch to any named set
 
 ```bash
-npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode <SET_ID>
-```
-
-### With custom image directory
-
-If the asset directory is not at the default location:
-
-```bash
-npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode private --image-dir /path/to/assets
+cd ~/.clawhip/github/IYENTeam/Hent-ai && npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode <SET_ID>
 ```
 
 ## Channel ID
