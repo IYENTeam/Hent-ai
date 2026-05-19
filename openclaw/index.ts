@@ -749,10 +749,12 @@ function extractBooleanIntent(content: string | undefined | null): boolean | nul
 
 function buildCheerIntentPrompt(text: string): string {
   return [
-    "Decide whether the user's message is asking the character/bot to encourage, cheer up, comfort, support, motivate, or give emotional energy to the user.",
+    "Decide whether the user's message is EXPLICITLY asking the character/bot to encourage, cheer up, comfort, support, motivate, or give emotional energy to the user.",
     "Return ONLY yes or no.",
-    "Answer yes for indirect requests like being tired and wanting energy, wanting support, asking for encouragement, or asking the character to root for them.",
-    "Answer no for thanks, normal greetings, status updates, or unrelated mentions of cheering.",
+    "Answer yes for DIRECT requests like: 응원해줘, 화이팅 해줘, 힘내라고 해줘, cheer me up, give me energy, I need encouragement.",
+    "Answer yes for indirect requests like being tired and wanting energy, wanting emotional support, or asking the character to root for them.",
+    "Answer no for: task requests, bug reports, debugging requests, complaints about something not working, status questions, status updates, normal greetings, thanks, or any message asking the bot to investigate/fix/check something.",
+    "Answer no for frustration about technical issues (e.g. '왜 대답을 안해', '안되는데', '문제 확인해줘') — these are task requests, NOT emotional support requests.",
     `Message: ${text}`,
   ].join("\n");
 }
