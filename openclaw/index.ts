@@ -1704,7 +1704,10 @@ export default definePluginEntry({
           if (!isChannelEnabled(discordChannelId)) return;
           const userId = senderId ?? (metadata?.from as string | undefined) ?? "unknown";
           if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content, sessionKey)) return;
-          const activeImageDir = resolveActiveImageDir({ metadata, sessionKey });
+          // Use profile DB to resolve channel-specific image directory
+          const activeImageDir = profileDb
+            ? resolveProfileImageDirForChannel(imageDir, profileDb, discordChannelId, defaultProfileId)
+            : resolveActiveImageDir({ metadata, sessionKey });
 
           // Agent-driven onboarding: skip emotion images when lock file exists
           const onboardingLockPath = resolve(imageDir, ".onboarding-active");
@@ -1780,7 +1783,10 @@ export default definePluginEntry({
       const context: ImageDirContext = { metadata, sessionKey };
       const runtimeConfig = api.runtime.config?.current?.();
       const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context) ?? "default";
-      const activeImageDir = resolveActiveImageDir(context);
+      // Use profile DB to resolve channel-specific image directory
+      const activeImageDir = profileDb
+        ? resolveProfileImageDirForChannel(imageDir, profileDb, channelId, defaultProfileId)
+        : resolveActiveImageDir(context);
       const rateLimiter = getRateLimiterForWorkspace(workspaceId);
       const channelQueues = getChannelQueuesForWorkspace(workspaceId);
 
