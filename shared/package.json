@@ -1,13 +1,27 @@
 {
   "name": "@hent-ai/shared",
-  "version": "0.1.0",
-  "description": "Shared emotion definitions and utilities for Hent-ai",
+  "version": "0.2.0",
+  "description": "Shared emotion definitions, profile types, and DB utilities for Hent-ai",
   "type": "module",
   "exports": {
-    ".": "./emotions.ts"
+    ".": "./emotions.ts",
+    "./profile": "./profile.ts",
+    "./db": "./db.ts"
   },
   "files": [
-    "emotions.ts"
+    "emotions.ts",
+    "profile.ts",
+    "db.ts"
   ],
-  "license": "MIT"
+  "scripts": {
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.10.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "vitest": "^4.1.6"
+  }
 }

@@ -2,6 +2,7 @@
 
 import { run as generate } from "./cli.js";
 import { runSets } from "./sets.js";
+import { runProfile } from "./profile-cli.js";
 
 const VERSION = "0.1.0";
 
@@ -15,6 +16,7 @@ Usage:
 Commands:
   generate    Generate emotion images from a character description
   sets        Manage emotion image asset sets
+  profile     Manage character profiles (create, list, delete, set-soul)
 
 Run 'hent-ai <command> --help' for command-specific options.
 `);
@@ -31,6 +33,10 @@ async function main(): Promise<void> {
     case "sets":
     case "set":
       await runSets(rest);
+      break;
+    case "profile":
+    case "profiles":
+      await runProfile(rest);
       break;
     case "--version":
     case "-v":

@@ -9,6 +9,8 @@ export default defineConfig({
     alias: {
       "openclaw/plugin-sdk/plugin-entry": resolve(here, "test/stubs/plugin-entry.ts"),
       "@hent-ai/generate": resolve(here, "test", "stubs", "generate.ts"),
+      "@hent-ai/shared/profile": resolve(here, "..", "shared", "profile.ts"),
+      "@hent-ai/shared/db": resolve(here, "..", "shared", "db.ts"),
       "@hent-ai/shared": resolve(here, "..", "shared", "emotions.ts"),
     },
   },

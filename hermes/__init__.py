@@ -35,9 +35,7 @@ DEFAULT_SUPPORTED_PLATFORMS = {
 EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
     (
         "sorry",
-        (
-            re.compile(r"sorry|apolog|my bad|mistake|messed up|regret|oops", re.I),
-        ),
+        (re.compile(r"sorry|apolog|my bad|mistake|messed up|regret|oops", re.I),),
     ),
     (
         "happy",
@@ -46,27 +44,40 @@ EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
                 r"done|complete|succeed|fixed|shipped|great|awesome|excellent|perfect|nailed|pass|resolved|✅|🎉|🔥",
                 re.I,
             ),
-            re.compile(r"proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay", re.I),
+            re.compile(
+                r"proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay", re.I
+            ),
         ),
     ),
     (
         "confused",
         (
-            re.compile(r"confused|unclear|not sure|strange|unknown cause|weird|unexpected", re.I),
+            re.compile(
+                r"confused|unclear|not sure|strange|unknown cause|weird|unexpected",
+                re.I,
+            ),
             re.compile(r"question|how do we|what should|any idea", re.I),
         ),
     ),
     (
         "focused",
         (
-            re.compile(r"investigating|debugging|analyzing|implementing|working on|coding|building", re.I),
-            re.compile(r"in progress|checking|processing|deploying|testing|verifying", re.I),
+            re.compile(
+                r"investigating|debugging|analyzing|implementing|working on|coding|building",
+                re.I,
+            ),
+            re.compile(
+                r"in progress|checking|processing|deploying|testing|verifying", re.I
+            ),
         ),
     ),
     (
         "loyalty",
         (
-            re.compile(r"got it|understood|on it|yes sir|will do|right away|hello|hi there", re.I),
+            re.compile(
+                r"got it|understood|on it|yes sir|will do|right away|hello|hi there",
+                re.I,
+            ),
         ),
     ),
 ]
@@ -97,15 +108,19 @@ def resolve_assets_dir() -> Path:
 
     override = os.getenv("HENT_AI_ASSET_DIR")
     if override:
-        return Path(override).expanduser().resolve()
+        base = Path(override).expanduser().resolve()
+    else:
+        plugin_dir = Path(__file__).resolve().parent
+        local_assets = plugin_dir / "assets"
+        base = local_assets if local_assets.exists() else plugin_dir.parent / "assets"
 
-    plugin_dir = Path(__file__).resolve().parent
-    local_assets = plugin_dir / "assets"
-    if local_assets.exists():
-        return local_assets
+    profile_id = os.getenv("HENT_AI_DEFAULT_PROFILE")
+    if profile_id:
+        profile_dir = base / "profiles" / profile_id
+        if profile_dir.exists():
+            return profile_dir
 
-    # Repository layout: hermes/__init__.py next to ../assets/.
-    return plugin_dir.parent / "assets"
+    return base
 
 
 def detect_emotion(text: str, fallback: str = DEFAULT_EMOTION) -> str:
@@ -118,7 +133,9 @@ def detect_emotion(text: str, fallback: str = DEFAULT_EMOTION) -> str:
     return fallback
 
 
-def should_attach_for_platform(platform: str, allowed: Iterable[str] | None = None) -> bool:
+def should_attach_for_platform(
+    platform: str, allowed: Iterable[str] | None = None
+) -> bool:
     """Return whether a Hermes platform should receive image attachments."""
 
     if not platform:
@@ -161,7 +178,9 @@ def build_transformed_response(
 def register(ctx) -> None:
     """Register the Hermes transform hook."""
 
-    def attach_emotion_image(response_text: str, platform: str = "", **_kwargs) -> str | None:
+    def attach_emotion_image(
+        response_text: str, platform: str = "", **_kwargs
+    ) -> str | None:
         return build_transformed_response(response_text, platform=platform)
 
     ctx.register_hook("transform_llm_output", attach_emotion_image)

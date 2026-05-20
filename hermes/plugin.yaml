@@ -1,5 +1,9 @@
 name: hent-ai
-version: 0.1.0
-description: Attach Hent-ai emotion images to Hermes Agent responses.
+version: 0.2.0
+description: Attach Hent-ai emotion images to Hermes Agent responses. Supports multi-profile via HENT_AI_DEFAULT_PROFILE env var.
 provides_hooks:
   - transform_llm_output
+env:
+  HENT_AI_ASSET_DIR: "Absolute path to emotion image directory"
+  HENT_AI_DEFAULT_PROFILE: "Profile ID to use (resolves to assets/profiles/<id>/)"
+  HENT_AI_HERMES_PLATFORMS: "Comma-separated platforms or * for all"

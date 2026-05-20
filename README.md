@@ -179,6 +179,68 @@ You are a helpful assistant. Polite but not robotic.
 - Greeting/acknowledgment → warm and brief
 ```
 
+## Multi-Profile
+
+Hent-ai supports multiple character profiles. Each profile has its own emotion images and an optional personality snippet that gets dynamically appended to the agent's system prompt.
+
+### Creating a Profile
+
+```bash
+cd generate && npm run build
+
+# Create a profile
+node dist/main.js profile create --id gothic --name "Gothic Character" --image-dir /path/to/assets
+
+# Set a personality snippet
+node dist/main.js profile set-soul --id gothic --text "Cold and aloof tone. Uses formal language." --image-dir /path/to/assets
+
+# List profiles
+node dist/main.js profile list --image-dir /path/to/assets
+```
+
+Then place emotion images at `assets/profiles/gothic/` (happy.png, neutral.png, etc.).
+
+### Switching Profiles Per Channel
+
+Use the agent skill (say "프로필 바꿔줘" in Discord) or run directly:
+
+```bash
+npx tsx openclaw/scripts/switch_profile.ts --channel <DISCORD_CHANNEL_ID> --profile gothic
+```
+
+### Configuration
+
+Add `defaultProfile` to your OpenClaw plugin config:
+
+```jsonc
+{
+  "plugins": {
+    "entries": {
+      "emotion-image": {
+        "config": {
+          "defaultProfile": "gothic"
+        }
+      }
+    }
+  }
+}
+```
+
+For Hermes, set the environment variable:
+
+```bash
+export HENT_AI_DEFAULT_PROFILE=gothic
+```
+
+### Migration
+
+Existing installations are automatically migrated. On first startup with multi-profile support, Hent-ai:
+1. Copies existing flat emotion images to `profiles/default/`
+2. Converts manifest.json sets to individual profiles
+3. Migrates channel-overrides.json to the SQLite database
+
+No manual action needed.
+
 ## License
 
 MIT

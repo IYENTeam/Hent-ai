@@ -9,6 +9,9 @@ import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-ut
 import { registerOnboarding, type IntentDetector, type OnboardingConfig } from "./onboarding/index.js";
 import { loadManifestSync, buildEmotionMapFromSet, getActiveSet, getSetDir } from "./assets/manifest.js";
 import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
+import { runMigration } from "./migration.js";
+import { getProfileDatabase, resolveProfileImageDirForChannel } from "./profile-manager.js";
+import { appendPersonaToPrompt } from "./dynamic-persona.js";
 
 const LLM_TIMEOUT_MS = 15_000;
 
@@ -1523,9 +1526,12 @@ export default definePluginEntry({
       cheer?: CheerConfig;
       miracleMode?: boolean;
       miracleRateLimit?: number;
+      defaultProfile?: string;
     };
 
     if (pluginConfig.enabled === false) return;
+
+    const defaultProfileId = pluginConfig.defaultProfile;
 
     // Per-channel toggle
     const channelMode = pluginConfig.channels?.mode ?? "blocklist";
@@ -1541,6 +1547,27 @@ export default definePluginEntry({
     const resolveActiveImageDir = (context?: ImageDirContext) =>
       resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
     const imageDir = resolveActiveImageDir();
+
+    try {
+      const migrationResult = runMigration(imageDir);
+      if (!migrationResult.skipped) {
+        api.logger.info(
+          `emotion-image: migration complete — flatAssets=${migrationResult.flatAssetsMigrated}, ` +
+          `sets=${migrationResult.setsMigrated}, channelOverrides=${migrationResult.channelOverridesMigrated}`,
+        );
+      }
+    } catch (err) {
+      api.logger.warn(`emotion-image: migration failed (non-fatal): ${err}`);
+    }
+
+    const profileDb = (() => {
+      try { return getProfileDatabase(imageDir); }
+      catch { return null; }
+    })();
+
+    if (defaultProfileId) {
+      api.logger.info(`emotion-image: defaultProfile="${defaultProfileId}"`);
+    }
 
      // Build emotionMap: manifest-based sets take priority, then config, then defaults
      let manifestEmotionMap: Record<string, EmotionImageConfig> = {};

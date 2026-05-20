@@ -121,10 +121,14 @@
          "default": false
        },
        "miracleRateLimit": {
-         "type": "number",
-         "description": "Max number of miracle mode generations per hour.",
-         "default": 10
-       }
+          "type": "number",
+          "description": "Max number of miracle mode generations per hour.",
+          "default": 10
+        },
+        "defaultProfile": {
+          "type": "string",
+          "description": "Default profile ID to use when no per-channel mapping exists. Profiles store emotion image sets and optional personality snippets."
+        }
     }
   }
 }
