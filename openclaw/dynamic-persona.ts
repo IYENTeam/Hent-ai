@@ -1,4 +1,5 @@
 import type { ProfileDatabase } from "@hent-ai/shared/db";
+import type { Profile } from "@hent-ai/shared/profile";
 
 const PERSONA_SEPARATOR = "\n\n--- Hent-ai Character ---\n";
 
@@ -10,13 +11,11 @@ export function buildDynamicPrompt(
   return basePrompt + PERSONA_SEPARATOR + soulSnippet.trim();
 }
 
-export function getSoulSnippetForChannel(
+function resolveProfile(
   db: ProfileDatabase,
   channelId: string | undefined,
   defaultProfileId: string | undefined,
-): string | null {
-  if (!channelId && !defaultProfileId) return null;
-
+): Profile | null {
   let profileId: string | null = null;
   if (channelId) {
     profileId = db.getChannelProfile(channelId);
@@ -25,9 +24,27 @@ export function getSoulSnippetForChannel(
     profileId = defaultProfileId ?? null;
   }
   if (!profileId) return null;
+  return db.getProfile(profileId);
+}
 
-  const profile = db.getProfile(profileId);
-  return profile?.soulSnippet ?? null;
+export function getSoulSnippetForChannel(
+  db: ProfileDatabase,
+  channelId: string | undefined,
+  defaultProfileId: string | undefined,
+): string | null {
+  const profile = resolveProfile(db, channelId, defaultProfileId);
+  if (!profile) return null;
+  if (profile.mode === "date") return profile.chatPrompt ?? profile.soulSnippet ?? null;
+  return profile.soulSnippet ?? null;
+}
+
+export function getProfileModeForChannel(
+  db: ProfileDatabase,
+  channelId: string | undefined,
+  defaultProfileId: string | undefined,
+): string {
+  const profile = resolveProfile(db, channelId, defaultProfileId);
+  return profile?.mode ?? "default";
 }
 
 export function appendPersonaToPrompt(

@@ -1,8 +1,14 @@
+import type { ProfileMode } from "./emotions.js";
+
+export type { ProfileMode };
+
 export interface Profile {
   id: string;
   name: string;
   character: string | null;
   soulSnippet: string | null;
+  chatPrompt: string | null;
+  mode: ProfileMode;
   model: string | null;
   createdAt: string;
   updatedAt: string;
@@ -13,6 +19,8 @@ export interface ProfileCreateInput {
   name: string;
   character?: string;
   soulSnippet?: string;
+  chatPrompt?: string;
+  mode?: ProfileMode;
   model?: string;
 }
 
@@ -20,6 +28,8 @@ export interface ProfileUpdateInput {
   name?: string;
   character?: string | null;
   soulSnippet?: string | null;
+  chatPrompt?: string | null;
+  mode?: ProfileMode;
   model?: string | null;
 }
 

@@ -6,6 +6,7 @@ import { ProfileDatabase } from "@hent-ai/shared/db";
 import {
   buildDynamicPrompt,
   getSoulSnippetForChannel,
+  getProfileModeForChannel,
   appendPersonaToPrompt,
 } from "./dynamic-persona.js";
 
@@ -89,5 +90,52 @@ describe("appendPersonaToPrompt", () => {
   it("returns base prompt when no persona", () => {
     const result = appendPersonaToPrompt("base", db, "ch1", undefined);
     expect(result).toBe("base");
+  });
+});
+
+describe("date mode", () => {
+  it("uses chatPrompt for date mode profiles", () => {
+    db.createProfile({
+      id: "date-girl",
+      name: "Date Girl",
+      mode: "date",
+      soulSnippet: "work persona",
+      chatPrompt: "sweet and flirty date persona",
+    });
+    db.setChannelProfile("ch1", "date-girl");
+    expect(getSoulSnippetForChannel(db, "ch1", undefined)).toBe("sweet and flirty date persona");
+  });
+
+  it("falls back to soulSnippet if chatPrompt is null in date mode", () => {
+    db.createProfile({
+      id: "date-fallback",
+      name: "Date Fallback",
+      mode: "date",
+      soulSnippet: "fallback persona",
+    });
+    db.setChannelProfile("ch1", "date-fallback");
+    expect(getSoulSnippetForChannel(db, "ch1", undefined)).toBe("fallback persona");
+  });
+
+  it("uses soulSnippet for default mode profiles", () => {
+    db.createProfile({
+      id: "worker",
+      name: "Worker",
+      mode: "default",
+      soulSnippet: "serious work tone",
+      chatPrompt: "this should not be used",
+    });
+    db.setChannelProfile("ch1", "worker");
+    expect(getSoulSnippetForChannel(db, "ch1", undefined)).toBe("serious work tone");
+  });
+
+  it("getProfileModeForChannel returns date for date profile", () => {
+    db.createProfile({ id: "date-girl", name: "Date", mode: "date" });
+    db.setChannelProfile("ch1", "date-girl");
+    expect(getProfileModeForChannel(db, "ch1", undefined)).toBe("date");
+  });
+
+  it("getProfileModeForChannel returns default when no profile", () => {
+    expect(getProfileModeForChannel(db, "ch1", undefined)).toBe("default");
   });
 });

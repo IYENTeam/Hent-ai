@@ -13,9 +13,9 @@ import type {
 import { validateProfileId } from "./profile.js";
 
 const DB_FILENAME = "hentai.db";
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
-const SCHEMA_SQL = `
+const SCHEMA_V1_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
 );
@@ -43,12 +43,19 @@ CREATE TABLE IF NOT EXISTS profile_settings (
 );
 `;
 
+const MIGRATION_V2_SQL = `
+ALTER TABLE profiles ADD COLUMN mode TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE profiles ADD COLUMN chat_prompt TEXT;
+`;
+
 function rowToProfile(row: Record<string, unknown>): Profile {
   return {
     id: row.id as string,
     name: row.name as string,
     character: (row.character as string) ?? null,
     soulSnippet: (row.soul_snippet as string) ?? null,
+    chatPrompt: (row.chat_prompt as string) ?? null,
+    mode: ((row.mode as string) ?? "default") as Profile["mode"],
     model: (row.model as string) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -87,10 +94,14 @@ export class ProfileDatabase {
     })();
 
     if (!versionRow) {
-      this.db.exec(SCHEMA_SQL);
+      this.db.exec(SCHEMA_V1_SQL);
+      this.db.exec(MIGRATION_V2_SQL);
       this.db
         .prepare("INSERT INTO schema_version (version) VALUES (?)")
         .run(SCHEMA_VERSION);
+    } else if (versionRow.version < 2) {
+      this.db.exec(MIGRATION_V2_SQL);
+      this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
     }
   }
 
@@ -104,14 +115,16 @@ export class ProfileDatabase {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO profiles (id, name, character, soul_snippet, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO profiles (id, name, character, soul_snippet, chat_prompt, mode, model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
         input.name,
         input.character ?? null,
         input.soulSnippet ?? null,
+        input.chatPrompt ?? null,
+        input.mode ?? "default",
         input.model ?? null,
         now,
         now,
@@ -147,6 +160,14 @@ export class ProfileDatabase {
     if (input.soulSnippet !== undefined) {
       fields.push("soul_snippet = ?");
       values.push(input.soulSnippet);
+    }
+    if (input.chatPrompt !== undefined) {
+      fields.push("chat_prompt = ?");
+      values.push(input.chatPrompt);
+    }
+    if (input.mode !== undefined) {
+      fields.push("mode = ?");
+      values.push(input.mode);
     }
     if (input.model !== undefined) {
       fields.push("model = ?");

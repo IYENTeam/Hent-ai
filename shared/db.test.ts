@@ -216,3 +216,38 @@ describe("profile settings", () => {
     expect(db.getProfileSetting("gothic", "theme")).toBeNull();
   });
 });
+
+describe("date mode fields", () => {
+  it("creates a date mode profile", () => {
+    const profile = db.createProfile({
+      id: "date-girl",
+      name: "Date Girl",
+      mode: "date",
+      chatPrompt: "sweet and flirty",
+    });
+    expect(profile.mode).toBe("date");
+    expect(profile.chatPrompt).toBe("sweet and flirty");
+  });
+
+  it("defaults mode to 'default'", () => {
+    const profile = db.createProfile({ id: "worker", name: "Worker" });
+    expect(profile.mode).toBe("default");
+    expect(profile.chatPrompt).toBeNull();
+  });
+
+  it("updates mode and chatPrompt", () => {
+    db.createProfile({ id: "worker", name: "Worker" });
+    const updated = db.updateProfile("worker", {
+      mode: "date",
+      chatPrompt: "now I am a date character",
+    });
+    expect(updated.mode).toBe("date");
+    expect(updated.chatPrompt).toBe("now I am a date character");
+  });
+
+  it("clears chatPrompt with null", () => {
+    db.createProfile({ id: "date-girl", name: "Date", chatPrompt: "flirty" });
+    const updated = db.updateProfile("date-girl", { chatPrompt: null });
+    expect(updated.chatPrompt).toBeNull();
+  });
+});
