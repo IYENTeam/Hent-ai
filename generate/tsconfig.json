@@ -14,7 +14,8 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@hent-ai/shared": ["../shared/emotions.ts"]
+      "@hent-ai/shared": ["../shared/emotions.ts"],
+      "@hent-ai/shared/*": ["../shared/*"]
     }
   },
   "include": ["src"],

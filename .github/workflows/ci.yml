@@ -46,6 +46,10 @@ jobs:
           fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
           "
 
+      - name: Install shared dependencies
+        working-directory: shared
+        run: npm install --no-audit --no-fund
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
