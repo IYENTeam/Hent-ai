@@ -6,5 +6,12 @@
   },
   "dependencies": {
     "god-tibo-imagen": "^0.3.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "sharp"
+    ]
   }
 }

@@ -25,7 +25,7 @@
     "@openclaw/plugin-sdk": ">=2026.4.0"
   },
   "devDependencies": {
-    "@openclaw/plugin-sdk": "workspace:*",
+    "@openclaw/plugin-sdk": "file:../../openclaw/packages/plugin-sdk",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
