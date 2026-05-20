@@ -17,6 +17,11 @@ export default defineConfig({
   test: {
     include: ["**/*.test.ts"],
     environment: "node",
+    server: {
+      deps: {
+        external: ["better-sqlite3"],
+      },
+    },
     coverage: {
       provider: "v8",
       include: [
