@@ -4,12 +4,29 @@ export interface Logger {
   error: (...args: unknown[]) => void;
 }
 
+export type OpenClawMessageSender = {
+  sendText?: (channelId: string, text: string) => Promise<string | null>;
+  sendImageBuffer?: (
+    channelId: string,
+    buffer: Buffer,
+    filename: string,
+    text: string,
+  ) => Promise<string | null>;
+};
+
 export async function sendTextMessage(
   token: string,
   channelId: string,
   text: string,
   logger: Logger,
+  openClawSender?: OpenClawMessageSender,
 ): Promise<string | null> {
+  if (openClawSender?.sendText) {
+    const messageId = await openClawSender.sendText(channelId, text);
+    if (messageId) return messageId;
+    logger.warn("discord-utils: OpenClaw text send unavailable; falling back to Discord REST");
+  }
+
   try {
     const res = await fetch(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
@@ -42,7 +59,14 @@ export async function sendImageBufferMessage(
   filename: string,
   text: string,
   logger: Logger,
+  openClawSender?: OpenClawMessageSender,
 ): Promise<string | null> {
+  if (openClawSender?.sendImageBuffer) {
+    const messageId = await openClawSender.sendImageBuffer(channelId, buffer, filename, text);
+    if (messageId) return messageId;
+    logger.warn("discord-utils: OpenClaw image send unavailable; falling back to Discord REST");
+  }
+
   try {
     const boundary = `----HentaiImg${Date.now()}`;
     const parts: Buffer[] = [];
