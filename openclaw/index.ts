@@ -6,14 +6,18 @@ import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { sendImageBufferMessage, sendTextMessage } from "./onboarding/discord-utils.js";
-import { registerOnboarding, type IntentDetector, type OnboardingConfig } from "./onboarding/index.js";
-import { loadManifestSync, buildEmotionMapFromSet, getActiveSet, getSetDir } from "./assets/manifest.js";
+import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
 import { runMigration } from "./migration.js";
 import { getProfileDatabase, resolveProfileImageDirForChannel } from "./profile-manager.js";
-import { appendPersonaToPrompt } from "./dynamic-persona.js";
 
 const LLM_TIMEOUT_MS = 15_000;
+
+interface OnboardingConfig {
+  enabled?: boolean;
+  model?: string;
+  size?: string;
+}
 
 /**
  * Rate limiter for miracle mode image generation.
@@ -1685,11 +1689,6 @@ export default definePluginEntry({
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
 
-    const onboardingIntentDetector: IntentDetector | undefined = classifierModel
-      ? async (text: string) => detectOnboardingIntentWithLLM(classifierModel, text, api.runtime, api.logger)
-      : undefined;
-    const onboardingRuntime = registerOnboarding(api, botToken, imageDir, pluginConfig.onboarding ?? {}, onboardingIntentDetector);
-
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
       const cheerIntentModel = cheerConfig.intentModel ?? classifierModel;
@@ -1697,10 +1696,9 @@ export default definePluginEntry({
       // Phase 1: On user message received, immediately send focused (thinking) image
       if (cheerEnabled || (emotionMap.focused?.length ?? 0) > 0) {
         api.on("message_received", async (event: unknown) => {
-         const { content, metadata, senderId, sessionKey } = event as {
+         const { content, metadata, sessionKey } = event as {
            content?: string;
            metadata?: Record<string, unknown>;
-           senderId?: string;
            sessionKey?: string;
          };
          if (!content || content.trim() === "NO_REPLY") return;
@@ -1711,8 +1709,6 @@ export default definePluginEntry({
           const discordChannelId = normalizeDiscordChannelId(rawTo);
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
           if (!isChannelEnabled(discordChannelId)) return;
-          const userId = senderId ?? (metadata?.from as string | undefined) ?? "unknown";
-          if (onboardingRuntime?.isOnboardingMessage(discordChannelId, userId, content, sessionKey)) return;
           // Use profile DB to resolve channel-specific image directory
           const activeImageDir = profileDb
             ? resolveProfileImageDirForChannel(imageDir, profileDb, discordChannelId, defaultProfileId)
@@ -1783,10 +1779,6 @@ export default definePluginEntry({
 
       // Per-channel toggle check
       if (!isChannelEnabled(channelId)) return;
-
-      // Skip emotion image attachment for channels with active onboarding sessions
-      // to prevent duplicate images (onboarding sends images directly via Discord API)
-      if (onboardingRuntime?.hasActiveSession(channelId)) return;
 
       // Resolve workspace context for isolation
       const context: ImageDirContext = { metadata, sessionKey };
@@ -1873,4 +1865,3 @@ export default definePluginEntry({
     }, { name: "emotion-image-sent" });
   },
 });
-
