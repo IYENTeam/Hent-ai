@@ -1493,6 +1493,7 @@ export default definePluginEntry({
       miracleMode?: boolean;
       miracleRateLimit?: number;
       defaultProfile?: string;
+      dateMode?: { enabled?: boolean; channels?: string[]; excludeEmotions?: string[] };
     };
 
     if (pluginConfig.enabled === false) return;
