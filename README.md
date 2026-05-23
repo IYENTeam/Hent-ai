@@ -244,3 +244,7 @@ No manual action needed.
 ## License
 
 MIT
+
+## Special Thanks
+
+Special thanks to [MoerAI](https://github.com/MoerAI) for helping name Hent-ai.
