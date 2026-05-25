@@ -190,6 +190,47 @@ describe("channel mapping", () => {
   });
 });
 
+describe("channel settings", () => {
+  it("sets, clears, and lists explicit channel enable state", () => {
+    expect(db.getChannelEnabled("ch-123")).toBeNull();
+
+    db.setChannelEnabled("ch-123", false);
+    db.setChannelEnabled("ch-456", true);
+
+    expect(db.getChannelEnabled("ch-123")).toBe(false);
+    expect(db.getChannelEnabled("ch-456")).toBe(true);
+    expect(db.listChannelSettings()).toEqual([
+      { channelId: "ch-123", enabled: false, assetSetId: null },
+      { channelId: "ch-456", enabled: true, assetSetId: null },
+    ]);
+
+    expect(db.removeChannelEnabled("ch-123")).toBe(true);
+    expect(db.getChannelEnabled("ch-123")).toBeNull();
+  });
+
+  it("stores asset-set overrides in the same channel settings row", () => {
+    db.setChannelEnabled("ch-123", false);
+    db.setChannelAssetSet("ch-123", "private");
+
+    expect(db.getChannelEnabled("ch-123")).toBe(false);
+    expect(db.getChannelAssetSet("ch-123")).toBe("private");
+    expect(db.listChannelSettings()).toEqual([
+      { channelId: "ch-123", enabled: false, assetSetId: "private" },
+    ]);
+
+    expect(db.removeChannelAssetSet("ch-123")).toBe(true);
+    expect(db.getChannelEnabled("ch-123")).toBe(false);
+    expect(db.getChannelAssetSet("ch-123")).toBeNull();
+  });
+
+  it("removes empty channel settings rows when the last explicit setting is cleared", () => {
+    db.setChannelAssetSet("ch-123", "private");
+    expect(db.removeChannelAssetSet("ch-123")).toBe(true);
+    expect(db.listChannelSettings()).toEqual([]);
+  });
+});
+
+
 describe("profile settings", () => {
   beforeEach(() => {
     db.createProfile({ id: "gothic", name: "Gothic" });

@@ -9,11 +9,12 @@ import type {
   ProfileCreateInput,
   ProfileUpdateInput,
   ChannelProfileMapping,
+  ChannelSettings,
 } from "./profile.js";
 import { validateProfileId } from "./profile.js";
 
 const DB_FILENAME = "hentai.db";
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -33,6 +34,12 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS channel_profiles (
   channel_id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS channel_settings (
+  channel_id TEXT PRIMARY KEY,
+  enabled INTEGER CHECK (enabled IN (0, 1)),
+  asset_set_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS profile_settings (
@@ -86,11 +93,17 @@ export class ProfileDatabase {
       }
     })();
 
+    this.db.exec(SCHEMA_SQL);
+
     if (!versionRow) {
-      this.db.exec(SCHEMA_SQL);
       this.db
         .prepare("INSERT INTO schema_version (version) VALUES (?)")
         .run(SCHEMA_VERSION);
+      return;
+    }
+
+    if (versionRow.version < SCHEMA_VERSION) {
+      this.db.prepare("UPDATE schema_version SET version = ?").run(SCHEMA_VERSION);
     }
   }
 
@@ -216,6 +229,95 @@ export class ProfileDatabase {
       .prepare("SELECT channel_id, profile_id FROM channel_profiles ORDER BY channel_id")
       .all() as Array<{ channel_id: string; profile_id: string }>;
     return rows.map((r) => ({ channelId: r.channel_id, profileId: r.profile_id }));
+  }
+
+
+  // ── Channel Settings ──────────────────────────────────────────
+
+  setChannelEnabled(channelId: string, enabled: boolean): void {
+    this.db
+      .prepare(
+        `INSERT INTO channel_settings (channel_id, enabled)
+         VALUES (?, ?)
+         ON CONFLICT(channel_id) DO UPDATE SET enabled = excluded.enabled`,
+      )
+      .run(channelId, enabled ? 1 : 0);
+  }
+
+  getChannelEnabled(channelId: string): boolean | null {
+    const row = this.db
+      .prepare("SELECT enabled FROM channel_settings WHERE channel_id = ?")
+      .get(channelId) as { enabled: number | null } | undefined;
+    if (!row || row.enabled === null) return null;
+    return row.enabled === 1;
+  }
+
+  removeChannelEnabled(channelId: string): boolean {
+    const row = this.db
+      .prepare("SELECT asset_set_id FROM channel_settings WHERE channel_id = ?")
+      .get(channelId) as { asset_set_id: string | null } | undefined;
+
+    if (!row) return false;
+
+    if (row.asset_set_id === null) {
+      const result = this.db
+        .prepare("DELETE FROM channel_settings WHERE channel_id = ?")
+        .run(channelId);
+      return result.changes > 0;
+    }
+
+    const result = this.db
+      .prepare("UPDATE channel_settings SET enabled = NULL WHERE channel_id = ?")
+      .run(channelId);
+    return result.changes > 0;
+  }
+
+  setChannelAssetSet(channelId: string, assetSetId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO channel_settings (channel_id, asset_set_id)
+         VALUES (?, ?)
+         ON CONFLICT(channel_id) DO UPDATE SET asset_set_id = excluded.asset_set_id`,
+      )
+      .run(channelId, assetSetId);
+  }
+
+  getChannelAssetSet(channelId: string): string | null {
+    const row = this.db
+      .prepare("SELECT asset_set_id FROM channel_settings WHERE channel_id = ?")
+      .get(channelId) as { asset_set_id: string | null } | undefined;
+    return row?.asset_set_id ?? null;
+  }
+
+  removeChannelAssetSet(channelId: string): boolean {
+    const row = this.db
+      .prepare("SELECT enabled FROM channel_settings WHERE channel_id = ?")
+      .get(channelId) as { enabled: number | null } | undefined;
+
+    if (!row) return false;
+
+    if (row.enabled === null) {
+      const result = this.db
+        .prepare("DELETE FROM channel_settings WHERE channel_id = ?")
+        .run(channelId);
+      return result.changes > 0;
+    }
+
+    const result = this.db
+      .prepare("UPDATE channel_settings SET asset_set_id = NULL WHERE channel_id = ?")
+      .run(channelId);
+    return result.changes > 0;
+  }
+
+  listChannelSettings(): ChannelSettings[] {
+    const rows = this.db
+      .prepare("SELECT channel_id, enabled, asset_set_id FROM channel_settings ORDER BY channel_id")
+      .all() as Array<{ channel_id: string; enabled: number | null; asset_set_id: string | null }>;
+    return rows.map((r) => ({
+      channelId: r.channel_id,
+      enabled: r.enabled === null ? null : r.enabled === 1,
+      assetSetId: r.asset_set_id,
+    }));
   }
 
   // ── Profile Settings (key-value) ──────────────────────────────

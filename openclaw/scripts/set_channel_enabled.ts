@@ -5,12 +5,12 @@ import { ProfileDatabase } from "@hent-ai/shared/db";
 const args = process.argv.slice(2);
 
 function usage(): never {
-  console.error(`Usage: set_channel_mode --channel <id> --mode <set-id|default> [--image-dir <path>]`);
+  console.error(`Usage: set_channel_enabled --channel <id> --enabled <true|false|default> [--image-dir <path>]`);
   process.exit(1);
 }
 
 let channelId: string | undefined;
-let mode: string | undefined;
+let enabled: string | undefined;
 let imageDir: string | undefined;
 
 for (let i = 0; i < args.length; i++) {
@@ -18,8 +18,8 @@ for (let i = 0; i < args.length; i++) {
     case "--channel":
       channelId = args[++i];
       break;
-    case "--mode":
-      mode = args[++i];
+    case "--enabled":
+      enabled = args[++i];
       break;
     case "--image-dir":
       imageDir = args[++i];
@@ -30,18 +30,22 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-if (!channelId || !mode) usage();
+if (!channelId || !enabled) usage();
+
+const normalized = enabled.toLowerCase();
+if (!["true", "false", "default"].includes(normalized)) usage();
 
 const dir = imageDir ?? resolve(import.meta.dirname ?? ".", "../../assets");
 const db = new ProfileDatabase(dir);
 
 try {
-  if (mode === "default") {
-    db.removeChannelAssetSet(channelId);
-    console.log(`Channel ${channelId}: reverted to default asset set`);
+  if (normalized === "default") {
+    db.removeChannelEnabled(channelId);
+    console.log(`Channel ${channelId}: reverted to default enabled policy`);
   } else {
-    db.setChannelAssetSet(channelId, mode);
-    console.log(`Channel ${channelId}: asset set set to "${mode}"`);
+    const nextEnabled = normalized === "true";
+    db.setChannelEnabled(channelId, nextEnabled);
+    console.log(`Channel ${channelId}: Hent-ai ${nextEnabled ? "enabled" : "disabled"}`);
   }
 
   console.log(`Saved to ${resolve(dir, "hentai.db")} (channel_settings)`);

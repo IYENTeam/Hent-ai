@@ -46,7 +46,7 @@ The Discord channel ID is the numeric snowflake. Extract it from the conversatio
 ## Rules
 
 - Only execute when the user explicitly requests a mode change.
-- The change is per-channel and persists across bot restarts.
+- The asset-set change is per-channel and persists in `hentai.db` across bot restarts.
 - If the requested set doesn't exist in the manifest, the plugin silently falls back to the default. Warn the user if you suspect the set isn't set up yet.
 - Permission check: if `allowedUsers` is configured in the plugin config, verify the requesting user is in the list before executing.
 
@@ -59,5 +59,6 @@ The Discord channel ID is the numeric snowflake. Extract it from the conversatio
 ## References
 
 - Asset manifest system: `openclaw/assets/manifest.ts`
-- Channel overrides persistence: `openclaw/assets/channel-overrides.ts`
+- Plugin on/off is separate: use `openclaw/scripts/set_channel_enabled.ts`
+- Channel asset-set persistence: `channel_settings.asset_set_id` in `hentai.db` via `openclaw/scripts/set_channel_mode.ts`
 - Plugin reads overrides on each request: `openclaw/index.ts` → `getEmotionMapForChannel()`

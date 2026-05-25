@@ -10,6 +10,7 @@
   "files": [
     "index.ts",
     "discord-utils.ts",
+    "channel-filter.ts",
     "openclaw.plugin.json",
     "README.md"
   ],

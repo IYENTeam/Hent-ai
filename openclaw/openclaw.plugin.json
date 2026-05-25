@@ -47,20 +47,29 @@
       },
       "channels": {
         "type": "object",
-        "description": "Per-channel toggle. Use 'mode' to set default behavior and 'list' for exceptions.",
+        "description": "Per-channel toggle. Prefer defaultEnabled + overrides. Legacy mode/list is still accepted for backwards compatibility.",
         "additionalProperties": false,
         "properties": {
+          "defaultEnabled": {
+            "type": "boolean",
+            "description": "Default behavior for channels without an explicit override.",
+            "default": true
+          },
+          "overrides": {
+            "type": "object",
+            "description": "Explicit per-channel enable state: Discord channel ID -> true/false. A channel: prefix is accepted and normalized.",
+            "additionalProperties": { "type": "boolean" },
+            "default": {}
+          },
           "mode": {
             "type": "string",
             "enum": ["allowlist", "blocklist"],
-            "description": "'allowlist' = only listed channels get images. 'blocklist' = all channels except listed ones get images.",
-            "default": "blocklist"
+            "description": "Deprecated. Use defaultEnabled + overrides. 'allowlist' = only listed channels get images. 'blocklist' = all channels except listed ones get images."
           },
           "list": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Array of Discord channel IDs affected by the mode.",
-            "default": []
+            "description": "Deprecated. Array of Discord channel IDs affected by legacy mode."
           }
         }
       },

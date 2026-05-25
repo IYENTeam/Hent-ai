@@ -128,6 +128,7 @@ function migrateChannelOverrides(imageDir: string, db: ProfileDatabase): number 
     if (!db.getProfile(profileId)) continue;
 
     try {
+      db.setChannelAssetSet(channelId, setId);
       db.setChannelProfile(channelId, profileId);
       migrated++;
     } catch {

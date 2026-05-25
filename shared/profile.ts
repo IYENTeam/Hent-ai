@@ -28,6 +28,12 @@ export interface ChannelProfileMapping {
   profileId: string;
 }
 
+export interface ChannelSettings {
+  channelId: string;
+  enabled: boolean | null;
+  assetSetId: string | null;
+}
+
 const MAX_PROFILE_ID_LENGTH = 64;
 
 // lowercase alphanumeric, hyphens, underscores; must start with letter or digit

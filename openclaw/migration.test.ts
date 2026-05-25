@@ -130,6 +130,7 @@ describe("runMigration — channel overrides", () => {
 
     const db = new ProfileDatabase(tmpDir);
     try {
+      expect(db.getChannelAssetSet("ch-123")).toBe("private");
       expect(db.getChannelProfile("ch-123")).toBe("private");
     } finally {
       db.close();

@@ -74,6 +74,14 @@ Add the plugin configuration to your `openclaw.json` (or via `openclaw config`):
 
            // Optional: override default emotion (defaults to "neutral")
            // "defaultEmotion": "neutral",
+           // Optional: channel-level on/off policy. Overrides are Discord channel IDs.
+           // "channels": {
+           //   "defaultEnabled": true,
+           //   "overrides": {
+           //     "123456789012345678": false
+           //   }
+           // },
+
 
             // Optional: override emotion-to-filename mapping or define labeled image pools
             // "emotionMap": {
@@ -129,6 +137,8 @@ Send a message in Discord. You should see:
 | `classifierModel` | `string` | — | OpenClaw `provider/model` ID for LLM classification. **Required for LLM mode.** If not set, uses rule-based keyword matching only. |
 | `imageDir` | `string` | profile workspace `.hent-ai/emotion-image-assets`, then `../assets` fallback | Directory containing emotion image files |
 | `defaultEmotion` | `string` | `"neutral"` | Fallback emotion when no match found |
+| `channels.defaultEnabled` | `boolean` | `true` | Default enabled state for channels without explicit overrides |
+| `channels.overrides` | `object` | `{}` | Discord channel ID → boolean enable/disable overrides |
 | `emotionMap` | `object` | (built-in) | Mapping from emotion name → image filename or labeled image pool. **Filenames only** — paths that escape `imageDir` are rejected. |
 | `emotionRules` | `object` | (built-in) | Custom keyword regex patterns per emotion (merged with defaults) |
 | `cheer.enabled` | `boolean` | `true` | Enable one-off cheer image generation |
@@ -193,8 +203,8 @@ Hent-ai supports per-channel asset set switching via an agent-driven skill. The 
    ```bash
    npx tsx openclaw/scripts/set_channel_mode.ts --channel <CHANNEL_ID> --mode private
    ```
-3. The script writes to `imageDir/channel-overrides.json`
-4. On the next emotion image request, the plugin reads the override and uses `imageDir/sets/private/` assets
+3. The script writes to `imageDir/hentai.db` (`channel_settings.asset_set_id`)
+4. On the next emotion image request, the plugin reads the DB setting and uses `imageDir/sets/private/` assets
 
 ### Setup
 
@@ -215,7 +225,7 @@ Hent-ai supports per-channel asset set switching via an agent-driven skill. The 
 
 ### Persistence
 
-Channel overrides are saved to `imageDir/channel-overrides.json` and persist across bot restarts.
+Channel asset-set overrides are saved to `imageDir/hentai.db` (`channel_settings.asset_set_id`) and persist across bot restarts. Legacy `channel-overrides.json` is still read as a fallback.
 
 ### Commands
 
