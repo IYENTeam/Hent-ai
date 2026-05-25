@@ -1,4 +1,7 @@
 import { generateImage } from "@hent-ai/generate";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   assertPathInside,
@@ -16,6 +19,7 @@ import {
   handleCheerRequest,
   imageLabelMatchesContext,
   inferAutomaticImageLabel,
+  isOnboardingActive,
   MEDIA_LINE_RE,
   normalizeEmotionImageConfig,
   resolveImageDir,
@@ -285,6 +289,40 @@ describe("channel: prefix strip", () => {
   it("passes through plain channel ID", () => {
     const to = "123456789";
     expect(to.startsWith("channel:") ? to.slice(8) : to).toBe("123456789");
+  });
+});
+
+describe("isOnboardingActive", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `hent-onboarding-lock-${process.pid}-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("detects the root image directory onboarding lock", () => {
+    writeFileSync(join(tmpDir, ".onboarding-active"), "");
+
+    expect(isOnboardingActive(tmpDir)).toBe(true);
+  });
+
+  it("detects a profile/private image directory onboarding lock", () => {
+    const privateDir = join(tmpDir, "profiles", "private");
+    mkdirSync(privateDir, { recursive: true });
+    writeFileSync(join(privateDir, ".onboarding-active"), "");
+
+    expect(isOnboardingActive(tmpDir, privateDir)).toBe(true);
+  });
+
+  it("returns false when neither root nor active profile has a lock", () => {
+    const privateDir = join(tmpDir, "profiles", "private");
+    mkdirSync(privateDir, { recursive: true });
+
+    expect(isOnboardingActive(tmpDir, privateDir)).toBe(false);
   });
 });
 
