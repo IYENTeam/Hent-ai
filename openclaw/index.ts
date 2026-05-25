@@ -99,6 +99,13 @@ export function normalizeDiscordChannelId(value: string): string {
   return value.startsWith("channel:") ? value.slice(8) : value;
 }
 
+export function isOnboardingActive(imageDir: string, activeImageDir?: string): boolean {
+  const rootDir = resolve(imageDir);
+  const activeDir = activeImageDir ? resolve(activeImageDir) : rootDir;
+  const dirs = activeDir === rootDir ? [rootDir] : [activeDir, rootDir];
+  return dirs.some((dir) => existsSync(resolve(dir, ".onboarding-active")));
+}
+
 
 type RuntimeConfigProvider = {
   config?: {
@@ -1605,8 +1612,7 @@ export default definePluginEntry({
             : resolveActiveImageDir({ metadata, sessionKey });
 
           // Agent-driven onboarding: skip emotion images when lock file exists
-          const onboardingLockPath = resolve(imageDir, ".onboarding-active");
-          if (existsSync(onboardingLockPath)) return;
+          if (isOnboardingActive(imageDir, activeImageDir)) return;
 
           if (
            cheerEnabled &&
@@ -1678,6 +1684,7 @@ export default definePluginEntry({
       const activeImageDir = profileDb
         ? resolveProfileImageDirForChannel(imageDir, profileDb, channelId, defaultProfileId)
         : resolveActiveImageDir(context);
+      if (isOnboardingActive(imageDir, activeImageDir)) return;
       const rateLimiter = getRateLimiterForWorkspace(workspaceId);
       const channelQueues = getChannelQueuesForWorkspace(workspaceId);
 
