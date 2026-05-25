@@ -137,6 +137,38 @@
         "defaultProfile": {
           "type": "string",
           "description": "Default profile ID to use when no per-channel mapping exists. Profiles store emotion image sets and optional personality snippets."
+        },
+        "dateMode": {
+          "type": "object",
+          "description": "Date Mode: low-latency conversational mode with no tool calls, persona-only responses.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable date mode globally.",
+              "default": false
+            },
+            "channels": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Discord channel IDs where date mode is active. When a message arrives from one of these channels, the agent uses date mode persona and skips tools.",
+              "default": []
+            },
+            "model": {
+              "type": "string",
+              "description": "Override model for date mode channels (faster model recommended, e.g. 'closedrouter-openai/gpt-5.4-mini')."
+            },
+            "defaultPersona": {
+              "type": "string",
+              "description": "Default persona text when no profile soulSnippet exists for the channel."
+            },
+            "excludeEmotions": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Emotions to exclude in date mode (replaced with default emotion). Defaults to ['focused'].",
+              "default": ["focused"]
+            }
+          }
         }
     }
   }

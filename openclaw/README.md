@@ -264,7 +264,7 @@ If neither is set, the plugin logs a warning and does nothing.
 
 ## Onboarding (Agent-Driven)
 
-Onboarding is handled conversationally by the OpenClaw agent — no coded state machine or intent detection required. The agent reads these instructions and guides the user through the process naturally.
+Onboarding is handled by the OpenClaw agent reading this document and the repository state. There is no coded state machine, fixed questionnaire, or plugin intent detector for onboarding. The agent should infer what it can from the user's request, existing files, attached images, and config, then ask only for information that blocks progress.
 
 ### How It Works
 
@@ -272,25 +272,24 @@ When `imageDir` is omitted, Hent-ai stores assets under the active OpenClaw prof
 
 ### Trigger
 
-When a user says `onboarding` or `setup` in Discord, the OpenClaw agent should:
+When a user says `onboarding`, `setup`, or asks to create/configure a character in Discord, the OpenClaw agent should treat this section as an operating guide, not a script. A typical flow is:
 
-1. **Ask for character description** — Ask the user to describe their character (e.g. "cute orange cat", "pixel art robot"). The user may also attach a reference image.
+1. **Understand the character goal** — Infer the character concept from the user's message, attachments, and existing project files. Ask one concise question only if the concept is missing or ambiguous.
 
-2. **Handle attached images** — If the user attaches an image:
-   - Ask whether to use it directly as the base character, or as a style reference for generation.
+2. **Handle attached images** — If the user attaches an image, use context to decide whether it is the base character, a style reference, or a replacement for an emotion image. Ask only when the choice is ambiguous.
 
-3. **Generate base character** — Use the `image_generate` tool with the character description (and reference image if provided). Show the result and ask for approval.
+3. **Generate or install the base character** — Use `image_generate` when generation is needed, or save/copy a provided image when the user already supplied the asset. Show generated results and get approval before treating one as canonical.
    - If the user approves → proceed to emotions
    - If the user gives feedback → regenerate with feedback incorporated
    - If the user says cancel/취소/종료 → abort
 
-4. **Generate each emotion** — For each of the 6 emotions (`happy`, `neutral`, `loyalty`, `sorry`, `confused`, `focused`), one at a time:
-   - Generate using the base image as reference with an emotion-specific prompt
-   - Show the result, ask for approval
-   - Accept feedback for regeneration, or let the user attach their own image
-   - On approval, save to the `assets/` directory
+4. **Create the emotion set** — Ensure these 6 emotions exist: `happy`, `neutral`, `loyalty`, `sorry`, `confused`, `focused`.
+   - Generate using the base image as reference, or use user-provided replacements
+   - Preserve character identity and style consistency
+   - Get approval at meaningful checkpoints; do not force a fixed one-question-per-emotion script when the user already gave enough direction
+   - Save approved files to the configured asset directory
 
-5. **Complete** — Confirm all images are saved and the plugin is ready to use.
+5. **Verify and complete** — Confirm the expected files exist in the active asset/profile directory and tell the user the plugin is ready.
 
 ### Agent Prompting Guidelines
 
@@ -318,6 +317,8 @@ Emotion cues:
 Save all generated images to the configured `imageDir` (default: `../assets/` relative to the plugin):
 - `base.png` — the base character
 - `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, `focused.png`
+
+For profile/private mode onboarding, save into the active profile directory such as `imageDir/profiles/<profileId>/` instead of the root asset directory.
 
 ### Exit Commands
 

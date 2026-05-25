@@ -18,6 +18,31 @@ beforeEach(() => {
 });
 
 describe("sendTextMessage", () => {
+  it("uses OpenClaw sender before Discord REST when available", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const sender = { sendText: vi.fn().mockResolvedValue("openclaw-msg") };
+    const result = await sendTextMessage("token", "ch1", "hello", mockLogger, sender);
+    expect(result).toBe("openclaw-msg");
+    expect(sender.sendText).toHaveBeenCalledWith("ch1", "hello");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to Discord REST when OpenClaw sender returns null", async () => {
+    const sender = { sendText: vi.fn().mockResolvedValue(null) };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "rest-msg" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await sendTextMessage("token", "ch1", "hello", mockLogger, sender);
+    expect(result).toBe("rest-msg");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("OpenClaw text send unavailable"));
+    vi.unstubAllGlobals();
+  });
+
   it("returns message id on success", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,
@@ -50,6 +75,31 @@ describe("sendTextMessage", () => {
 });
 
 describe("sendImageBufferMessage", () => {
+  it("uses OpenClaw sender before Discord REST when available", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const sender = { sendImageBuffer: vi.fn().mockResolvedValue("openclaw-img") };
+    const buf = Buffer.from("PNG");
+    const result = await sendImageBufferMessage("token", "ch1", buf, "test.png", "caption", mockLogger, sender);
+    expect(result).toBe("openclaw-img");
+    expect(sender.sendImageBuffer).toHaveBeenCalledWith("ch1", buf, "test.png", "caption");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to Discord REST when OpenClaw image sender returns null", async () => {
+    const sender = { sendImageBuffer: vi.fn().mockResolvedValue(null) };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "rest-img" }),
+    }));
+    const buf = Buffer.from("PNG");
+    const result = await sendImageBufferMessage("token", "ch1", buf, "test.png", "caption", mockLogger, sender);
+    expect(result).toBe("rest-img");
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("OpenClaw image send unavailable"));
+    vi.unstubAllGlobals();
+  });
+
   it("returns message id on success", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: true,

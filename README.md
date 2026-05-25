@@ -33,7 +33,7 @@ Choose your platform:
 
 You need 6 images that visually represent each emotion. There are three ways to set them up:
 
-- **Agent-driven setup (easiest)** — Tell your AI agent to read [`SKILL.md`](./SKILL.md) in this repo. It will guide you through generating each image interactively — character description, base image approval, and 6 emotion variants, one by one.
+- **Agent-driven setup (easiest)** — Tell your AI agent to read [`SKILL.md`](./SKILL.md) in this repo. It should inspect the docs/config, infer your goal from context, and create/install the needed character emotion assets without forcing a fixed questionnaire.
 - **CLI** — Run `hent-ai generate` from the command line (Option A below).
 - **Manual** — Create images yourself with any tool (Option B below).
 
@@ -244,3 +244,7 @@ No manual action needed.
 ## License
 
 MIT
+
+## Special Thanks
+
+Special thanks to [MoerAI](https://github.com/MoerAI) for helping name Hent-ai.

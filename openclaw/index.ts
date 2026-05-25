@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { sendImageBufferMessage, sendTextMessage } from "./discord-utils.js";
+import { sendImageBufferMessage, sendTextMessage, type OpenClawMessageSender } from "./discord-utils.js";
 import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
 import {
@@ -102,6 +102,13 @@ export function expandEnvPlaceholder(value: string | undefined): string | undefi
     if (!m) return value;
     return process.env[m[1]];
   }
+
+export function isOnboardingActive(imageDir: string, activeImageDir?: string): boolean {
+  const rootDir = resolve(imageDir);
+  const activeDir = activeImageDir ? resolve(activeImageDir) : rootDir;
+  const dirs = activeDir === rootDir ? [rootDir] : [activeDir, rootDir];
+  return dirs.some((dir) => existsSync(resolve(dir, ".onboarding-active")));
+}
 
 
 type RuntimeConfigProvider = {
@@ -879,6 +886,66 @@ export function detectEmotion(
   return fallback;
 }
 
+function extractOutboundMessageId(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const record = result as Record<string, unknown>;
+  if (typeof record.messageId === "string") return record.messageId;
+  const nested = record.result;
+  if (nested && typeof nested === "object") {
+    const nestedRecord = nested as Record<string, unknown>;
+    if (typeof nestedRecord.messageId === "string") return nestedRecord.messageId;
+  }
+  return null;
+}
+
+export function createOpenClawMessageSender(api: {
+  config?: unknown;
+  runtime?: {
+    channel?: {
+      outbound?: {
+        loadAdapter?: (id: string) => Promise<{
+          sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>;
+          sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown>;
+        } | undefined>;
+      };
+    };
+  };
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
+}): OpenClawMessageSender | undefined {
+  const loadAdapter = api.runtime?.channel?.outbound?.loadAdapter;
+  if (!loadAdapter) return undefined;
+
+  return {
+    async sendText(channelId, text) {
+      try {
+        const adapter = await loadAdapter("discord");
+        if (!adapter?.sendText) return null;
+        const result = await adapter.sendText({ cfg: api.config ?? {}, to: `channel:${channelId}`, text });
+        const messageId = extractOutboundMessageId(result);
+        api.logger.info(`emotion-image: sent text to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
+        return messageId;
+      } catch (err) {
+        api.logger.warn(`emotion-image: OpenClaw text send failed: ${err}`);
+        return null;
+      }
+    },
+    async sendImageBuffer(channelId, buffer, filename, text) {
+      try {
+        const adapter = await loadAdapter("discord");
+        if (!adapter?.sendMedia) return null;
+        const mediaUrl = `data:image/png;base64,${buffer.toString("base64")}`;
+        const result = await adapter.sendMedia({ cfg: api.config ?? {}, to: `channel:${channelId}`, text, mediaUrl });
+        const messageId = extractOutboundMessageId(result);
+        api.logger.info(`emotion-image: sent ${filename} to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
+        return messageId;
+      } catch (err) {
+        api.logger.warn(`emotion-image: OpenClaw image send failed for ${filename}: ${err}`);
+        return null;
+      }
+    },
+  };
+}
+
 export async function editMessageWithImage(
    token: string,
    channelId: string,
@@ -941,10 +1008,19 @@ export async function sendImageMessage(
    channelId: string,
    imagePath: string,
    logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+   openClawSender?: OpenClawMessageSender,
  ) {
    try {
      const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
+    if (openClawSender?.sendImageBuffer) {
+      const messageId = await openClawSender.sendImageBuffer(channelId, imageBuffer, filename, "");
+      if (messageId) {
+        logger.info(`emotion-image: sent ${filename} to channel ${channelId} via OpenClaw outbound`);
+        return;
+      }
+      logger.warn("emotion-image: OpenClaw image send unavailable; falling back to Discord REST");
+    }
 
     const boundary = `----EmotionImage${Date.now()}`;
     const parts: Buffer[] = [];
@@ -1116,9 +1192,10 @@ export async function handleCheerRequest(
     onboardingConfig?: OnboardingConfig;
     rephraseProvider?: RephraseProvider;
     logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
+    openClawSender?: OpenClawMessageSender;
   },
 ): Promise<void> {
-  const { token, channelId, imageDir, config, onboardingConfig, rephraseProvider, logger } = params;
+  const { token, channelId, imageDir, config, onboardingConfig, rephraseProvider, logger, openClawSender } = params;
   const baseImagePath = assertPathInside(imageDir, "base.png");
   await sendTextMessage(
     token,
@@ -1146,6 +1223,7 @@ export async function handleCheerRequest(
       "cheer.png",
       "화이팅! 오늘도 충분히 잘하고 있어요.",
       logger,
+      openClawSender,
     );
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -1154,6 +1232,7 @@ export async function handleCheerRequest(
       channelId,
       `응원 이미지 생성에 실패했어요: ${errMsg}`,
       logger,
+      openClawSender,
     );
     logger.error(`emotion-image: cheer generation failed: ${err}`);
   }
@@ -1425,6 +1504,7 @@ export default definePluginEntry({
       miracleMode?: boolean;
       miracleRateLimit?: number;
       defaultProfile?: string;
+      dateMode?: { enabled?: boolean; channels?: string[]; excludeEmotions?: string[] };
     };
 
     if (pluginConfig.enabled === false) return;
@@ -1586,6 +1666,7 @@ export default definePluginEntry({
      }
 
     api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
+    const openClawSender = createOpenClawMessageSender(api);
 
       const cheerConfig = pluginConfig.cheer ?? {};
       const cheerEnabled = cheerConfig.enabled !== false;
@@ -1607,6 +1688,12 @@ export default definePluginEntry({
           const discordChannelId = normalizeDiscordChannelId(rawTo);
           if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
           if (!isChannelEnabled(discordChannelId)) return;
+          // Date mode channels: skip thinking (focused) image entirely
+          const dateModeChannels = pluginConfig.dateMode?.channels ?? [];
+          if (pluginConfig.dateMode?.enabled && dateModeChannels.includes(discordChannelId)) {
+            api.logger.info(`emotion-image: date mode active for channel=${discordChannelId}, skipping thinking image`);
+            return;
+          }
           // Asset-set overrides use the root imageDir; profiles use flat profile dirs.
           const activeImageDir = getChannelAssetSetId(discordChannelId)
             ? imageDir
@@ -1615,8 +1702,7 @@ export default definePluginEntry({
               : resolveActiveImageDir({ metadata, sessionKey });
 
           // Agent-driven onboarding: skip emotion images when lock file exists
-          const onboardingLockPath = resolve(imageDir, ".onboarding-active");
-          if (existsSync(onboardingLockPath)) return;
+          if (isOnboardingActive(imageDir, activeImageDir)) return;
 
           if (
            cheerEnabled &&
@@ -1631,6 +1717,7 @@ export default definePluginEntry({
                onboardingConfig: pluginConfig.onboarding,
                rephraseProvider,
                logger: api.logger,
+               openClawSender,
             });
            return;
          }
@@ -1642,7 +1729,7 @@ export default definePluginEntry({
 
          api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
          try {
-            await sendImageMessage(botToken, discordChannelId, thinkingImagePath, api.logger);
+            await sendImageMessage(botToken, discordChannelId, thinkingImagePath, api.logger, openClawSender);
         } catch (err) {
           api.logger.warn(`emotion-image: thinking image send failed: ${err}`);
         }
@@ -1691,6 +1778,7 @@ export default definePluginEntry({
         : profileDb
           ? resolveProfileImageDirForChannel(imageDir, profileDb, channelId, defaultProfileId)
           : resolveActiveImageDir(context);
+      if (isOnboardingActive(imageDir, activeImageDir)) return;
       const rateLimiter = getRateLimiterForWorkspace(workspaceId);
       const channelQueues = getChannelQueuesForWorkspace(workspaceId);
 
@@ -1716,6 +1804,16 @@ export default definePluginEntry({
         } else {
           finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
         }
+
+          // Date mode: replace focused with neutral (no "working" vibe in date mode)
+          const dateModeConfig = pluginConfig.dateMode;
+          if (dateModeConfig?.enabled && dateModeConfig.channels?.includes(channelId)) {
+            const excluded = dateModeConfig.excludeEmotions ?? ["focused"];
+            if (excluded.includes(finalEmotion)) {
+              api.logger.info(`emotion-image: date mode replacing excluded emotion "${finalEmotion}" with "${activeEmotion}"`);
+              finalEmotion = activeEmotion;
+            }
+          }
 
           const channelEmotionMap = getEmotionMapForChannel(channelId);
           const variants = channelEmotionMap[finalEmotion] ?? channelEmotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
