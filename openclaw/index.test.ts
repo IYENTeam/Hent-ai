@@ -7,6 +7,7 @@ import {
   assertPathInside,
   buildCheerPrompt,
   buildEmotionRules,
+  createOpenClawMessageSender,
   detectCheerIntentWithLLM,
   detectApiType,
   detectEmotion,
@@ -25,11 +26,22 @@ import {
   resolveImageDir,
   resolveProfileWorkspaceDir,
   selectEmotionImageVariant,
+  sendImageMessage,
 } from "./index.js";
 
 vi.mock("@hent-ai/generate", () => ({
   generateImage: vi.fn(async () => Buffer.from("FAKE_CHEER_PNG")),
 }));
+
+type FetchOptionsWithBody = { method?: string; headers?: Record<string, string>; body: Buffer | string };
+
+function fetchCallAt(mock: ReturnType<typeof vi.fn>, index: number): [unknown, FetchOptionsWithBody] {
+  const call = mock.mock.calls[index];
+  expect(call).toBeDefined();
+  const options = call?.[1] as FetchOptionsWithBody | undefined;
+  expect(options).toBeDefined();
+  return [call?.[0], options as FetchOptionsWithBody];
+}
 
 function mockRuntime(overrides?: {
   baseUrl?: string;
@@ -181,10 +193,10 @@ describe("cheer request helpers", () => {
       referenceImages: undefined,
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][1].body).toContain("응원 이미지를 만들고 있어요");
-    expect(Buffer.isBuffer(fetchMock.mock.calls[1][1].body)).toBe(true);
-    expect(fetchMock.mock.calls[1][1].body.toString()).toContain("cheer.png");
-    expect(fetchMock.mock.calls[1][1].body.toString()).toContain("화이팅! 오늘도 충분히 잘하고 있어요.");
+    expect(fetchCallAt(fetchMock, 0)[1].body).toContain("응원 이미지를 만들고 있어요");
+    expect(Buffer.isBuffer(fetchCallAt(fetchMock, 1)[1].body)).toBe(true);
+    expect(fetchCallAt(fetchMock, 1)[1].body.toString()).toContain("cheer.png");
+    expect(fetchCallAt(fetchMock, 1)[1].body.toString()).toContain("화이팅! 오늘도 충분히 잘하고 있어요.");
   });
 
   it("detects indirect Korean cheer intent with the configured LLM", async () => {
@@ -202,7 +214,7 @@ describe("cheer request helpers", () => {
     );
 
     expect(result).toBe(true);
-    const [, options] = fetchMock.mock.calls[0];
+    const [, options] = fetchCallAt(fetchMock, 0);
     const body = JSON.parse(options.body);
     expect(body.messages[0].content).toContain("encourage, cheer up, comfort, support, motivate");
     expect(body.messages[0].content).toContain("오늘 너무 지쳤는데 기운 좀 줄 수 있어?");
@@ -388,7 +400,7 @@ describe("editMessageWithImage", () => {
     );
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, options] = mockFetch.mock.calls[0];
+    const [url, options] = fetchCallAt(mockFetch, 0);
     expect(url).toBe("https://discord.com/api/v10/channels/channel-456/messages/msg-789");
     expect(options.method).toBe("PATCH");
     expect(options.headers).toMatchObject({
@@ -478,11 +490,60 @@ describe("editMessageWithImage", () => {
       mockLogger,
     );
 
-    const [, options] = mockFetch.mock.calls[0];
+    const [, options] = fetchCallAt(mockFetch, 0);
     const bodyStr = (options.body as Buffer).toString();
     expect(bodyStr).toContain("Hello world");
     expect(bodyStr).toContain("neutral.png");
     expect(bodyStr).toContain("files[0]");
+  });
+});
+
+describe("OpenClaw outbound sending", () => {
+  const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("creates a sender that delegates text and media to the Discord outbound adapter", async () => {
+    const sendText = vi.fn().mockResolvedValue({ messageId: "text-1" });
+    const sendMedia = vi.fn().mockResolvedValue({ messageId: "media-1" });
+    const loadAdapter = vi.fn().mockResolvedValue({ sendText, sendMedia });
+    const sender = createOpenClawMessageSender({
+      config: { channels: { discord: {} } },
+      runtime: { channel: { outbound: { loadAdapter } } },
+      logger: mockLogger,
+    });
+
+    expect(sender).toBeDefined();
+    await expect(sender?.sendText?.("123", "hello")).resolves.toBe("text-1");
+    await expect(sender?.sendImageBuffer?.("123", Buffer.from("PNG"), "focused.png", "caption")).resolves.toBe("media-1");
+
+    expect(loadAdapter).toHaveBeenCalledWith("discord");
+    expect(sendText).toHaveBeenCalledWith({ cfg: { channels: { discord: {} } }, to: "channel:123", text: "hello" });
+    expect(sendMedia).toHaveBeenCalledWith({
+      cfg: { channels: { discord: {} } },
+      to: "channel:123",
+      text: "caption",
+      mediaUrl: expect.stringMatching(/^data:image\/png;base64,/),
+    });
+  });
+
+  it("falls back to Discord REST when sendImageMessage OpenClaw delivery returns no id", async () => {
+    const sender = { sendImageBuffer: vi.fn().mockResolvedValue(null) };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
+
+    await sendImageMessage("bot-token", "channel-456", imagePath, mockLogger, sender);
+
+    expect(sender.sendImageBuffer).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, options] = fetchCallAt(fetchMock, 0);
+    expect(url).toBe("https://discord.com/api/v10/channels/channel-456/messages");
+    expect(options.method).toBe("POST");
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("OpenClaw image send unavailable"));
   });
 });
 
@@ -959,7 +1020,7 @@ describe("appendImageToMessage attachment schema", () => {
      const existingAttachments = [{ id: "123456789" }];
      const newFileIndex = 0;
      const filename = "emotion.png";
-     const attachments = [
+      const attachments: Array<{ id: string } | { id: number; filename: string }> = [
        ...existingAttachments,
        { id: newFileIndex, filename },
      ];
