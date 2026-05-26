@@ -25,6 +25,7 @@ import {
   normalizeEmotionImageConfig,
   resolveImageDir,
   resolveProfileWorkspaceDir,
+  sanitizeLogMessage,
   selectEmotionImageVariant,
   sendImageMessage,
 } from "./index.js";
@@ -528,6 +529,28 @@ describe("OpenClaw outbound sending", () => {
       text: "caption",
       mediaUrl: expect.stringMatching(/^data:image\/png;base64,/),
     });
+  });
+
+  it("redacts data URLs from OpenClaw outbound failure logs", async () => {
+    const sender = createOpenClawMessageSender({
+      config: { channels: { discord: {} } },
+      runtime: {
+        channel: {
+          outbound: {
+            loadAdapter: vi.fn().mockResolvedValue({
+              sendMedia: vi.fn().mockRejectedValue(new Error("blocked data:image/png;base64," + "a".repeat(100))),
+            }),
+          },
+        },
+      },
+      logger: mockLogger,
+    });
+
+    await expect(sender?.sendImageBuffer?.("123", Buffer.from("PNG"), "focused.png", "caption")).resolves.toBeNull();
+
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "emotion-image: OpenClaw image send failed for focused.png: Error: blocked data:image/png;base64,<redacted>",
+    );
   });
 
   it("falls back to Discord REST when sendImageMessage OpenClaw delivery returns no id", async () => {
@@ -1157,5 +1180,13 @@ describe("miracle mode", () => {
       const result = selectEmotionImageVariant(variants, () => 0.5, "", true);
       expect(result).toEqual({ filename: "happy.png", weight: 1 });
     });
+  });
+});
+
+describe("sanitizeLogMessage", () => {
+  it("redacts inline base64 data URLs", () => {
+    expect(sanitizeLogMessage("prefix data:image/png;base64," + "a".repeat(20))).toBe(
+      "prefix data:image/png;base64,<redacted>",
+    );
   });
 });

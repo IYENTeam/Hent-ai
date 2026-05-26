@@ -886,6 +886,12 @@ export function detectEmotion(
   return fallback;
 }
 
+const DATA_URL_LOG_RE = /data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,[a-z0-9+/=\r\n]+/gi;
+
+export function sanitizeLogMessage(value: unknown): string {
+  return String(value).replace(DATA_URL_LOG_RE, (_match, mime: string) => `data:${mime};base64,<redacted>`);
+}
+
 function extractOutboundMessageId(result: unknown): string | null {
   if (!result || typeof result !== "object") return null;
   const record = result as Record<string, unknown>;
@@ -925,7 +931,7 @@ export function createOpenClawMessageSender(api: {
         api.logger.info(`emotion-image: sent text to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
         return messageId;
       } catch (err) {
-        api.logger.warn(`emotion-image: OpenClaw text send failed: ${err}`);
+        api.logger.warn(`emotion-image: OpenClaw text send failed: ${sanitizeLogMessage(err)}`);
         return null;
       }
     },
@@ -939,7 +945,7 @@ export function createOpenClawMessageSender(api: {
         api.logger.info(`emotion-image: sent ${filename} to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
         return messageId;
       } catch (err) {
-        api.logger.warn(`emotion-image: OpenClaw image send failed for ${filename}: ${err}`);
+        api.logger.warn(`emotion-image: OpenClaw image send failed for ${filename}: ${sanitizeLogMessage(err)}`);
         return null;
       }
     },

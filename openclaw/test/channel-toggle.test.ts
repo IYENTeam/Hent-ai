@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { createChannelEnabledResolver, normalizeDiscordChannelId } from "../channel-filter.js";
+import {
+  createChannelEnabledResolver,
+  createProfileDbChannelEnableStore,
+  normalizeDiscordChannelId,
+} from "../channel-filter.js";
 
 describe("per-channel toggle", () => {
   it("defaults to enabled when no channel policy exists", () => {
@@ -34,6 +38,18 @@ describe("per-channel toggle", () => {
       { getChannelEnabled: (channelId) => (channelId === "111" ? false : null) },
     );
 
+    expect(check("111")).toBe(false);
+    expect(check("222")).toBe(true);
+  });
+
+  it("ignores stale profile DB instances without channel toggle support", () => {
+    const store = createProfileDbChannelEnableStore({} as never);
+    const check = createChannelEnabledResolver(
+      { defaultEnabled: true, overrides: { "111": false } },
+      store,
+    );
+
+    expect(store).toBeNull();
     expect(check("111")).toBe(false);
     expect(check("222")).toBe(true);
   });
