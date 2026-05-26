@@ -52,8 +52,16 @@ describe("per-channel toggle", () => {
     expect(check("333")).toBe(false);
   });
 
-  it("legacy allowlist with an empty list disables all channels", () => {
-    const check = createChannelEnabledResolver({ mode: "allowlist", list: [] });
+  it("preserves legacy empty-list behavior as all channels enabled", () => {
+    const allowlist = createChannelEnabledResolver({ mode: "allowlist", list: [] });
+    const blocklist = createChannelEnabledResolver({ mode: "blocklist", list: [] });
+
+    expect(allowlist("123")).toBe(true);
+    expect(blocklist("123")).toBe(true);
+  });
+
+  it("uses defaultEnabled for an explicit all-off policy", () => {
+    const check = createChannelEnabledResolver({ defaultEnabled: false, overrides: {} });
     expect(check("123")).toBe(false);
   });
 

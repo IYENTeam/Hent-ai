@@ -308,7 +308,7 @@ npx tsx openclaw/scripts/set_channel_enabled.ts --channel 111111111 --enabled de
 }
 ```
 
-레거시 `allowlist`에서 `list: []`는 이제 직관대로 **전체 비활성**입니다. 전체 활성 기본값이 필요하면 `defaultEnabled: true`를 사용하세요.
+레거시 `allowlist`/`blocklist`에서 `list: []`는 하위 호환을 위해 기존처럼 **전체 활성**입니다. 전체 비활성이 필요하면 새 형식 `defaultEnabled: false`를 사용하세요.
 
 ## channel-overrides (레거시)
 

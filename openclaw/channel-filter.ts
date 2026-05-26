@@ -34,13 +34,6 @@ function normalizeBooleanOverrides(overrides?: Record<string, boolean>): Map<str
   return normalized;
 }
 
-function resolveLegacyDefault(config?: ChannelFilterConfig): boolean | undefined {
-  if (!config || config.defaultEnabled !== undefined || config.overrides) return undefined;
-  if (config.mode === "allowlist") return false;
-  if (config.mode === "blocklist") return true;
-  return undefined;
-}
-
 export function createChannelEnabledResolver(
   config?: ChannelFilterConfig,
   store?: ChannelEnableStore | null,
@@ -48,7 +41,7 @@ export function createChannelEnabledResolver(
   const configOverrides = normalizeBooleanOverrides(config?.overrides);
   const legacyList = new Set((config?.list ?? []).map(normalizeDiscordChannelId));
   const legacyMode = config?.mode;
-  const defaultEnabled = config?.defaultEnabled ?? resolveLegacyDefault(config) ?? true;
+  const defaultEnabled = config?.defaultEnabled ?? true;
 
   return (rawChannelId: string): boolean => {
     const channelId = normalizeDiscordChannelId(rawChannelId);
@@ -59,6 +52,7 @@ export function createChannelEnabledResolver(
     const configOverride = configOverrides.get(channelId);
     if (typeof configOverride === "boolean") return configOverride;
 
+    if (legacyMode && legacyList.size === 0) return defaultEnabled;
     if (legacyMode === "allowlist") return legacyList.has(channelId);
     if (legacyMode === "blocklist") return !legacyList.has(channelId);
 
