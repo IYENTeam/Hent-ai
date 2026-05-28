@@ -5,10 +5,9 @@
   "version": "0.2.0",
   "license": "MIT",
   "bin": {
-    "hent-ai": "./bin/hent-ai.js"
+    "hent-ai": "./dist-cli/install.js"
   },
   "files": [
-    "bin/hent-ai.js",
     "dist-cli/install.js",
     "assets/optimized/*.png"
   ],
@@ -18,7 +17,14 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "keywords": ["cursor", "emotion", "character", "ai-agent", "hent-ai", "cursor-plugin"],
+  "keywords": [
+    "cursor",
+    "emotion",
+    "character",
+    "ai-agent",
+    "hent-ai",
+    "cursor-plugin"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/IYENTeam/Hent-ai"
