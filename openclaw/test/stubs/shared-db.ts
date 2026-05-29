@@ -4,7 +4,7 @@ import type {
   Profile,
   ProfileCreateInput,
   ProfileUpdateInput,
-} from "./shared-profile";
+} from "./shared-profile.js";
 
 export class ProfileDatabase {
   constructor(_imageDir: string) {}
