@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cli.json",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pack:check": "npm pack --dry-run --json"
   },
   "keywords": [
     "cursor",

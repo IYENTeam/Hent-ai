@@ -1,4 +1,8 @@
-export async function generateImage(): Promise<Buffer> {
+export interface RephraseProvider {
+  rephrase(prompt: string, reason?: string): Promise<string>;
+}
+
+export async function generateImage(_options?: GenerateOptions): Promise<Buffer> {
   return Buffer.from("FAKE_PNG_DATA");
 }
 
@@ -7,6 +11,7 @@ export interface GenerateOptions {
   model?: string;
   size?: string;
   referenceImages?: string[];
+  rephraseProvider?: RephraseProvider;
 }
 
 export const EMOTIONS = [

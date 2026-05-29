@@ -20,7 +20,8 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {
     "@hent-ai/generate": "file:../generate",
@@ -30,7 +31,7 @@
     "@openclaw/plugin-sdk": ">=2026.4.0"
   },
   "devDependencies": {
-    "@openclaw/plugin-sdk": "file:../../openclaw/packages/plugin-sdk",
+    "@openclaw/plugin-sdk": "file:./test/stubs/plugin-sdk",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "better-sqlite3": "^12.10.0",
@@ -58,5 +59,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/IYENTeam/claw-onichan"
+  },
+  "peerDependenciesMeta": {
+    "@openclaw/plugin-sdk": {
+      "optional": true
+    }
   }
 }

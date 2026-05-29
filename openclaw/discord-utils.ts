@@ -14,6 +14,41 @@ export type OpenClawMessageSender = {
   ) => Promise<string | null>;
 };
 
+const DISCORD_RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const DEFAULT_RETRY_DELAYS_MS = [250, 750];
+
+function parseRetryAfterMs(res: Response): number | null {
+  const retryAfter = res.headers.get("retry-after");
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 10_000);
+  const dateMs = Date.parse(retryAfter);
+  if (Number.isFinite(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), 10_000);
+  return null;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchDiscordWithRetry(
+  url: string,
+  init: RequestInit,
+  logger: Logger,
+): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    const res = await fetch(url, init);
+    if (!DISCORD_RETRY_STATUSES.has(res.status) || attempt >= DEFAULT_RETRY_DELAYS_MS.length) {
+      return res;
+    }
+    const retryAfterMs = parseRetryAfterMs(res) ?? DEFAULT_RETRY_DELAYS_MS[attempt];
+    attempt += 1;
+    logger.warn(`discord-utils: retrying ${init.method ?? "GET"} ${url} after ${res.status} in ${retryAfterMs}ms`);
+    await delay(retryAfterMs);
+  }
+}
+
 export async function sendTextMessage(
   token: string,
   channelId: string,
@@ -28,7 +63,7 @@ export async function sendTextMessage(
   }
 
   try {
-    const res = await fetch(
+    const res = await fetchDiscordWithRetry(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
       {
         method: "POST",
@@ -38,6 +73,7 @@ export async function sendTextMessage(
         },
         body: JSON.stringify({ content: text }),
       },
+      logger,
     );
     if (!res.ok) {
       const body = await res.text();
@@ -91,7 +127,7 @@ export async function sendImageBufferMessage(
 
     const body = Buffer.concat(parts);
 
-    const res = await fetch(
+    const res = await fetchDiscordWithRetry(
       `https://discord.com/api/v10/channels/${channelId}/messages`,
       {
         method: "POST",
@@ -101,6 +137,7 @@ export async function sendImageBufferMessage(
         },
         body,
       },
+      logger,
     );
 
     if (!res.ok) {
@@ -124,7 +161,7 @@ export async function editTextMessage(
   logger: Logger,
 ): Promise<void> {
   try {
-    const res = await fetch(
+    const res = await fetchDiscordWithRetry(
       `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
       {
         method: "PATCH",
@@ -134,6 +171,7 @@ export async function editTextMessage(
         },
         body: JSON.stringify({ content: text }),
       },
+      logger,
     );
     if (!res.ok) {
       const body = await res.text();
@@ -160,11 +198,12 @@ export async function getMessageAttachments(
 ): Promise<DiscordAttachment[]> {
   if (!messageId) return [];
   try {
-    const res = await fetch(
+    const res = await fetchDiscordWithRetry(
       `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
       {
         headers: { Authorization: `Bot ${token}` },
       },
+      logger,
     );
     if (!res.ok) {
       const body = await res.text();
@@ -181,7 +220,7 @@ export async function getMessageAttachments(
 
 export async function downloadUrl(url: string, logger: Logger): Promise<Buffer | null> {
   try {
-    const res = await fetch(url);
+    const res = await fetchDiscordWithRetry(url, {}, logger);
     if (!res.ok) {
       logger.warn(`discord-utils: downloadUrl failed ${res.status}: ${url}`);
       return null;
