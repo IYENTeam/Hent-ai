@@ -35,7 +35,8 @@
     "@types/node": "^22.0.0",
     "better-sqlite3": "^12.10.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "@openclaw/plugin-sdk": "file:./test/stubs/plugin-sdk"
   },
   "openclaw": {
     "extensions": [
@@ -58,5 +59,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/IYENTeam/claw-onichan"
+  },
+  "peerDependenciesMeta": {
+    "@openclaw/plugin-sdk": {
+      "optional": true
+    }
   }
 }
