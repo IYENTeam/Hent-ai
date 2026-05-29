@@ -11,6 +11,10 @@
     "index.ts",
     "discord-utils.ts",
     "channel-filter.ts",
+    "migration.ts",
+    "profile-manager.ts",
+    "assets/manifest.ts",
+    "assets/channel-overrides.ts",
     "openclaw.plugin.json",
     "README.md"
   ],
