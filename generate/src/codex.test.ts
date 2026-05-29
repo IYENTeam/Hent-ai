@@ -185,4 +185,27 @@ describe("codex.ts", () => {
       expect(rephraseFn).not.toHaveBeenCalled();
     });
   });
+
+  describe("malformed JSON handling", () => {
+    it("throws an actionable error when ~/.codex/auth.json is not valid JSON", async () => {
+      vi.mocked(readFile).mockResolvedValue("{ not valid json");
+
+      await expect(generateImage({ prompt: "test" })).rejects.toThrow(
+        /Failed to parse .*auth\.json.*codex login/,
+      );
+    });
+
+    it("throws an actionable error when a non-SSE response body is not valid JSON", async () => {
+      mockFetch.mockResolvedValue(
+        new Response("<html>502 Bad Gateway</html>", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      await expect(generateImage({ prompt: "test" })).rejects.toThrow(
+        /unparseable non-streaming response/,
+      );
+    });
+  });
 });
