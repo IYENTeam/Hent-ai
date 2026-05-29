@@ -22,6 +22,8 @@ export class ProfileDatabase {
   getChannelEnabled(_channelId: string): boolean | null { return null; }
   removeChannelEnabled(_channelId: string): boolean { return false; }
   setChannelAssetSet(_channelId: string, _assetSetId: string): void {}
+  getChannelAssetSet(_channelId: string): string | null { return null; }
+  removeChannelAssetSet(_channelId: string): boolean { return false; }
   getChannelSettings(_channelId: string): ChannelSettings | null { return null; }
   close(): void {}
 }
