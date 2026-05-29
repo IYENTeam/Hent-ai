@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   sendTextMessage,
   sendImageBufferMessage,
@@ -15,6 +15,12 @@ const mockLogger = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useRealTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("sendTextMessage", () => {
@@ -50,7 +56,27 @@ describe("sendTextMessage", () => {
     }));
     const result = await sendTextMessage("token", "ch1", "hello", mockLogger);
     expect(result).toBe("msg123");
-    vi.unstubAllGlobals();
+  });
+
+  it("retries Discord rate limits using retry-after", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "retry-after": "0.001" }),
+        text: async () => "rate limited",
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: "retried-msg" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = sendTextMessage("token", "ch1", "hello", mockLogger);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toBe("retried-msg");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("retrying"));
   });
 
   it("returns null and warns on HTTP error", async () => {
@@ -114,13 +140,13 @@ describe("sendImageBufferMessage", () => {
   it("returns null and warns on HTTP error", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
-      status: 429,
-      text: async () => "Rate limited",
+      status: 400,
+      text: async () => "Bad request",
     }));
     const buf = Buffer.from("PNG");
     const result = await sendImageBufferMessage("token", "ch1", buf, "test.png", "text", mockLogger);
     expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("429"));
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("400"));
     vi.unstubAllGlobals();
   });
 

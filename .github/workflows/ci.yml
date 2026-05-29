@@ -93,18 +93,18 @@ jobs:
         if: steps.check.outputs.exists == 'true'
         working-directory: generate
         run: |
-          test -f dist/main.js || { echo "::error::declared bin dist/main.js missing after build"; exit 1; }
-          test -f dist/index.js || { echo "::error::declared export dist/index.js missing after build"; exit 1; }
+          test -f dist/generate/src/main.js || { echo "::error::declared bin dist/generate/src/main.js missing after build"; exit 1; }
+          test -f dist/generate/src/index.js || { echo "::error::declared export dist/generate/src/index.js missing after build"; exit 1; }
           npm pack --dry-run --json | node -e "
             const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
             const files = data[0].files.map((f) => f.path);
-            for (const required of ['dist/main.js', 'dist/index.js']) {
+            for (const required of ['dist/generate/src/main.js', 'dist/generate/src/index.js']) {
               if (!files.includes(required)) {
                 console.error(`${required} not included in package tarball`);
                 process.exit(1);
               }
             }
-            console.log('Generate entrypoints present in tarball:', 'dist/main.js, dist/index.js');
+            console.log('Generate entrypoints present in tarball:', 'dist/generate/src/main.js, dist/generate/src/index.js');
           "
 
       - name: Skip (module not present)
