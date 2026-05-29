@@ -62,13 +62,14 @@ export async function generateAllEmotions(
     keepBase = true,
     onProgress,
   } = options;
-  const results = new Map<string, string>();
-  const emotionCount = options.only?.length ?? EMOTIONS.length;
-  const totalSteps = emotionCount + (baseImage ? 0 : 1);
+  const emotionsToGenerate = options.only ?? [...EMOTIONS];
+  const totalSteps = emotionsToGenerate.length + (baseImage ? 0 : 1);
 
-  await mkdir(outputDir, { recursive: true });
-
+  // Generation phase: collect every image in memory and write nothing yet.
+  // If any generation fails, the output directory is left untouched so a
+  // failed run can never leave a partial or old/new-mixed emotion set behind.
   let baseDataUrl: string;
+  let baseBuffer: Buffer | null = null;
   let stepOffset = 0;
 
   if (baseImage) {
@@ -83,19 +84,12 @@ export async function generateAllEmotions(
       size: size ?? "1024x1024",
     };
 
-    const baseBuffer = await generateImage(baseOptions);
+    baseBuffer = await generateImage(baseOptions);
     baseDataUrl = pngBufferToDataUrl(baseBuffer);
-
-    if (keepBase) {
-      const basePath = resolve(outputDir, "base.png");
-      await writeFile(basePath, baseBuffer);
-      results.set("base", basePath);
-    }
-
     stepOffset = 1;
   }
 
-  const emotionsToGenerate = options.only ?? [...EMOTIONS];
+  const generated: Array<{ emotion: Emotion; buffer: Buffer }> = [];
 
   for (let i = 0; i < emotionsToGenerate.length; i++) {
     const emotion = emotionsToGenerate[i];
@@ -108,9 +102,23 @@ export async function generateAllEmotions(
       referenceImages: [baseDataUrl],
     };
 
-    const pngBuffer = await generateImage(genOptions);
+    generated.push({ emotion, buffer: await generateImage(genOptions) });
+  }
+
+  // Write phase: reached only after every generation succeeded.
+  await mkdir(outputDir, { recursive: true });
+
+  const results = new Map<string, string>();
+
+  if (baseBuffer && keepBase) {
+    const basePath = resolve(outputDir, "base.png");
+    await writeFile(basePath, baseBuffer);
+    results.set("base", basePath);
+  }
+
+  for (const { emotion, buffer } of generated) {
     const outPath = resolve(outputDir, `${emotion}.png`);
-    await writeFile(outPath, pngBuffer);
+    await writeFile(outPath, buffer);
     results.set(emotion, outPath);
   }
 
