@@ -112,6 +112,68 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         run: echo "generate/ not present on this branch, skipping"
 
+  cursor:
+    name: Cursor Plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if cursor module exists
+        id: check
+        run: |
+          if [ -f cursor/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.check.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install shared dependencies
+        if: steps.check.outputs.exists == 'true'
+        working-directory: shared
+        run: npm install --no-audit --no-fund
+
+      - name: Install dependencies
+        if: steps.check.outputs.exists == 'true'
+        working-directory: cursor
+        run: npm ci
+
+      - name: Build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: cursor
+        run: npm run build
+
+      - name: Test
+        if: steps.check.outputs.exists == 'true'
+        working-directory: cursor
+        run: npm test
+
+      - name: Verify CLI bin is built and packaged
+        if: steps.check.outputs.exists == 'true'
+        working-directory: cursor
+        run: |
+          test -f dist-cli/install.js || { echo "::error::declared bin dist-cli/install.js missing after build"; exit 1; }
+          npm pack --dry-run --json | node -e "
+            const data = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            const files = data[0].files.map((f) => f.path);
+            if (!files.includes('dist-cli/install.js')) {
+              console.error('dist-cli/install.js not included in package tarball');
+              process.exit(1);
+            }
+            console.log('Cursor CLI bin present in tarball:', 'dist-cli/install.js');
+          "
+
+      - name: Skip (module not present)
+        if: steps.check.outputs.exists != 'true'
+        run: echo "cursor/ not present on this branch, skipping"
+
   hermes:
     name: Hermes Plugin (Python)
     runs-on: ubuntu-latest
