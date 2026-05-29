@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "pack:check": "npm pack --dry-run --json"
   },
   "dependencies": {
     "@hent-ai/shared": "file:../shared",

@@ -20,7 +20,8 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {
     "@hent-ai/generate": "file:../generate",
