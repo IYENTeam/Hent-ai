@@ -16,6 +16,43 @@ cd openclaw/
 npx vitest run     # all tests, must pass before push
 ```
 
+## Release Regression Gate
+
+Before any release or main push, run the blocking local gate from the repository root:
+
+```bash
+node scripts/release-gate.mjs
+```
+
+Equivalent package script:
+
+```bash
+npm run release:check
+```
+
+The gate runs the focused service verifier/worker regression tests and the full OpenClaw suite:
+
+```bash
+cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/generation-worker.test.ts
+cd openclaw && npx vitest run
+```
+
+Any failing command blocks the release. CI required-check enforcement is intentionally deferred; this gate is the local/manual release checklist for this slice.
+
+## Remote Verifier Configuration
+
+Production final-response verification uses an external verifier provider. Configure it through deployment environment variables or service config; do not put literal token values in docs or logs:
+
+- `HENT_AI_VERIFIER_PROVIDER_KIND`
+- `HENT_AI_VERIFIER_ENDPOINT`
+- `HENT_AI_VERIFIER_TOKEN`
+- `HENT_AI_VERIFIER_MODEL_OR_ROUTE`
+- `HENT_AI_VERIFIER_TIMEOUT_MS`
+- `HENT_AI_VERIFIER_EXTRA_HEADERS_JSON` for provider-specific headers
+- `HENT_AI_VERIFIER_EXTRA_BODY_JSON` for provider-specific request body fields
+
+Missing endpoint, token, model/route, or invalid timeout/header/body JSON fails verifier config creation. Per-request provider failures return no verdict rather than using deterministic fallback.
+
 ## Deploy
 
 Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config.

@@ -20,6 +20,23 @@ Hent-ai automatically classifies the emotion of every bot response and attaches 
 | `confused` | Uncertainty, questions |
 | `focused` | Working, investigating, debugging |
 
+## Runtime Architecture
+
+Current OpenClaw runtime is service-owned:
+
+```text
+Discord user message
+  └─ OpenClaw generates/sends text
+      └─ OpenClaw Hent-ai service adapter calls Hent-ai HTTP service
+          └─ Hent-ai service calls the configured remote verifier
+              └─ Hent-ai service maps emotion → channel asset set image
+                  └─ OpenClaw appends the media
+```
+
+The OpenClaw adapter is intentionally thin. It does not classify emotions, scan manifests, read profile databases, or call Discord directly. The service owns channel mappings, profile/asset selection, verifier config/cache, and generation job state.
+
+The production verifier is deployment-configured. Public docs should describe the verifier contract and required config shape, not environment-specific provider names, endpoints, model IDs, or secrets.
+
 ## Getting Started
 
 > **🤖 Agent setup:** If you're using an AI agent (OpenClaw, Claude Code, Codex, etc.), tell it to read [`SKILL.md`](./SKILL.md) in this repo. The agent will walk you through the entire setup interactively.

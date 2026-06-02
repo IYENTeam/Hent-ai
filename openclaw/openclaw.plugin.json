@@ -1,175 +1,41 @@
 {
-  "id": "emotion-image",
+  "id": "hent-ai-service-adapter",
   "activation": {
     "onStartup": true
   },
-  "name": "Emotion Image Attachment",
-  "description": "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
+  "name": "Hent-ai Service Adapter",
+  "description": "Delegates OpenClaw media lifecycle hooks to the Hent-ai service.",
   "configSchema": {
     "type": "object",
     "additionalProperties": true,
     "properties": {
       "enabled": {
         "type": "boolean",
-        "description": "Enable emotion image attachment",
+        "description": "Enable the Hent-ai service adapter.",
         "default": true
       },
-      "imageDir": {
-        "type": "string",
-        "description": "Directory containing emotion image files. If omitted, defaults to a profile-scoped directory under the active OpenClaw workspace, then falls back to assets/ inside this extension."
-      },
-      "emotionMap": {
+      "hentAiService": {
         "type": "object",
-        "description": "Mapping from emotion tag to one image filename or a labeled image pool. Labeled pools are randomly selected at runtime.",
-        "additionalProperties": {
-          "oneOf": [
-            { "type": "string" },
-            {
-              "type": "array",
-              "items": {
-                "oneOf": [
-                  { "type": "string" },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "file": { "type": "string" },
-                      "filename": { "type": "string" },
-                      "label": { "type": "string" },
-                      "weight": { "type": "number", "minimum": 0 }
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        }
-      },
-      "channels": {
-        "type": "object",
-        "description": "Per-channel toggle. Prefer defaultEnabled + overrides. Legacy mode/list is still accepted for backwards compatibility.",
+        "description": "Hent-ai service connection settings. The adapter is disabled when url or token is missing/invalid.",
         "additionalProperties": false,
+        "required": ["url", "token"],
         "properties": {
-          "defaultEnabled": {
-            "type": "boolean",
-            "description": "Default behavior for channels without an explicit override.",
-            "default": true
-          },
-          "overrides": {
-            "type": "object",
-            "description": "Explicit per-channel enable state: Discord channel ID -> true/false. A channel: prefix is accepted and normalized.",
-            "additionalProperties": { "type": "boolean" },
-            "default": {}
-          },
-          "mode": {
+          "url": {
             "type": "string",
-            "enum": ["allowlist", "blocklist"],
-            "description": "Deprecated. Use defaultEnabled + overrides. 'allowlist' = only listed channels get images. 'blocklist' = all channels except listed ones get images."
+            "description": "Base URL for the Hent-ai service. Non-localhost URLs must use HTTPS."
           },
-          "list": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Deprecated. Array of Discord channel IDs affected by legacy mode."
+          "token": {
+            "type": "string",
+            "description": "Bearer token for the Hent-ai service. Supports literal value or '${ENV_VAR}' placeholder."
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Service request timeout in milliseconds.",
+            "default": 5000,
+            "minimum": 1
           }
         }
-      },
-      "defaultEmotion": {
-        "type": "string",
-        "description": "Fallback emotion when no keyword matches (default: \"neutral\").",
-        "default": "neutral"
-      },
-      "emotionRules": {
-        "type": "object",
-        "description": "Custom emotion detection rules: emotion name → array of keyword regex patterns. Merged with built-in rules.",
-        "additionalProperties": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Array of case-insensitive keyword patterns for this emotion."
-        }
-      },
-       "classifierModel": {
-         "type": "string",
-         "description": "OpenClaw provider/model ID for LLM-based emotion classification (e.g. 'your-provider/gpt-5.4-mini'). If not set, falls back to rule-based keyword matching."
-       },
-       "discordToken": {
-         "type": "string",
-         "description": "Discord bot token. Supports literal token or '${ENV_VAR}' placeholder (e.g. '${EMOTION_IMAGE_DISCORD_TOKEN}'). The env var EMOTION_IMAGE_DISCORD_TOKEN also works directly. Required for the plugin to attach images."
-       },
-       "cheer": {
-         "type": "object",
-         "description": "Generate a one-off encouragement image when the user's message expresses a cheer/support request intent.",
-         "additionalProperties": false,
-         "properties": {
-           "enabled": {
-             "type": "boolean",
-             "description": "Enable cheer request image generation.",
-             "default": true
-           },
-           "character": {
-             "type": "string",
-             "description": "Optional character description for cheer images. If omitted, base.png is used as reference when available."
-           },
-           "intentModel": {
-             "type": "string",
-             "description": "Optional provider/model ID for detecting cheer/support request intent (e.g. 'your-provider/gpt-5.4-mini'). Defaults to classifierModel."
-           },
-           "model": {
-             "type": "string",
-             "description": "Optional provider/model ID for cheer image generation. Defaults to onboarding.model."
-           },
-           "size": {
-             "type": "string",
-             "description": "Generated cheer image size.",
-             "default": "1024x1024"
-           }
-         }
-       },
-       "miracleMode": {
-         "type": "boolean",
-         "description": "Enable miracle mode: auto-generate emotion images when no file match exists.",
-         "default": false
-       },
-       "miracleRateLimit": {
-          "type": "number",
-          "description": "Max number of miracle mode generations per hour.",
-          "default": 10
-        },
-        "defaultProfile": {
-          "type": "string",
-          "description": "Default profile ID to use when no per-channel mapping exists. Profiles store emotion image sets and optional personality snippets."
-        },
-        "dateMode": {
-          "type": "object",
-          "description": "Date Mode: low-latency conversational mode with no tool calls, persona-only responses.",
-          "additionalProperties": false,
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "Enable date mode globally.",
-              "default": false
-            },
-            "channels": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Discord channel IDs where date mode is active. When a message arrives from one of these channels, the agent uses date mode persona and skips tools.",
-              "default": []
-            },
-            "model": {
-              "type": "string",
-              "description": "Override model for date mode channels (faster model recommended, e.g. 'closedrouter-openai/gpt-5.4-mini')."
-            },
-            "defaultPersona": {
-              "type": "string",
-              "description": "Default persona text when no profile soulSnippet exists for the channel."
-            },
-            "excludeEmotions": {
-              "type": "array",
-              "items": { "type": "string" },
-              "description": "Emotions to exclude in date mode (replaced with default emotion). Defaults to ['focused'].",
-              "default": ["focused"]
-            }
-          }
-        }
+      }
     }
   }
 }

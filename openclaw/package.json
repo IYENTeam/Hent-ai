@@ -1,7 +1,7 @@
 {
-  "name": "@openclaw/emotion-image",
+  "name": "@hent-ai/openclaw-service-adapter",
   "version": "2026.5.6",
-  "description": "Detect emotion keywords in agent replies and attach mapped images via Discord API.",
+  "description": "Thin OpenClaw adapter that delegates Hent-ai media lifecycle hooks to the Hent-ai service.",
   "type": "module",
   "main": "./index.ts",
   "exports": {
@@ -9,8 +9,6 @@
   },
   "files": [
     "index.ts",
-    "discord-utils.ts",
-    "channel-filter.ts",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -18,10 +16,7 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "@hent-ai/generate": "file:../generate",
-    "@hent-ai/shared": "file:../shared"
-  },
+  "dependencies": {},
   "peerDependencies": {
     "@openclaw/plugin-sdk": ">=2026.4.0"
   },
@@ -47,9 +42,9 @@
   "keywords": [
     "openclaw",
     "plugin",
-    "discord",
-    "emotion",
-    "image"
+    "hent-ai",
+    "service",
+    "adapter"
   ],
   "repository": {
     "type": "git",

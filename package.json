@@ -13,5 +13,8 @@
       "esbuild",
       "sharp"
     ]
+  },
+  "scripts": {
+    "release:check": "node scripts/release-gate.mjs"
   }
 }
