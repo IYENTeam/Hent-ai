@@ -53,6 +53,33 @@ Production final-response verification uses an external verifier provider. Confi
 
 Missing endpoint, token, model/route, or invalid timeout/header/body JSON fails verifier config creation. Per-request provider failures return no verdict rather than using deterministic fallback.
 
+## Image Generation Job Path
+
+The service exposes an async generation path. `POST /v1/assets/generate` creates a queued job; a worker/provider later processes that job with `runNextGenerationJob(db, provider, { assetRoot })`.
+
+Minimum request shape:
+
+```json
+{
+  "prompt": "image prompt",
+  "assetSetId": "gothic-v1",
+  "emotion": "sorry",
+  "filename": "sorry.png"
+}
+```
+
+Provider result shape for generated image persistence:
+
+```json
+{
+  "dataBase64": "<base64 image bytes>",
+  "contentType": "image/png",
+  "metadata": {}
+}
+```
+
+When `assetRoot` is supplied, the worker writes the image under `generated/<assetSetId>/<emotion>/<jobId>-<filename>`, upserts `storage_objects` and `assets`, strips inline base64 from the stored job result, and exposes the image through `/static/...`. Tests must keep providers mocked; do not trigger paid image generation in CI.
+
 ## Deploy
 
 Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config.
