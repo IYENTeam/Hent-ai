@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin, { normalizeDiscordChannelId } from "../index.js";
 
-type Handler = (event: unknown) => Promise<unknown>;
+type Handler = (event: unknown, ctx?: unknown) => Promise<unknown>;
 
 function setup() {
   const events = new Map<string, Handler>();
@@ -27,23 +27,23 @@ describe("channel policy service delegation", () => {
     expect(normalizeDiscordChannelId("123456789")).toBe("123456789");
   });
 
-  it("does not apply local channel toggles before calling pre-reply service", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ media: null }) }));
+  it("does not apply local channel toggles before calling reply payload service", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ verdict: { media: null } }) }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("pre_reply_media")?.({ channelId: "blocked", userMessage: "hello", preReplyText: "thinking" });
+    await events.get("reply_payload_sending")?.({ payload: { text: "hello" }, channelId: "blocked", kind: "final" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context.channelId).toBe("blocked");
   });
 
-  it("does not apply local channel toggles before calling final-response service", async () => {
+  it("normalizes channel ids before calling final-response service", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ verdict: { media: null } }) }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("message_sent_media")?.({ to: "channel:blocked", content: "done", messageId: "m" });
+    await events.get("reply_payload_sending")?.({ payload: { text: "done" }, to: "channel:blocked", kind: "final" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context.channelId).toBe("blocked");

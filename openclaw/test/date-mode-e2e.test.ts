@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../index.js";
 
-type Handler = (event: unknown) => Promise<unknown>;
+type Handler = (event: unknown, ctx?: unknown) => Promise<unknown>;
 
 function setup() {
   const events = new Map<string, Handler>();
@@ -22,26 +22,26 @@ describe("date-mode media adapter behavior", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not locally suppress date-mode pre-reply media; channel policy is delegated to service", async () => {
+  it("does not locally suppress date-mode reply media; channel policy is delegated to service", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ media: null }),
+      json: async () => ({ verdict: { media: null } }),
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("pre_reply_media")?.({
+    await events.get("reply_payload_sending")?.({
       channelId: "date-channel",
-      userMessage: "date-mode user message",
-      preReplyText: "text continues",
+      payload: { text: "date-mode user message" },
+      kind: "final",
       metadata: { mode: "date" },
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context).toMatchObject({
       channelId: "date-channel",
-      userMessage: "date-mode user message",
+      finalText: "date-mode user message",
     });
   });
 
@@ -54,19 +54,21 @@ describe("date-mode media adapter behavior", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    const result = await events.get("message_sent_media")?.({
+    const result = await events.get("reply_payload_sending")?.({
       to: "channel:date-channel",
-      content: "focused text that used to be rewritten",
-      messageId: "msg-1",
+      payload: { text: "focused text that used to be rewritten" },
+      kind: "final",
       metadata: { mode: "date" },
     });
 
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/final-response/verdict", expect.objectContaining({ method: "POST" }));
-    expect(result).toMatchObject({ media: { mediaUrl: "https://cdn.test/service-choice.png", caption: "service-owned" } });
+    expect(result).toMatchObject({ payload: { text: "focused text that used to be rewritten", mediaUrl: "https://cdn.test/service-choice.png" } });
   });
 
-  it("does not register legacy message_sent patching hook", () => {
+  it("does not register legacy media lifecycle or message_sent patching hooks", () => {
     const { api } = setup();
     expect(api.on).not.toHaveBeenCalledWith("message_sent", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
   });
 });

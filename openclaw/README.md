@@ -37,34 +37,15 @@ Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adap
 
 ## Runtime Hooks
 
-The adapter registers two OpenClaw Stage-1 media hooks:
+The adapter registers OpenClaw's supported `reply_payload_sending` hook and delegates final-response media selection to the service:
 
-- `pre_reply_media` → `POST /v1/pre-reply/media`
-- `message_sent_media` → `POST /v1/final-response/verdict`
+- `reply_payload_sending` → `POST /v1/final-response/verdict`
 
-Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media returns `{ "media": null, "diagnostics": [...] }` and logs a skip. OpenClaw continues text delivery.
-
-### Pre-reply media
-
-OpenClaw calls `pre_reply_media` before sending pre-reply text. The adapter calls the service and returns the selected media to OpenClaw. It never sends the pre-reply itself.
-
-Expected service response:
-
-```json
-{
-  "media": {
-    "url": "https://cdn.example/pre.png",
-    "caption": "optional caption",
-    "sensitiveMedia": false,
-    "channelData": {}
-  },
-  "diagnostics": []
-}
-```
+Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media returns diagnostics without a payload patch and logs a skip. OpenClaw continues text delivery.
 
 ### Final-response media
 
-OpenClaw calls `message_sent_media` after final text delivery. The adapter calls the service verdict endpoint and returns `verdict.media`. OpenClaw owns append/edit/follow-up delivery.
+OpenClaw calls `reply_payload_sending` before dispatching the final reply payload. The adapter calls the service verdict endpoint and merges `verdict.media` into the outgoing payload as `mediaUrl`/`mediaUrls`. OpenClaw owns final Discord delivery.
 
 Expected service response:
 

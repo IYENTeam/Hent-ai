@@ -26,6 +26,11 @@ export type MediaHookResult = {
   diagnostics: ServiceDiagnostics;
 };
 
+export type ReplyPayloadHookResult = {
+  payload?: Record<string, unknown>;
+  diagnostics?: ServiceDiagnostics;
+};
+
 type RuntimeConfigProvider = {
   config?: {
     current?: () => unknown;
@@ -276,10 +281,11 @@ function contextRecord(ctx: unknown): HookContext {
   return (asRecord(ctx) ?? {}) as HookContext;
 }
 
-function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
+function replyPayloadBody(event: unknown, ctx?: unknown): Record<string, unknown> {
   const record = asRecord(event) ?? {};
   const hookCtx = contextRecord(ctx);
-  const to = stringValue(record.to);
+  const payload = asRecord(record.payload) ?? {};
+  const to = stringValue(record.to) ?? stringValue(payload.to);
   const channelId = normalizeDiscordChannelId(
     stringValue(record.channelId) ?? stringValue(hookCtx.conversationId) ?? to ?? stringValue(hookCtx.channelId),
   );
@@ -287,8 +293,9 @@ function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
     context: {
       to,
       channelId,
-      userMessage: record.userMessage,
-      preReplyText: record.preReplyText ?? record.content,
+      finalText: payload.text ?? record.content ?? record.finalText,
+      text: payload.text,
+      kind: record.kind,
       metadata: record.metadata,
       sessionKey: record.sessionKey ?? hookCtx.sessionKey,
       runId: record.runId ?? hookCtx.runId,
@@ -296,25 +303,36 @@ function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
   };
 }
 
-function messageSentBody(event: unknown, ctx?: unknown): Record<string, unknown> {
-  const record = asRecord(event) ?? {};
-  const hookCtx = contextRecord(ctx);
-  const to = stringValue(record.to);
-  const channelId = normalizeDiscordChannelId(
-    stringValue(record.channelId) ?? stringValue(hookCtx.conversationId) ?? to ?? stringValue(hookCtx.channelId),
-  );
-  return {
-    context: {
-      to,
-      channelId,
-      content: record.content,
-      messageId: record.messageId ?? hookCtx.messageId,
-      deliveredMessageId: record.deliveredMessageId,
-      metadata: record.metadata,
-      sessionKey: record.sessionKey ?? hookCtx.sessionKey,
-      runId: record.runId ?? hookCtx.runId,
-    },
-  };
+function mergeMediaIntoPayload(payload: unknown, media: OpenClawStage1Media | null): Record<string, unknown> | undefined {
+  if (!media) return undefined;
+  const current = asRecord(payload) ?? {};
+  const merged: Record<string, unknown> = { ...current };
+
+  const mediaUrls = [
+    ...(
+      Array.isArray(current.mediaUrls)
+        ? current.mediaUrls.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+        : []
+    ),
+    ...(
+      typeof current.mediaUrl === "string" && current.mediaUrl.trim()
+        ? [current.mediaUrl.trim()]
+        : []
+    ),
+    media.mediaUrl,
+    ...(media.mediaUrls ?? []),
+  ];
+
+  const uniqueMediaUrls = [...new Set(mediaUrls)];
+  delete merged.mediaUrl;
+  if (uniqueMediaUrls.length === 1) {
+    merged.mediaUrl = uniqueMediaUrls[0];
+  } else if (uniqueMediaUrls.length > 1) {
+    merged.mediaUrls = uniqueMediaUrls;
+  }
+  if (media.sensitiveMedia !== undefined) merged.sensitiveMedia = media.sensitiveMedia;
+  if (media.channelData) merged.channelData = { ...(asRecord(current.channelData) ?? {}), ...media.channelData };
+  return merged;
 }
 
 export default definePluginEntry({
@@ -336,24 +354,18 @@ export default definePluginEntry({
 
     loggerInfo(api.logger, `hent-ai adapter enabled: url=${config.baseUrl.origin} timeoutMs=${config.timeoutMs}`);
 
-    api.on("pre_reply_media", async (event: unknown, ctx: unknown) => callHentAiService({
-      baseUrl: config.baseUrl,
-      token: config.token,
-      timeoutMs: config.timeoutMs,
-      endpoint: "/v1/pre-reply/media",
-      body: preReplyBody(event, ctx),
-      responseMediaPath: "media",
-      logger: api.logger,
-    }), { name: "hent-ai-pre-reply-media" });
-
-    api.on("message_sent_media", async (event: unknown, ctx: unknown) => callHentAiService({
-      baseUrl: config.baseUrl,
-      token: config.token,
-      timeoutMs: config.timeoutMs,
-      endpoint: "/v1/final-response/verdict",
-      body: messageSentBody(event, ctx),
-      responseMediaPath: "verdict.media",
-      logger: api.logger,
-    }), { name: "hent-ai-message-sent-media" });
+    api.on("reply_payload_sending", async (event: unknown, ctx: unknown): Promise<ReplyPayloadHookResult> => {
+      const result = await callHentAiService({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        endpoint: "/v1/final-response/verdict",
+        body: replyPayloadBody(event, ctx),
+        responseMediaPath: "verdict.media",
+        logger: api.logger,
+      });
+      const payload = mergeMediaIntoPayload(asRecord(event)?.payload, result.media);
+      return payload ? { payload, diagnostics: result.diagnostics } : { diagnostics: result.diagnostics };
+    }, { name: "hent-ai-reply-payload-media" });
   },
 });
