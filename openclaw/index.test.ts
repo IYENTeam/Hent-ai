@@ -9,12 +9,16 @@ import plugin, {
 
 type Handler = (event: unknown, ctx?: unknown) => Promise<unknown>;
 
-function setup(config: unknown = { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } }) {
+function setup(
+  config: unknown = { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+  options: { supportsReplyPayloadSending?: boolean } = { supportsReplyPayloadSending: true },
+) {
   const events = new Map<string, Handler>();
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const api = {
     pluginConfig: config,
     logger,
+    supportsHook: vi.fn((name: string) => name === "reply_payload_sending" && options.supportsReplyPayloadSending === true),
     on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
   };
   plugin.register(api as any);
@@ -78,10 +82,18 @@ describe("Hent-ai service adapter configuration", () => {
     expect(logger.info).toHaveBeenCalledWith("hent-ai adapter disabled: enabled=false");
   });
 
-  it("registers only the current OpenClaw reply payload media hook", () => {
+  it("registers legacy media lifecycle hooks plus the current reply payload hook when supported", () => {
     const { api, events } = setup();
-    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect([...events.keys()]).toEqual(["pre_reply_media", "message_sent_media", "reply_payload_sending"]);
+    expect(api.on).toHaveBeenCalledWith("pre_reply_media", expect.any(Function), { name: "hent-ai-pre-reply-media" });
+    expect(api.on).toHaveBeenCalledWith("message_sent_media", expect.any(Function), { name: "hent-ai-message-sent-media" });
     expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-reply-payload-media" });
+  });
+
+  it("does not register the current reply payload hook when the host does not advertise support", () => {
+    const { api, events } = setup(undefined, { supportsReplyPayloadSending: false });
+    expect([...events.keys()]).toEqual(["pre_reply_media", "message_sent_media"]);
+    expect(api.on).not.toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), expect.anything());
   });
 
   it("normalizes service url and base64 media into Stage-1 mediaUrl shape", () => {

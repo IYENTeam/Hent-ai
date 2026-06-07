@@ -48,6 +48,13 @@ type ReplyPayloadSendingEvent = {
   runId?: string;
 };
 
+type PluginApi = {
+  pluginConfig?: unknown;
+  runtime?: RuntimeConfigProvider;
+  logger?: Logger;
+  on: (name: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown, options?: { name?: string }) => void;
+  supportsHook?: (name: string) => boolean;
+};
 
 type Logger = {
   info?: (message: string) => void;
@@ -346,14 +353,15 @@ function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawSt
 }
 
 async function handleReplyPayloadSending(params: {
-  event: ReplyPayloadSendingEvent;
+  event: unknown;
   ctx: unknown;
   config: { baseUrl: URL; token: string; timeoutMs: number };
   logger?: Logger;
 }): Promise<{ payload?: Record<string, unknown> } | void> {
-  const payload = asRecord(params.event.payload);
+  const event = asRecord(params.event) ?? {};
+  const payload = asRecord(event.payload);
   if (!payload) return undefined;
-  const kind = params.event.kind;
+  const kind = stringValue(event.kind);
   const text = stringValue(payload.text);
   if (!text || (kind !== "block" && kind !== "final")) return undefined;
 
@@ -363,8 +371,8 @@ async function handleReplyPayloadSending(params: {
     timeoutMs: params.config.timeoutMs,
     endpoint: kind === "block" ? "/v1/pre-reply/media" : "/v1/final-response/verdict",
     body: kind === "block"
-      ? preReplyBody({ payload, content: text, sessionKey: params.event.sessionKey, runId: params.event.runId }, params.ctx)
-      : messageSentBody({ payload, content: text, sessionKey: params.event.sessionKey, runId: params.event.runId }, params.ctx),
+      ? preReplyBody({ payload, content: text, sessionKey: event.sessionKey, runId: event.runId }, params.ctx)
+      : messageSentBody({ payload, content: text, sessionKey: event.sessionKey, runId: event.runId }, params.ctx),
     responseMediaPath: kind === "block" ? "media" : "verdict.media",
     logger: params.logger,
   });
@@ -372,12 +380,50 @@ async function handleReplyPayloadSending(params: {
   return serviceResult.media ? { payload: applyMediaToPayload(payload, serviceResult.media) } : undefined;
 }
 
+async function handlePreReplyMedia(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<MediaHookResult | undefined> {
+  return callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/pre-reply/media",
+    body: preReplyBody(params.event, params.ctx),
+    responseMediaPath: "media",
+    logger: params.logger,
+  });
+}
+
+async function handleMessageSentMedia(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<MediaHookResult | undefined> {
+  return callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/final-response/verdict",
+    body: messageSentBody(params.event, params.ctx),
+    responseMediaPath: "verdict.media",
+    logger: params.logger,
+  });
+}
+
+function supportsReplyPayloadSending(api: PluginApi): boolean {
+  return api.supportsHook?.("reply_payload_sending") === true;
+}
+
 export default definePluginEntry({
   id: "hent-ai-service-adapter",
   name: "Hent-ai Service Adapter",
   description: "Delegates OpenClaw media lifecycle hooks to the Hent-ai service.",
 
-  register(api: any) {
+  register(api: PluginApi) {
     const pluginConfig = asRecord(api.pluginConfig);
     if (pluginConfig?.enabled === false) {
       loggerInfo(api.logger, "hent-ai adapter disabled: enabled=false");
@@ -391,11 +437,27 @@ export default definePluginEntry({
 
     loggerInfo(api.logger, `hent-ai adapter enabled: url=${config.baseUrl.origin} timeoutMs=${config.timeoutMs}`);
 
-    api.on("reply_payload_sending", async (event: ReplyPayloadSendingEvent, ctx: unknown) => handleReplyPayloadSending({
+    api.on("pre_reply_media", async (event: unknown, ctx: unknown) => handlePreReplyMedia({
       event,
       ctx,
       config,
       logger: api.logger,
-    }), { name: "hent-ai-reply-payload-media" });
+    }), { name: "hent-ai-pre-reply-media" });
+
+    api.on("message_sent_media", async (event: unknown, ctx: unknown) => handleMessageSentMedia({
+      event,
+      ctx,
+      config,
+      logger: api.logger,
+    }), { name: "hent-ai-message-sent-media" });
+
+    if (supportsReplyPayloadSending(api)) {
+      api.on("reply_payload_sending", async (event: unknown, ctx: unknown) => handleReplyPayloadSending({
+        event,
+        ctx,
+        config,
+        logger: api.logger,
+      }), { name: "hent-ai-reply-payload-media" });
+    }
   },
 });

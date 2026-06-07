@@ -11,6 +11,7 @@ function setup() {
       hentAiService: { url: "https://hent.test", token: "secret" },
     },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
     on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
   };
   plugin.register(api as any);
