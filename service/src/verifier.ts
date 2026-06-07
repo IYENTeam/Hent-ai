@@ -17,7 +17,7 @@ export type FinalResponseVerifier = {
 
 export type FetchLike = typeof fetch;
 
-export type VerifierProviderKind = "openai-chat-completions";
+export type VerifierProviderKind = "openai-chat-completions" | "vm4-closedrouter";
 
 export type ChatCompletionsVerifierBodyMapping = {
   modelOrRouteField?: string;
@@ -169,6 +169,13 @@ function normalizeBodyMapping(mapping: ChatCompletionsVerifierBodyMapping | unde
   return { ...DEFAULT_BODY_MAPPING, ...mapping };
 }
 
+function normalizeVerifierProviderKind(providerKind: string): "openai-chat-completions" {
+  if (providerKind === "openai-chat-completions" || providerKind === "vm4-closedrouter") {
+    return "openai-chat-completions";
+  }
+  throw new Error(`Unsupported ${ENV_KEYS.providerKind}`);
+}
+
 function assertOpenAiChatCompletionsConfig(config: OpenAiChatCompletionsVerifierConfig): void {
   if (config.providerKind !== "openai-chat-completions") throw new Error("Unsupported verifier provider kind");
   if (!config.token.trim()) throw new Error("Missing HENT_AI_VERIFIER_TOKEN");
@@ -179,8 +186,7 @@ function assertOpenAiChatCompletionsConfig(config: OpenAiChatCompletionsVerifier
 }
 
 export function loadVerifierProviderConfigFromEnv(env: NodeJS.ProcessEnv = process.env): VerifierProviderConfig {
-  const providerKind = (env[ENV_KEYS.providerKind] ?? "openai-chat-completions").trim();
-  if (providerKind !== "openai-chat-completions") throw new Error(`Unsupported ${ENV_KEYS.providerKind}`);
+  const providerKind = normalizeVerifierProviderKind((env[ENV_KEYS.providerKind] ?? "openai-chat-completions").trim());
   const extraHeaders = normalizeHeaderMap(parseJsonRecord(env[ENV_KEYS.extraHeaders], ENV_KEYS.extraHeaders), ENV_KEYS.extraHeaders);
   return {
     providerKind,

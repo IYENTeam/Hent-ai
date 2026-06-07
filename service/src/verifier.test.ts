@@ -272,6 +272,20 @@ describe("remote verifier adapter", () => {
     })).toThrow(/HENT_AI_VERIFIER_TOKEN/);
   });
 
+  it("keeps the vm4 closedrouter deployment provider kind compatible", () => {
+    expect(loadVerifierProviderConfigFromEnv({
+      HENT_AI_VERIFIER_PROVIDER_KIND: "vm4-closedrouter",
+      HENT_AI_VERIFIER_ENDPOINT: "https://verifier.example/v1/chat/completions",
+      HENT_AI_VERIFIER_TOKEN: "secret",
+      HENT_AI_VERIFIER_MODEL_OR_ROUTE: "gpt-5.5",
+    })).toMatchObject({
+      providerKind: "openai-chat-completions",
+      endpoint: "https://verifier.example/v1/chat/completions",
+      token: "secret",
+      modelOrRoute: "gpt-5.5",
+    });
+  });
+
   it("aborts chat-completions requests at the configured timeout", async () => {
     let aborted = false;
     const verifier = createOpenAiChatCompletionsFinalResponseVerifier({
