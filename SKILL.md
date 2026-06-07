@@ -14,7 +14,6 @@ Detect the platform from context when possible. Ask only if the repository, conf
 | Platform | README | Plugin type |
 |----------|--------|-------------|
 | OpenClaw | `openclaw/README.md` | OpenClaw plugin |
-| Cursor | `cursor/README.md` | Cursor rule + classifier |
 | Hermes Agent | `hermes/README.md` | Hermes integration |
 
 Read the relevant README for installation instructions. Follow them to install the plugin for the user's platform.
@@ -65,7 +64,6 @@ For generated images, show enough output for the user to judge consistency. Save
 
 Save all images to the plugin's asset directory:
 - **OpenClaw**: the configured `imageDir`, or `~/.openclaw/workspace/.hent-ai/emotion-image-assets/`, or `assets/` in this repo
-- **Cursor**: `cursor/assets/optimized/`
 - **Other**: `assets/` in this repo
 
 ### 2e. Complete

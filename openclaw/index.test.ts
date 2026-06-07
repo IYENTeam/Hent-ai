@@ -78,11 +78,10 @@ describe("Hent-ai service adapter configuration", () => {
     expect(logger.info).toHaveBeenCalledWith("hent-ai adapter disabled: enabled=false");
   });
 
-  it("registers only media lifecycle hooks", () => {
+  it("registers only the current OpenClaw reply payload media hook", () => {
     const { api, events } = setup();
-    expect([...events.keys()]).toEqual(["pre_reply_media", "message_sent_media"]);
-    expect(api.on).toHaveBeenCalledWith("pre_reply_media", expect.any(Function), { name: "hent-ai-pre-reply-media" });
-    expect(api.on).toHaveBeenCalledWith("message_sent_media", expect.any(Function), { name: "hent-ai-message-sent-media" });
+    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-reply-payload-media" });
   });
 
   it("normalizes service url and base64 media into Stage-1 mediaUrl shape", () => {
@@ -95,22 +94,23 @@ describe("Hent-ai service adapter configuration", () => {
     expect(normalizeServiceMedia({ caption: "no media" })).toBeNull();
   });
 
-  it("calls pre-reply service with bearer auth and returns media diagnostics", async () => {
+  it("calls pre-reply service for block payloads with bearer auth and attaches media", async () => {
     const fetchMock = vi.fn(async () => okJson({
       media: { url: "https://cdn.test/pre.png", caption: "thinking" },
       diagnostics: [{ reason: "selected" }],
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const { events } = setup();
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 2500 } });
 
-    const result = await events.get("pre_reply_media")?.({
-      channelId: "channel:123",
-      userMessage: "hello",
-      preReplyText: "thinking",
-      metadata: { channelPolicy: "service-owned" },
+    const result = await events.get("reply_payload_sending")?.({
+      kind: "block",
+      payload: {
+        text: "thinking",
+        channelData: { channelPolicy: "service-owned" },
+      },
       sessionKey: "s",
       runId: "r",
-    });
+    }, { channelId: "channel:123", replyToBody: "hello" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0];
@@ -118,18 +118,17 @@ describe("Hent-ai service adapter configuration", () => {
     expect(options.headers.authorization).toBe("Bearer secret");
     expect(JSON.parse(options.body).context).toMatchObject({ channelId: "123", userMessage: "hello", preReplyText: "thinking" });
     expect(result).toEqual({
-      media: { mediaUrl: "https://cdn.test/pre.png", caption: "thinking", contentType: "image/png" },
-      diagnostics: [{ reason: "selected" }],
+      payload: { text: "thinking", channelData: { channelPolicy: "service-owned" }, mediaUrl: "https://cdn.test/pre.png" },
     });
   });
   it("uses hook context when OpenClaw event omits a direct channel id", async () => {
     const fetchMock = vi.fn(async () => okJson({ media: { url: "https://cdn.test/pre.png" } }));
     vi.stubGlobal("fetch", fetchMock);
-    const { events } = setup();
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 2500 } });
 
-    await events.get("pre_reply_media")?.(
-      { to: "channel:from-to", userMessage: "inbound", preReplyText: "draft" },
-      { conversationId: "channel:from-context", sessionKey: "s", runId: "r" },
+    await events.get("reply_payload_sending")?.(
+      { kind: "block", payload: { text: "draft", to: "channel:from-to" }, sessionKey: "s", runId: "r" },
+      { conversationId: "channel:from-context", sessionKey: "s", runId: "r", replyToBody: "inbound" },
     );
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context).toMatchObject({
@@ -142,24 +141,27 @@ describe("Hent-ai service adapter configuration", () => {
     });
   });
 
-  it("calls final-response verdict service and returns verdict media", async () => {
+
+  it("calls final-response verdict service for final payloads and attaches verdict media", async () => {
     const fetchMock = vi.fn(async () => okJson({ verdict: { media: { dataBase64: "BBBB", contentType: "image/jpeg" } } }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    const result = await events.get("message_sent_media")?.({
-      to: "channel:456",
-      content: "done",
-      messageId: "m1",
-      metadata: { profile: "svc" },
-    });
+    const result = await events.get("reply_payload_sending")?.({
+      kind: "final",
+      payload: {
+        text: "done",
+        to: "channel:456",
+        channelData: { profile: "svc" },
+      },
+    }, { messageId: "m1" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("https://hent.test/v1/final-response/verdict");
     expect(options.headers.authorization).toBe("Bearer secret");
     expect(JSON.parse(options.body).context).toMatchObject({ channelId: "456", content: "done", messageId: "m1" });
-    expect(result).toEqual({ media: { mediaUrl: "data:image/jpeg;base64,BBBB", contentType: "image/jpeg" }, diagnostics: [] });
+    expect(result).toEqual({ payload: { text: "done", to: "channel:456", channelData: { profile: "svc" }, mediaUrl: "data:image/jpeg;base64,BBBB" } });
   });
 
   it("hydrates service-relative media URLs into local media-cache files before OpenClaw delivery", async () => {
@@ -172,11 +174,11 @@ describe("Hent-ai service adapter configuration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup({ hentAiService: { url: "http://localhost:8787", token: "secret", timeoutMs: 250 } });
 
-    const result = await events.get("message_sent_media")?.({ to: "channel:456", content: "done", messageId: "m1" });
+    const result = await events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "done", to: "channel:456" } }, { messageId: "m1" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ media: { contentType: "image/png" }, diagnostics: [] });
-    const mediaUrl = (result as { media?: { mediaUrl?: string } }).media?.mediaUrl;
+    expect(result).toMatchObject({ payload: { text: "done", to: "channel:456" } });
+    const mediaUrl = (result as { payload?: { mediaUrl?: string } }).payload?.mediaUrl;
     expect(mediaUrl).toContain(".openclaw/media/hent-ai-service-adapter/");
     expect(readFileSync(mediaUrl!)).toEqual(Buffer.from([1, 2, 3]));
   });
@@ -187,18 +189,15 @@ describe("Hent-ai service adapter configuration", () => {
   ])("skips pre-reply media on %s service response", async (_name, payload) => {
     vi.stubGlobal("fetch", vi.fn(async () => okJson(payload)));
     const { events, logger } = setup();
-    const result = await events.get("pre_reply_media")?.({ channelId: "1", userMessage: "x", preReplyText: "y" });
-    expect(result).toMatchObject({ media: null, diagnostics: [expect.objectContaining({ skipped: true })] });
+    const result = await events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "y" } }, { channelId: "1", replyToBody: "x" });
+    expect(result).toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("skipping media"));
   });
 
   it("skips media on service HTTP error", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })));
     const { events } = setup();
-    await expect(events.get("message_sent_media")?.({ to: "channel:1", content: "x", messageId: "m" })).resolves.toMatchObject({
-      media: null,
-      diagnostics: [expect.objectContaining({ status: 503 })],
-    });
+    await expect(events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "x", to: "channel:1" } }, { messageId: "m" })).resolves.toBeUndefined();
   });
 
   it("skips media on service timeout", async () => {
@@ -209,12 +208,9 @@ describe("Hent-ai service adapter configuration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 10 } });
 
-    const pending = events.get("pre_reply_media")?.({ channelId: "1", userMessage: "x", preReplyText: "y" });
-    await vi.advanceTimersByTimeAsync(10);
-    await expect(pending).resolves.toMatchObject({
-      media: null,
-      diagnostics: [expect.objectContaining({ reason: "service request timed out" })],
-    });
+    const pending = events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "y" } }, { channelId: "1", replyToBody: "x" });
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).resolves.toBeUndefined();
   });
 
   it("contains no forbidden thick-plugin runtime imports or Discord REST paths", () => {

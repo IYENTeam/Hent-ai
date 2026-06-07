@@ -44,22 +44,17 @@ OpenClaw 플러그인 config에는 서비스 접속 정보만 필요합니다.
 ## Hook 흐름
 
 ```text
-User message
-  └─ OpenClaw pre_reply_media
-       └─ adapter POST /v1/pre-reply/media
-            └─ service decides channel/profile/policy/media
-       └─ adapter returns { media, diagnostics }
-  └─ OpenClaw sends pre-reply text + media, or text-only on skip
-
-Final text sent
-  └─ OpenClaw message_sent_media
-       └─ adapter POST /v1/final-response/verdict
-            └─ service decides verdict.media
-       └─ adapter returns { media, diagnostics }
-  └─ OpenClaw appends/edits/follows up media, or does nothing on skip
+Reply payload
+  └─ OpenClaw reply_payload_sending
+       ├─ kind=block → adapter POST /v1/pre-reply/media
+       │    └─ service decides channel/profile/policy/media
+       ├─ kind=final → adapter POST /v1/final-response/verdict
+       │    └─ service decides verdict.media
+       └─ adapter returns the original payload plus mediaUrl/mediaUrls when media is available
+  └─ OpenClaw sends text + media, or text-only on skip
 ```
 
-Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media returns `media:null` with diagnostics so OpenClaw text continues.
+Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media leaves the original payload unchanged so OpenClaw text continues.
 
 ## Service APIs for profiles/channels
 
@@ -67,6 +62,7 @@ The service package is responsible for exposing profile/channel management APIs,
 
 - profile list/get/create/update
 - channel profile/mode mapping get/set
+- cron-enabled channel allowlist list/revision API for community polling
 - asset-set import and storage metadata
 - generation/onboarding job state
 

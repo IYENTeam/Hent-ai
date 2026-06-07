@@ -36,9 +36,18 @@ type HookContext = {
   conversationId?: unknown;
   accountId?: unknown;
   messageId?: unknown;
+  replyToBody?: unknown;
   sessionKey?: unknown;
   runId?: unknown;
 };
+type ReplyPayloadSendingEvent = {
+  payload?: Record<string, unknown>;
+  kind?: "tool" | "block" | "final" | string;
+  channel?: string;
+  sessionKey?: string;
+  runId?: string;
+};
+
 
 type Logger = {
   info?: (message: string) => void;
@@ -51,6 +60,7 @@ type FetchLike = typeof fetch;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MEDIA_CACHE_DIR = join(homedir(), ".openclaw", "media", "hent-ai-service-adapter");
 const TOKEN_PLACEHOLDER_RE = /^\$\{([A-Z_][A-Z0-9_]*)\}$/i;
+const COMMUNITY_CRON_POLL_INTERVAL_MS = 1_000;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null;
@@ -278,18 +288,22 @@ function contextRecord(ctx: unknown): HookContext {
 
 function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
   const record = asRecord(event) ?? {};
+  const payload = asRecord(record.payload);
   const hookCtx = contextRecord(ctx);
-  const to = stringValue(record.to);
+  const to = stringValue(record.to) ?? stringValue(payload?.to);
   const channelId = normalizeDiscordChannelId(
-    stringValue(record.channelId) ?? stringValue(hookCtx.conversationId) ?? to ?? stringValue(hookCtx.channelId),
+    stringValue(record.channelId)
+      ?? stringValue(hookCtx.conversationId)
+      ?? to
+      ?? stringValue(hookCtx.channelId),
   );
   return {
     context: {
       to,
       channelId,
-      userMessage: record.userMessage,
-      preReplyText: record.preReplyText ?? record.content,
-      metadata: record.metadata,
+      userMessage: record.userMessage ?? hookCtx.replyToBody,
+      preReplyText: record.preReplyText ?? record.content ?? payload?.text,
+      metadata: record.metadata ?? payload?.channelData,
       sessionKey: record.sessionKey ?? hookCtx.sessionKey,
       runId: record.runId ?? hookCtx.runId,
     },
@@ -298,23 +312,64 @@ function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
 
 function messageSentBody(event: unknown, ctx?: unknown): Record<string, unknown> {
   const record = asRecord(event) ?? {};
+  const payload = asRecord(record.payload);
   const hookCtx = contextRecord(ctx);
-  const to = stringValue(record.to);
+  const to = stringValue(record.to) ?? stringValue(payload?.to);
   const channelId = normalizeDiscordChannelId(
-    stringValue(record.channelId) ?? stringValue(hookCtx.conversationId) ?? to ?? stringValue(hookCtx.channelId),
+    stringValue(record.channelId)
+      ?? stringValue(hookCtx.conversationId)
+      ?? to
+      ?? stringValue(hookCtx.channelId),
   );
   return {
     context: {
       to,
       channelId,
-      content: record.content,
+      content: record.content ?? payload?.text,
       messageId: record.messageId ?? hookCtx.messageId,
       deliveredMessageId: record.deliveredMessageId,
-      metadata: record.metadata,
+      metadata: record.metadata ?? payload?.channelData,
       sessionKey: record.sessionKey ?? hookCtx.sessionKey,
       runId: record.runId ?? hookCtx.runId,
     },
   };
+}
+
+function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawStage1Media): Record<string, unknown> {
+  return {
+    ...payload,
+    mediaUrl: media.mediaUrl,
+    ...(media.mediaUrls ? { mediaUrls: media.mediaUrls } : {}),
+    ...(media.sensitiveMedia !== undefined ? { sensitiveMedia: media.sensitiveMedia } : {}),
+    ...(media.channelData ? { channelData: { ...(asRecord(payload.channelData) ?? {}), ...media.channelData } } : {}),
+  };
+}
+
+async function handleReplyPayloadSending(params: {
+  event: ReplyPayloadSendingEvent;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<{ payload?: Record<string, unknown> } | void> {
+  const payload = asRecord(params.event.payload);
+  if (!payload) return undefined;
+  const kind = params.event.kind;
+  const text = stringValue(payload.text);
+  if (!text || (kind !== "block" && kind !== "final")) return undefined;
+
+  const serviceResult = await callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: kind === "block" ? "/v1/pre-reply/media" : "/v1/final-response/verdict",
+    body: kind === "block"
+      ? preReplyBody({ payload, content: text, sessionKey: params.event.sessionKey, runId: params.event.runId }, params.ctx)
+      : messageSentBody({ payload, content: text, sessionKey: params.event.sessionKey, runId: params.event.runId }, params.ctx),
+    responseMediaPath: kind === "block" ? "media" : "verdict.media",
+    logger: params.logger,
+  });
+
+  return serviceResult.media ? { payload: applyMediaToPayload(payload, serviceResult.media) } : undefined;
 }
 
 export default definePluginEntry({
@@ -336,24 +391,11 @@ export default definePluginEntry({
 
     loggerInfo(api.logger, `hent-ai adapter enabled: url=${config.baseUrl.origin} timeoutMs=${config.timeoutMs}`);
 
-    api.on("pre_reply_media", async (event: unknown, ctx: unknown) => callHentAiService({
-      baseUrl: config.baseUrl,
-      token: config.token,
-      timeoutMs: config.timeoutMs,
-      endpoint: "/v1/pre-reply/media",
-      body: preReplyBody(event, ctx),
-      responseMediaPath: "media",
+    api.on("reply_payload_sending", async (event: ReplyPayloadSendingEvent, ctx: unknown) => handleReplyPayloadSending({
+      event,
+      ctx,
+      config,
       logger: api.logger,
-    }), { name: "hent-ai-pre-reply-media" });
-
-    api.on("message_sent_media", async (event: unknown, ctx: unknown) => callHentAiService({
-      baseUrl: config.baseUrl,
-      token: config.token,
-      timeoutMs: config.timeoutMs,
-      endpoint: "/v1/final-response/verdict",
-      body: messageSentBody(event, ctx),
-      responseMediaPath: "verdict.media",
-      logger: api.logger,
-    }), { name: "hent-ai-message-sent-media" });
+    }), { name: "hent-ai-reply-payload-media" });
   },
 });

@@ -80,6 +80,24 @@ Provider result shape for generated image persistence:
 
 When `assetRoot` is supplied, the worker writes the image under `generated/<assetSetId>/<emotion>/<jobId>-<filename>`, upserts `storage_objects` and `assets`, strips inline base64 from the stored job result, and exposes the image through `/static/...`. Tests must keep providers mocked; do not trigger paid image generation in CI.
 
+For the community-cron workflow, `POST /v1/assets/generate` also accepts a cron selector request:
+
+```json
+{
+  "communitySelector": {
+    "conversationWindow": [
+      { "authorId": "u1", "content": "hello", "createdAt": "2026-06-03T00:00:00Z" }
+    ],
+    "draftReply": "draft reply text",
+    "channelId": "123",
+    "profileId": "gothic-v1",
+    "assetSetId": "gothic-v1"
+  }
+}
+```
+
+The service also exposes `GET /v1/channels/cron-enabled`, which returns the service-owned cron allowlist plus a revision token so OpenClaw can decide when to refresh its cached channel set.
+
 ## Deploy
 
 Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config.

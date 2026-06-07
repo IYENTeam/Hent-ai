@@ -106,12 +106,16 @@ describe("profiles and channels", () => {
       const list = await request(baseUrl, "/v1/profiles");
       expect((await list.json()).profiles).toHaveLength(1);
 
-      const setMapping = await request(baseUrl, "/v1/channels/c1/mapping", { method: "PUT", body: JSON.stringify({ profileId: "gothic-v1", mode: "date", enabled: true, assetSetId: "gothic-v1" }) });
+      const setMapping = await request(baseUrl, "/v1/channels/c1/mapping", { method: "PUT", body: JSON.stringify({ profileId: "gothic-v1", mode: "date", enabled: true, cronEnabled: true, assetSetId: "gothic-v1" }) });
       expect(setMapping.status).toBe(200);
-      expect((await setMapping.json()).mapping).toMatchObject({ channelId: "c1", profileId: "gothic-v1", enabled: true, assetSetId: "gothic-v1" });
+      expect((await setMapping.json()).mapping).toMatchObject({ channelId: "c1", profileId: "gothic-v1", enabled: true, cronEnabled: true, assetSetId: "gothic-v1" });
 
       const mapping = await request(baseUrl, "/v1/channels/c1/mapping");
-      expect((await mapping.json()).mapping).toMatchObject({ mode: "date" });
+      expect((await mapping.json()).mapping).toMatchObject({ mode: "date", cronEnabled: true });
+
+      const cronEnabled = await request(baseUrl, "/v1/channels/cron-enabled");
+      expect(cronEnabled.status).toBe(200);
+      expect(await cronEnabled.json()).toMatchObject({ revision: expect.any(String), channels: [{ channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1", updatedAt: expect.any(String) }] });
     });
   });
 });
@@ -198,6 +202,15 @@ describe("schema and importer", () => {
 });
 
 describe("runtime and job APIs", () => {
+  it("rejects partial community selector generation requests", async () => {
+    const db = new ServiceDatabase();
+    await withServer(db, async (baseUrl) => {
+      const created = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ communitySelector: { draftReply: "missing channel" } }) });
+      expect(created.status).toBe(400);
+      expect(await created.json()).toMatchObject({ error: "bad_request", message: "communitySelector.channelId is required" });
+    });
+  });
+
   it("returns null media/verdict when policy has no result", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
@@ -248,17 +261,17 @@ describe("runtime and job APIs", () => {
   it("persists async generation jobs and exposes runner-processed status", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
-      const created = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ prompt: "no external generation" }) });
+      const created = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ communitySelector: { conversationWindow: [{ authorId: "u1", content: "hello", createdAt: new Date().toISOString() }], draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } }) });
       expect(created.status).toBe(202);
       const { jobId } = await created.json() as { jobId: string };
       expect(jobId).toMatch(/^job_/);
 
       const processed = await runNextGenerationJob(db, { generate: async (request) => ({ provider: "mock", request }) });
-      expect(processed).toMatchObject({ id: jobId, status: "succeeded", result: { provider: "mock", request: { prompt: "no external generation" } } });
+      expect(processed).toMatchObject({ id: jobId, status: "succeeded", result: { provider: "mock", request: { communitySelector: { draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } } } });
 
       const status = await request(baseUrl, `/v1/jobs/${jobId}`);
       expect(status.status).toBe(200);
-      expect(await status.json()).toEqual({ jobId, id: jobId, status: "succeeded", result: { provider: "mock", request: { prompt: "no external generation" } } });
+      expect(await status.json()).toEqual({ jobId, id: jobId, status: "succeeded", result: { provider: "mock", request: { communitySelector: { conversationWindow: [{ authorId: "u1", content: "hello", createdAt: expect.any(String) }], draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } } }, createdAt: expect.any(String), updatedAt: expect.any(String) });
     });
   });
 });

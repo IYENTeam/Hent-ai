@@ -37,16 +37,18 @@ Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adap
 
 ## Runtime Hooks
 
-The adapter registers two OpenClaw Stage-1 media hooks:
+The adapter registers OpenClaw's current `reply_payload_sending` hook and routes payloads by dispatch kind:
 
-- `pre_reply_media` → `POST /v1/pre-reply/media`
-- `message_sent_media` → `POST /v1/final-response/verdict`
+- `kind: "block"` → `POST /v1/pre-reply/media`
+- `kind: "final"` → `POST /v1/final-response/verdict`
 
-Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media returns `{ "media": null, "diagnostics": [...] }` and logs a skip. OpenClaw continues text delivery.
+Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
 ### Pre-reply media
 
-OpenClaw calls `pre_reply_media` before sending pre-reply text. The adapter calls the service and returns the selected media to OpenClaw. It never sends the pre-reply itself.
+OpenClaw calls `reply_payload_sending` before sending a block/pre-reply payload. The adapter calls the service and attaches returned media to the payload. It never sends the pre-reply itself.
+
+For the new community-cron path, the same hook can be used with cron-specific metadata. In that mode the adapter creates a fresh `POST /v1/assets/generate` job, polls `GET /v1/jobs/:id`, and only returns media once the generated asset is ready.
 
 Expected service response:
 
@@ -64,7 +66,7 @@ Expected service response:
 
 ### Final-response media
 
-OpenClaw calls `message_sent_media` after final text delivery. The adapter calls the service verdict endpoint and returns `verdict.media`. OpenClaw owns append/edit/follow-up delivery.
+OpenClaw calls `reply_payload_sending` before final payload delivery. The adapter calls the service verdict endpoint and attaches `verdict.media` to the payload. OpenClaw owns delivery.
 
 Expected service response:
 

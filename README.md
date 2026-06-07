@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. It supports **OpenClaw** and **Cursor** platforms.
+Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. It supports the **OpenClaw** platform.
 
 ### Supported Emotions
 
@@ -41,10 +41,7 @@ The production verifier is deployment-configured. Public docs should describe th
 
 > **🤖 Agent setup:** If you're using an AI agent (OpenClaw, Claude Code, Codex, etc.), tell it to read [`SKILL.md`](./SKILL.md) in this repo. The agent will walk you through the entire setup interactively.
 
-Choose your platform:
-
-- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md)
-- **Cursor** → see [`cursor/README.md`](./cursor/README.md)
+OpenClaw setup instructions are in [`openclaw/README.md`](./openclaw/README.md).
 
 ## Creating Emotion Images
 

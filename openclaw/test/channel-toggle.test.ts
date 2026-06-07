@@ -32,7 +32,7 @@ describe("channel policy service delegation", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("pre_reply_media")?.({ channelId: "blocked", userMessage: "hello", preReplyText: "thinking" });
+    await events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "thinking" } }, { channelId: "blocked", replyToBody: "hello" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context.channelId).toBe("blocked");
@@ -43,7 +43,7 @@ describe("channel policy service delegation", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("message_sent_media")?.({ to: "channel:blocked", content: "done", messageId: "m" });
+    await events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "done", to: "channel:blocked" } }, { messageId: "m" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context.channelId).toBe("blocked");

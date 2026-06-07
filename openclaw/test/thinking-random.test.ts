@@ -19,7 +19,7 @@ describe("pre-reply media service delegation", () => {
     vi.unstubAllGlobals();
   });
 
-  it("delegates thinking media selection to the service for each pre_reply_media event", async () => {
+  it("delegates thinking media selection to the service for each block reply payload", async () => {
     const fetchMock = vi.fn(async (_url: string, options: RequestInit) => ({
       ok: true,
       status: 200,
@@ -27,13 +27,13 @@ describe("pre-reply media service delegation", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
-    const handler = events.get("pre_reply_media");
+    const handler = events.get("reply_payload_sending");
 
-    await expect(handler?.({ channelId: "111", userMessage: "first", preReplyText: "thinking", runId: "first" })).resolves.toMatchObject({
-      media: { mediaUrl: "https://cdn.test/first.png" },
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "first" }, { channelId: "111", replyToBody: "first" })).resolves.toMatchObject({
+      payload: { mediaUrl: "https://cdn.test/first.png" },
     });
-    await expect(handler?.({ channelId: "111", userMessage: "second", preReplyText: "thinking", runId: "second" })).resolves.toMatchObject({
-      media: { mediaUrl: "https://cdn.test/second.png" },
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "second" }, { channelId: "111", replyToBody: "second" })).resolves.toMatchObject({
+      payload: { mediaUrl: "https://cdn.test/second.png" },
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);

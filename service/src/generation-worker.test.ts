@@ -62,6 +62,19 @@ describe("generation worker runner", () => {
     }
   });
 
+
+  it("reclaims stale running jobs on worker restart", async () => {
+    const db = new ServiceDatabase();
+    try {
+      const job = db.createGenerationJob({ prompt: "stale" });
+      db.db.prepare("UPDATE generation_jobs SET status = 'running', updated_at = ? WHERE id = ?").run(new Date(Date.now() - 10_000).toISOString(), job.id);
+      const result = await runNextGenerationJob(db, { generate: async () => ({ recovered: true }) }, { staleRunningAfterMs: 1_000 });
+      expect(result).toMatchObject({ id: job.id, status: "succeeded", result: { recovered: true } });
+    } finally {
+      db.close();
+    }
+  });
+
   it("transitions a queued job to failed with provider error", async () => {
     const db = new ServiceDatabase();
     try {

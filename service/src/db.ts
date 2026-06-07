@@ -27,6 +27,7 @@ export type ChannelMapping = {
   profileId: string | null;
   mode: string | null;
   enabled: boolean | null;
+  cronEnabled: boolean | null;
   assetSetId: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS channel_mappings (
 CREATE TABLE IF NOT EXISTS channel_settings (
   channel_id TEXT PRIMARY KEY,
   enabled INTEGER CHECK (enabled IN (0, 1)),
+  cron_enabled INTEGER CHECK (cron_enabled IN (0, 1)),
   asset_set_id TEXT,
   settings_json TEXT,
   created_at TEXT NOT NULL,
@@ -182,6 +184,10 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   return JSON.parse(value) as T;
 }
 
+function columnExists(db: Database.Database, table: string, column: string): boolean {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => (row as { name: string }).name === column);
+}
+
 function rowToProfile(row: Record<string, unknown>): Profile {
   return {
     id: String(row.id),
@@ -223,6 +229,9 @@ export class ServiceDatabase {
 
   initialize(): void {
     this.db.exec(SCHEMA_SQL);
+    if (!columnExists(this.db, "channel_settings", "cron_enabled")) {
+      this.db.exec("ALTER TABLE channel_settings ADD COLUMN cron_enabled INTEGER CHECK (cron_enabled IN (0, 1))");
+    }
     this.db.prepare(
       "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
     ).run(SCHEMA_VERSION, now());
@@ -272,22 +281,30 @@ export class ServiceDatabase {
     return this.getProfile(id)!;
   }
 
-  setChannelMapping(channelId: string, input: { profileId?: string | null; mode?: string | null; enabled?: boolean | null; assetSetId?: string | null; settings?: unknown }): ChannelMapping {
+  setChannelMapping(channelId: string, input: { profileId?: string | null; mode?: string | null; enabled?: boolean | null; cronEnabled?: boolean | null; assetSetId?: string | null; settings?: unknown }): ChannelMapping {
     const stamp = now();
     if (input.profileId && !this.getProfile(input.profileId)) throw new Error("Profile not found");
     this.db.prepare(`INSERT INTO channel_mappings (channel_id, profile_id, mode, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(channel_id) DO UPDATE SET profile_id = excluded.profile_id, mode = excluded.mode, updated_at = excluded.updated_at`)
       .run(channelId, input.profileId ?? null, input.mode ?? null, stamp, stamp);
-    this.db.prepare(`INSERT INTO channel_settings (channel_id, enabled, asset_set_id, settings_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(channel_id) DO UPDATE SET enabled = excluded.enabled, asset_set_id = excluded.asset_set_id, settings_json = excluded.settings_json, updated_at = excluded.updated_at`)
-      .run(channelId, input.enabled == null ? null : input.enabled ? 1 : 0, input.assetSetId ?? null, JSON.stringify(input.settings ?? {}), stamp, stamp);
+    this.db.prepare(`INSERT INTO channel_settings (channel_id, enabled, cron_enabled, asset_set_id, settings_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel_id) DO UPDATE SET enabled = excluded.enabled, cron_enabled = excluded.cron_enabled, asset_set_id = excluded.asset_set_id, settings_json = excluded.settings_json, updated_at = excluded.updated_at`)
+      .run(
+        channelId,
+        input.enabled == null ? null : input.enabled ? 1 : 0,
+        input.cronEnabled == null ? null : input.cronEnabled ? 1 : 0,
+        input.assetSetId ?? null,
+        JSON.stringify(input.settings ?? {}),
+        stamp,
+        stamp,
+      );
     return this.getChannelMapping(channelId)!;
   }
 
   getChannelMapping(channelId: string): ChannelMapping | null {
-    const row = this.db.prepare(`SELECT m.channel_id, m.profile_id, m.mode, m.created_at, m.updated_at, s.enabled, s.asset_set_id
+    const row = this.db.prepare(`SELECT m.channel_id, m.profile_id, m.mode, m.created_at, m.updated_at, s.enabled, s.cron_enabled, s.asset_set_id
       FROM channel_mappings m LEFT JOIN channel_settings s ON s.channel_id = m.channel_id WHERE m.channel_id = ?`).get(channelId) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
@@ -295,10 +312,31 @@ export class ServiceDatabase {
       profileId: (row.profile_id as string | null) ?? null,
       mode: (row.mode as string | null) ?? null,
       enabled: row.enabled == null ? null : Number(row.enabled) === 1,
+      cronEnabled: row.cron_enabled == null ? null : Number(row.cron_enabled) === 1,
       assetSetId: (row.asset_set_id as string | null) ?? null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
+  }
+
+  listCronEnabledChannels(): Array<{ channelId: string; profileId: string | null; assetSetId: string | null; updatedAt: string | null }> {
+    return this.db.prepare(`SELECT m.channel_id, m.profile_id, s.asset_set_id, COALESCE(s.updated_at, m.updated_at) AS updated_at
+      FROM channel_mappings m
+      JOIN channel_settings s ON s.channel_id = m.channel_id
+      WHERE s.cron_enabled = 1
+      ORDER BY m.channel_id`).all().map((row) => ({
+      channelId: String((row as { channel_id: string }).channel_id),
+      profileId: ((row as { profile_id?: string | null }).profile_id) ?? null,
+      assetSetId: ((row as { asset_set_id?: string | null }).asset_set_id) ?? null,
+      updatedAt: ((row as { updated_at?: string | null }).updated_at) ?? null,
+    }));
+  }
+
+  cronEnabledRevision(): string {
+    const row = this.db.prepare(`SELECT COALESCE(MAX(COALESCE(updated_at, created_at)), '') AS revision
+      FROM channel_settings
+      WHERE cron_enabled = 1`).get() as { revision: string };
+    return row.revision || "";
   }
 
   upsertAssetSet(input: { id: string; name: string; character?: string | null; model?: string | null; manifest?: unknown }): void {
@@ -347,10 +385,14 @@ export class ServiceDatabase {
     const row = this.db.prepare("SELECT * FROM generation_jobs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     return row ? rowToJob(row) : null;
   }
-  claimNextGenerationJob(): GenerationJob | null {
+  claimNextGenerationJob(staleRunningBefore?: string): GenerationJob | null {
+    const stamp = now();
+    if (staleRunningBefore) {
+      this.db.prepare("UPDATE generation_jobs SET status = 'queued', updated_at = ? WHERE status = 'running' AND updated_at <= ?")
+        .run(stamp, staleRunningBefore);
+    }
     const row = this.db.prepare("SELECT id FROM generation_jobs WHERE status = 'queued' ORDER BY created_at, id LIMIT 1").get() as { id: string } | undefined;
     if (!row) return null;
-    const stamp = now();
     const result = this.db.prepare("UPDATE generation_jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'").run(stamp, row.id);
     if (result.changes !== 1) return null;
     return this.getGenerationJob(row.id);

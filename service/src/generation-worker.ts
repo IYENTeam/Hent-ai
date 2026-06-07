@@ -9,6 +9,7 @@ export type GenerationProvider = {
 
 export type GenerationWorkerOptions = {
   assetRoot?: string;
+  staleRunningAfterMs?: number;
 };
 
 type GeneratedImageResult = {
@@ -108,7 +109,10 @@ function persistGeneratedImage(db: ServiceDatabase, job: GenerationJob, result: 
 }
 
 export async function runNextGenerationJob(db: ServiceDatabase, provider: GenerationProvider, options: GenerationWorkerOptions = {}): Promise<GenerationJob | null> {
-  const job = db.claimNextGenerationJob();
+  const staleRunningBefore = options.staleRunningAfterMs && options.staleRunningAfterMs > 0
+    ? new Date(Date.now() - options.staleRunningAfterMs).toISOString()
+    : undefined;
+  const job = db.claimNextGenerationJob(staleRunningBefore);
   if (!job) return null;
 
   try {
