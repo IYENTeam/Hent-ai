@@ -31,7 +31,7 @@
           "timeoutMs": {
             "type": "number",
             "description": "Service request timeout in milliseconds.",
-            "default": 5000,
+            "default": 15000,
             "minimum": 1
           }
         }

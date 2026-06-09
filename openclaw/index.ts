@@ -64,7 +64,7 @@ type Logger = {
 
 type FetchLike = typeof fetch;
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
 const MEDIA_CACHE_DIR = join(homedir(), ".openclaw", "media", "hent-ai-service-adapter");
 const TOKEN_PLACEHOLDER_RE = /^\$\{([A-Z_][A-Z0-9_]*)\}$/i;
 const COMMUNITY_CRON_POLL_INTERVAL_MS = 1_000;

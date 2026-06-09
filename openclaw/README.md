@@ -18,7 +18,7 @@ Configure the `hentAiService` namespace in the plugin config:
           "hentAiService": {
             "url": "https://hent-ai.example.com",
             "token": "${HENT_AI_SERVICE_TOKEN}",
-            "timeoutMs": 5000
+            "timeoutMs": 15000
           }
         }
       }
@@ -31,7 +31,7 @@ Configure the `hentAiService` namespace in the plugin config:
 | --- | --- | --- | --- |
 | `hentAiService.url` | `string` | yes | Base URL for the Hent-ai service. Non-localhost URLs must use HTTPS. `http://localhost` is allowed for local development. |
 | `hentAiService.token` | `string` | yes | Bearer token for service requests. Literal values and `${ENV_VAR}` placeholders are supported. |
-| `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `5000`. |
+| `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `15000`. |
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
