@@ -53,6 +53,7 @@ type ImportChannelMapping = {
   profileId?: string | null;
   mode?: string | null;
   enabled?: boolean | null;
+  cronEnabled?: boolean | null;
   assetSetId?: string | null;
 };
 
@@ -183,6 +184,9 @@ function buildImportPlan(assetRoot: string, manifest: Manifest, channelOverrides
 
     for (const filename of listImageFiles(join(assetRoot, "profiles", profileId))) {
       const emotion = basename(filename).replace(/\.[^.]+$/, "");
+      // base.png is the character reference image, not an emotion variant —
+      // importing it would leak "base" into the channel's valid emotion list.
+      if (emotion.toLowerCase() === "base" || emotion.toLowerCase().startsWith("base_")) continue;
       assets.push({
         id: `${profileId}:${emotion}:${filename}`,
         assetSetId: profileId,
@@ -197,13 +201,14 @@ function buildImportPlan(assetRoot: string, manifest: Manifest, channelOverrides
 
   if (manifest.activeSet) {
     for (const [channelId, value] of Object.entries(channelOverrides).filter(([, value]) => value && typeof value === "object")) {
-      const override = value as { profileId?: string; mode?: string; enabled?: boolean; assetSetId?: string };
+      const override = value as { profileId?: string; mode?: string; enabled?: boolean; cronEnabled?: boolean; assetSetId?: string };
       channelMap.set(channelId, {
         ...channelMap.get(channelId),
         channelId,
         profileId: override.profileId ?? channelMap.get(channelId)?.profileId ?? manifest.activeSet,
         mode: override.mode ?? channelMap.get(channelId)?.mode ?? null,
         enabled: override.enabled ?? channelMap.get(channelId)?.enabled ?? true,
+        cronEnabled: override.cronEnabled ?? channelMap.get(channelId)?.cronEnabled ?? null,
         assetSetId: override.assetSetId ?? channelMap.get(channelId)?.assetSetId ?? manifest.activeSet,
       });
     }
@@ -248,8 +253,25 @@ export function importAssets(options: { db: ServiceDatabase; assetRoot: string; 
 
   for (const profile of plan.profiles) {
     if (!dryRun) {
-      options.db.upsertAssetSet({ id: profile.id, name: profile.name, character: profile.character ?? null, model: profile.model ?? null, manifest: profile.manifest ?? {} });
-      options.db.upsertProfile({ id: profile.id, name: profile.name, character: profile.character ?? null, soulSnippet: profile.soulSnippet ?? null, model: profile.model ?? null });
+      // Profiles discovered only from a profiles/<id> directory (no manifest entry)
+      // are owned by the runtime DB/API: seed them once, never clobber afterwards.
+      // Manifest-backed sets keep the manifest as source of truth, but a missing
+      // legacy hentai.db must not null out fields the API has since populated.
+      const fromManifest = profile.manifest !== undefined;
+      const existing = options.db.getProfile(profile.id);
+      if (!existing || fromManifest) {
+        options.db.upsertAssetSet({ id: profile.id, name: profile.name, character: profile.character ?? null, model: profile.model ?? null, manifest: profile.manifest ?? {} });
+      }
+      if (!existing) {
+        options.db.createProfile({ id: profile.id, name: profile.name, character: profile.character ?? null, soulSnippet: profile.soulSnippet ?? null, model: profile.model ?? null });
+      } else if (fromManifest) {
+        options.db.updateProfile(profile.id, {
+          name: profile.name,
+          character: profile.character ?? undefined,
+          soulSnippet: profile.soulSnippet ?? undefined,
+          model: profile.model ?? undefined,
+        });
+      }
     }
   }
 
@@ -276,11 +298,15 @@ export function importAssets(options: { db: ServiceDatabase; assetRoot: string; 
 
   if (!dryRun) {
     for (const mapping of plan.channelMappings) {
+      // Merge with the existing row so a re-import never wipes runtime-managed
+      // state (cron flags, API-set profile/mode) that the seed files don't carry.
+      const existing = options.db.getChannelMapping(mapping.channelId);
       options.db.setChannelMapping(mapping.channelId, {
-        profileId: mapping.profileId ?? null,
-        mode: mapping.mode ?? null,
-        enabled: mapping.enabled ?? true,
-        assetSetId: mapping.assetSetId ?? mapping.profileId ?? null,
+        profileId: mapping.profileId ?? existing?.profileId ?? null,
+        mode: mapping.mode ?? existing?.mode ?? null,
+        enabled: mapping.enabled ?? existing?.enabled ?? true,
+        cronEnabled: mapping.cronEnabled ?? existing?.cronEnabled ?? null,
+        assetSetId: mapping.assetSetId ?? mapping.profileId ?? existing?.assetSetId ?? null,
       });
     }
     options.db.recordImportRun(checksum, false, { counts, warnings });

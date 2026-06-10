@@ -173,43 +173,53 @@ function storeCachedVerdict(db: ServiceDatabase, key: string, verdict: FinalVerd
     .run(key, JSON.stringify(verdict), stamp, stamp);
 }
 
-async function finalVerdictForBody(db: ServiceDatabase, verifier: FinalResponseVerifier, body: unknown): Promise<FinalVerdict | null> {
+type FinalVerdictResult = {
+  verdict: FinalVerdict | null;
+  diagnostics?: Array<{ skipped: true; reason: string }>;
+};
+
+function skippedVerdict(reason: string): FinalVerdictResult {
+  return { verdict: null, diagnostics: [{ skipped: true, reason }] };
+}
+
+async function finalVerdictForBody(db: ServiceDatabase, verifier: FinalResponseVerifier, body: unknown): Promise<FinalVerdictResult> {
   const channelId = channelIdFromHookBody(body);
   const finalText = finalResponseTextFromBody(body);
   const explicitValidEmotions = validEmotionsFromBody(body);
   const validEmotions = explicitValidEmotions.length ? explicitValidEmotions : validEmotionsForChannel(db, channelId);
-  if (!finalText || validEmotions.length === 0) return null;
+  if (!finalText || validEmotions.length === 0) return skippedVerdict("no_final_text_or_valid_emotions");
 
   const key = verdictCacheKey(channelId, finalText, validEmotions);
   const cached = cachedVerdict(db, key, validEmotions);
   if (cached !== undefined) {
-    if (!cached) return null;
+    if (!cached) return skippedVerdict("cached_null_verdict");
     const media = mediaResponseForChannelEmotion(db, channelId, cached.emotion);
-    return media ? { ...cached, media } : null;
+    return media ? { verdict: { ...cached, media } } : skippedVerdict("no_asset_for_emotion");
   }
 
   let selected: VerifierJudgment | null;
   try {
     selected = await verifier.verify({ channelId, finalText, validEmotions });
-  } catch {
-    return null;
+  } catch (error) {
+    console.warn(`[hent-ai-service] verifier error channelId=${channelId ?? "unknown"}: ${error instanceof Error ? error.message : String(error)}`);
+    return skippedVerdict("verifier_error");
   }
 
   const emotion = typeof selected?.emotion === "string" ? selected.emotion.trim().toLowerCase() : undefined;
   if (!selected || !emotion || !validEmotions.includes(emotion)) {
     storeCachedVerdict(db, key, null);
-    return null;
+    return skippedVerdict("verifier_emotion_invalid");
   }
 
   const media = mediaResponseForChannelEmotion(db, channelId, emotion);
   if (!media) {
     storeCachedVerdict(db, key, null);
-    return null;
+    return skippedVerdict("no_asset_for_emotion");
   }
 
   const verdict: FinalVerdict = { ...selected, emotion, media };
   storeCachedVerdict(db, key, verdict);
-  return verdict;
+  return { verdict };
 }
 
 function channelIdFromHookBody(body: unknown): string | undefined {
@@ -328,7 +338,8 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       }
       if (req.method === "POST" && url.pathname === "/v1/final-response/verdict") {
         const body = await readJsonBody(req);
-        sendJson(res, 200, { verdict: await finalVerdictForBody(options.db, options.verifier, body) });
+        const result = await finalVerdictForBody(options.db, options.verifier, body);
+        sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {

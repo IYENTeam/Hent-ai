@@ -268,7 +268,24 @@ async function callHentAiService(params: {
       : asRecord(root?.verdict)?.media;
     const media = normalizeServiceMedia(mediaValue);
     if (!media) {
-      loggerWarn(params.logger, "hent-ai adapter: service media missing or malformed; skipping media");
+      // The service answers `media: null` / `verdict: null` (with diagnostics)
+      // when it intentionally has nothing to attach — unmapped channel, null
+      // verdict, etc. Only an answer that lacks those keys is malformed.
+      const explicitSkip = params.responseMediaPath === "media"
+        ? root !== null && "media" in root && root.media === null
+        : root !== null && "verdict" in root && root.verdict === null;
+      const reasons = Array.isArray(root?.diagnostics)
+        ? root.diagnostics.map((entry) => asRecord(entry)?.reason).filter((reason): reason is string => typeof reason === "string")
+        : [];
+      const detail = reasons.length ? ` (${reasons.join(", ")})` : "";
+      if (explicitSkip) {
+        const isServiceError = reasons.some((reason) => reason.includes("error"));
+        const message = `hent-ai adapter: service returned no media; skipping${detail}`;
+        if (isServiceError) loggerWarn(params.logger, message);
+        else loggerInfo(params.logger, message);
+        return { media: null, diagnostics: diagnostic(reasons[0] ?? "service returned no media") };
+      }
+      loggerWarn(params.logger, `hent-ai adapter: service media missing or malformed; skipping media${detail}`);
       return { media: null, diagnostics: diagnostic("service media missing or malformed") };
     }
     const hydratedMedia = await hydrateLocalServiceMedia(media, params.baseUrl, fetchImpl);

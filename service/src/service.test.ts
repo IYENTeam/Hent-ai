@@ -220,7 +220,7 @@ describe("runtime and job APIs", () => {
 
       const finalVerdict = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify({ context: { channelId: "missing", content: "neutral reply", validEmotions: ["neutral"] } }) });
       expect(finalVerdict.status).toBe(200);
-      expect(await finalVerdict.json()).toEqual({ verdict: null });
+      expect(await finalVerdict.json()).toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_emotion_invalid" }] });
     });
   });
 
@@ -229,7 +229,7 @@ describe("runtime and job APIs", () => {
     await withServer(db, async (baseUrl) => {
       const missingValidEmotions = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify({ context: { channelId: "c1", content: "happy" } }) });
       expect(missingValidEmotions.status).toBe(200);
-      expect(await missingValidEmotions.json()).toEqual({ verdict: null });
+      expect(await missingValidEmotions.json()).toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "no_final_text_or_valid_emotions" }] });
 
       const invalidJson = await fetch(`${baseUrl}/v1/final-response/verdict`, {
         method: "POST",

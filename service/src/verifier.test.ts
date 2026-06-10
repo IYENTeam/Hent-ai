@@ -70,9 +70,9 @@ describe("final-response verifier boundary", () => {
     const verifier: FinalResponseVerifier = { verify: async () => responses.shift() as never };
 
     await withServer(db, verifier, async (baseUrl) => {
-      await expect(requestVerdict(baseUrl, "no match")).resolves.toEqual({ verdict: null });
-      await expect(requestVerdict(baseUrl, "unknown emotion")).resolves.toEqual({ verdict: null });
-      await expect(requestVerdict(baseUrl, "invalid shape")).resolves.toEqual({ verdict: null });
+      await expect(requestVerdict(baseUrl, "no match")).resolves.toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_emotion_invalid" }] });
+      await expect(requestVerdict(baseUrl, "unknown emotion")).resolves.toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_emotion_invalid" }] });
+      await expect(requestVerdict(baseUrl, "invalid shape")).resolves.toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_emotion_invalid" }] });
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 3 });
     });
   });
@@ -89,8 +89,8 @@ describe("final-response verifier boundary", () => {
     };
 
     await withServer(db, verifier, async (baseUrl) => {
-      await expect(requestVerdict(baseUrl, "neutral text should not be locally matched")).resolves.toEqual({ verdict: null });
-      await expect(requestVerdict(baseUrl, "neutral text should not be locally matched")).resolves.toEqual({ verdict: null });
+      await expect(requestVerdict(baseUrl, "neutral text should not be locally matched")).resolves.toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_error" }] });
+      await expect(requestVerdict(baseUrl, "neutral text should not be locally matched")).resolves.toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "verifier_error" }] });
       expect(calls).toBe(2);
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 0 });
     });
