@@ -18,3 +18,5 @@ openclaw/index.js
 .omx/tmux-hook.json
 .sisyphus/
 assets/hentai.db
+assets/hentai.db-shm
+assets/hentai.db-wal
