@@ -1,3 +1,7 @@
+import sharp from "sharp";
+
+const DISCORD_ATTACHMENT_IMAGE_SIZE_PX = 512;
+
 export interface Logger {
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
@@ -29,6 +33,22 @@ function parseRetryAfterMs(res: Response): number | null {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+
+export async function resizeImageBufferForDiscordAttachment(buffer: Buffer, contentType = "image/png"): Promise<Buffer> {
+  if (!contentType.startsWith("image/") || contentType === "image/gif") return buffer;
+  try {
+    return await sharp(buffer)
+      .resize(DISCORD_ATTACHMENT_IMAGE_SIZE_PX, DISCORD_ATTACHMENT_IMAGE_SIZE_PX, {
+        fit: "cover",
+        position: "center",
+      })
+      .png()
+      .toBuffer();
+  } catch {
+    return buffer;
+  }
 }
 
 async function fetchDiscordWithRetry(
@@ -97,8 +117,10 @@ export async function sendImageBufferMessage(
   logger: Logger,
   openClawSender?: OpenClawMessageSender,
 ): Promise<string | null> {
+  const attachmentBuffer = await resizeImageBufferForDiscordAttachment(buffer, "image/png");
+
   if (openClawSender?.sendImageBuffer) {
-    const messageId = await openClawSender.sendImageBuffer(channelId, buffer, filename, text);
+    const messageId = await openClawSender.sendImageBuffer(channelId, attachmentBuffer, filename, text);
     if (messageId) return messageId;
     logger.warn("discord-utils: OpenClaw image send unavailable; falling back to Discord REST");
   }
@@ -122,7 +144,7 @@ export async function sendImageBufferMessage(
         `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`,
       ),
     );
-    parts.push(buffer);
+    parts.push(attachmentBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);

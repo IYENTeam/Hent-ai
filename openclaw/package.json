@@ -25,7 +25,8 @@
   },
   "dependencies": {
     "@hent-ai/generate": "file:../generate",
-    "@hent-ai/shared": "file:../shared"
+    "@hent-ai/shared": "file:../shared",
+    "sharp": "^0.34.5"
   },
   "peerDependencies": {
     "@openclaw/plugin-sdk": ">=2026.4.0"
