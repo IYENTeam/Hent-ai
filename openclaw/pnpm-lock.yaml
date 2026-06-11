@@ -16,8 +16,8 @@ importers:
         version: file:../shared
     devDependencies:
       '@openclaw/plugin-sdk':
-        specifier: file:./test/stubs/plugin-sdk
-        version: file:test/stubs/plugin-sdk
+        specifier: file:../../openclaw/packages/plugin-sdk
+        version: file:../../openclaw/packages/plugin-sdk
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
@@ -358,8 +358,8 @@ packages:
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
-  '@openclaw/plugin-sdk@file:test/stubs/plugin-sdk':
-    resolution: {directory: test/stubs/plugin-sdk, type: directory}
+  '@openclaw/plugin-sdk@file:../../openclaw/packages/plugin-sdk':
+    resolution: {directory: ../../openclaw/packages/plugin-sdk, type: directory}
 
   '@rollup/rollup-android-arm-eabi@4.60.4':
     resolution: {integrity: sha512-F5QXMSiFebS9hKZj02XhWLLnRpJ3B3AROP0tWbFBSj+6kCbg5m9j5JoHKd4mmSVy5mS/IMQloYgYxCuJC0fxEQ==}
@@ -1103,7 +1103,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@openclaw/plugin-sdk@file:test/stubs/plugin-sdk': {}
+  '@openclaw/plugin-sdk@file:../../openclaw/packages/plugin-sdk': {}
 
   '@rollup/rollup-android-arm-eabi@4.60.4':
     optional: true

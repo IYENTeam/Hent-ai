@@ -4,10 +4,10 @@
   "description": "Generate emotion images for Hent-ai using Codex image generation.",
   "type": "module",
   "bin": {
-    "hent-ai": "./dist/generate/src/main.js"
+    "hent-ai": "./dist/main.js"
   },
   "exports": {
-    ".": "./dist/generate/src/index.js"
+    ".": "./dist/index.js"
   },
   "files": [
     "dist"
@@ -15,8 +15,7 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "pack:check": "npm pack --dry-run --json"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@hent-ai/shared": "file:../shared",
