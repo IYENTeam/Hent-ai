@@ -1,8 +1,8 @@
 # Hent-ai OpenClaw Adapter
 
-Minimal Hent-ai service adapter for OpenClaw media lifecycle hooks.
+Minimal Hent-ai service adapter for OpenClaw final assistant reply media.
 
-The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw media hook context to the Hent-ai HTTP service, validates the service response, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). Text delivery remains owned by OpenClaw.
+The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context to the Hent-ai HTTP service, validates the service response, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). Text delivery remains owned by OpenClaw.
 
 ## Configuration
 
@@ -35,34 +35,15 @@ Configure the `hentAiService` namespace in the plugin config:
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
-## Runtime Hooks
+## Runtime Hook
 
-The adapter registers OpenClaw's current `reply_payload_sending` hook and routes payloads by dispatch kind:
+The adapter registers OpenClaw's current `reply_payload_sending` hook for final assistant replies only:
 
-- `kind: "block"` → `POST /v1/pre-reply/media`
 - `kind: "final"` → `POST /v1/final-response/verdict`
 
+Block/pre-reply payloads are intentionally ignored. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
+
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
-
-### Pre-reply media
-
-OpenClaw calls `reply_payload_sending` before sending a block/pre-reply payload. The adapter calls the service and attaches returned media to the payload. It never sends the pre-reply itself.
-
-For the new community-cron path, the same hook can be used with cron-specific metadata. In that mode the adapter creates a fresh `POST /v1/assets/generate` job, polls `GET /v1/jobs/:id`, and only returns media once the generated asset is ready.
-
-Expected service response:
-
-```json
-{
-  "media": {
-    "url": "https://cdn.example/pre.png",
-    "caption": "optional caption",
-    "sensitiveMedia": false,
-    "channelData": {}
-  },
-  "diagnostics": []
-}
-```
 
 ### Final-response media
 
@@ -103,3 +84,43 @@ From `openclaw/`:
 ```bash
 npx vitest run index.test.ts test/thinking-random.test.ts test/date-mode-e2e.test.ts test/channel-toggle.test.ts
 ```
+
+
+## Current OpenClaw Setup Checklist
+
+1. Load the adapter path:
+
+   ```jsonc
+   {
+     "plugins": {
+       "load": {
+         "paths": ["/path/to/Hent-ai/openclaw"]
+       }
+     }
+   }
+   ```
+
+2. Enable only `hent-ai-service-adapter` for Hent-ai in OpenClaw config. Remove any old `emotion-image` entry.
+3. Set `hentAiService.url`, `hentAiService.token`, and optionally `hentAiService.timeoutMs`.
+4. Configure channel mappings through the Hent-ai service, for example:
+
+   ```bash
+   curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
+     -H "Authorization: Bearer $HENT_AI_SERVICE_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "profileId": "gothic-v1",
+       "assetSetId": "gothic-v1",
+       "mode": "normal",
+       "enabled": true,
+       "cronEnabled": false
+     }'
+   ```
+
+5. For Discord threads, add a mapping for the thread id too. The adapter sends the active conversation id to the service.
+6. Restart/reload OpenClaw after plugin code or load-path changes.
+7. Validate with a real assistant final reply. Direct `message.send`, proactive sends, and fallback cron delivery can bypass `reply_payload_sending` and are not valid Hent-ai attachment E2E tests.
+8. A valid E2E shows:
+   - gateway log calling `/v1/final-response/verdict`
+   - gateway log reporting returned media
+   - Discord readback with non-empty `attachments`

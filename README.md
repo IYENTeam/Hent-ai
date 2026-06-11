@@ -170,7 +170,7 @@ Hent-ai classifies emotions from your agent's **response text**, so how your age
 4. **Add a simple note about the plugin** — Something like:
    ```markdown
    ## Emotion Images
-   - The emotion-image plugin automatically attaches emotion images to responses.
+   - Hent-ai attaches emotion images automatically through the `hent-ai-service-adapter` OpenClaw plugin.
    - Do not include MEDIA: tags in responses.
    ```
 
@@ -182,7 +182,7 @@ Hent-ai classifies emotions from your agent's **response text**, so how your age
 You are a helpful assistant. Polite but not robotic.
 
 ## Emotion Images
-- The emotion-image plugin handles image attachment automatically.
+- Hent-ai handles image attachment automatically through the OpenClaw service adapter.
 - Do not include MEDIA: tags in your responses.
 
 ## Tone
@@ -222,23 +222,49 @@ Use the agent skill (say "프로필 바꿔줘" in Discord) or run directly:
 npx tsx openclaw/scripts/switch_profile.ts --channel <DISCORD_CHANNEL_ID> --profile gothic
 ```
 
-### Configuration
+### OpenClaw Configuration
 
-Add `defaultProfile` to your OpenClaw plugin config:
+Current OpenClaw installs use the service adapter, not the old local `emotion-image` plugin entry.
+Load the adapter from this repository and configure only the Hent-ai service connection:
 
 ```jsonc
 {
   "plugins": {
+    "load": {
+      "paths": ["/path/to/Hent-ai/openclaw"]
+    },
     "entries": {
-      "emotion-image": {
+      "hent-ai-service-adapter": {
+        "enabled": true,
         "config": {
-          "defaultProfile": "gothic"
+          "hentAiService": {
+            "url": "https://hent-ai.example.com",
+            "token": "${HENT_AI_SERVICE_TOKEN}",
+            "timeoutMs": 15000
+          }
         }
       }
     }
   }
 }
 ```
+
+Channel/profile selection is service-owned. Configure mappings through the service API:
+
+```bash
+curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
+  -H "Authorization: Bearer $HENT_AI_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profileId": "gothic-v1",
+    "assetSetId": "gothic-v1",
+    "mode": "normal",
+    "enabled": true,
+    "cronEnabled": false
+  }'
+```
+
+If a Discord conversation runs inside a thread, map the thread id as well as the parent channel id. OpenClaw sends the active conversation/channel id to Hent-ai, so a parent-only mapping will not cover thread replies.
 
 For Hermes, set the environment variable:
 
@@ -248,12 +274,13 @@ export HENT_AI_DEFAULT_PROFILE=gothic
 
 ### Migration
 
-Existing installations are automatically migrated. On first startup with multi-profile support, Hent-ai:
-1. Copies existing flat emotion images to `profiles/default/`
-2. Converts manifest.json sets to individual profiles
-3. Migrates channel-overrides.json to the SQLite database
+Older OpenClaw installs used a local `emotion-image` plugin entry, `defaultProfile`, local manifests, and channel override files. The current runtime source of truth is the Hent-ai service:
 
-No manual action needed.
+1. Remove the `plugins.entries.emotion-image` OpenClaw config entry.
+2. Add `plugins.load.paths[]` for `openclaw/` and enable `plugins.entries.hent-ai-service-adapter`.
+3. Move profile, asset-set, and channel mapping state into the Hent-ai service.
+4. Restart/reload OpenClaw after changing plugin code or load paths.
+5. Validate with a real assistant reply, not a direct/proactive send. A valid check shows a `/v1/final-response/verdict` service call and a Discord readback with non-empty `attachments`.
 
 ## License
 

@@ -100,28 +100,38 @@ The service also exposes `GET /v1/channels/cron-enabled`, which returns the serv
 
 ## Deploy
 
-Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config.
-After code changes: gateway restart required (`openclaw gateway restart` from main session, NOT from Discord embedded session).
+Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config. Current production-style setup should load this repository's `openclaw/` adapter and enable `plugins.entries.hent-ai-service-adapter` with the `hentAiService` connection config.
 
-Current plugin path: `/Users/iyen/projects/Hent-ai/openclaw`
+After code changes or load-path changes: gateway restart/reload required (`openclaw gateway restart` from main session, NOT from Discord embedded session).
+
+Example plugin path: `/Users/iyen/projects/Hent-ai/openclaw` or the checked-out repo path currently used by the gateway.
+
+Do not use the old `plugins.entries.emotion-image` OpenClaw config entry for current service-adapter installs.
 
 ## Common Operations
 
-### Switch channel mode
+### Set channel mapping
+
+Channel/profile state is service-owned. Use the Hent-ai service API rather than local OpenClaw files:
+
 ```bash
-cd ~/projects/Hent-ai
-npx tsx openclaw/scripts/set_channel_mode.ts --channel <ID> --mode private|default
+curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
+  -H "Authorization: Bearer $HENT_AI_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "profileId": "gothic-v1",
+    "assetSetId": "gothic-v1",
+    "mode": "normal",
+    "enabled": true,
+    "cronEnabled": false
+  }'
 ```
 
-### Check asset manifest
-```bash
-cat assets/manifest.json | jq .
-```
+For Discord threads, repeat the mapping for the thread id if replies are delivered in the thread.
 
-### Check channel overrides
-```bash
-cat assets/channel-overrides.json | jq .
-```
+### Validate attachment path
+
+Use a real assistant final reply and then check Discord readback for non-empty `attachments`. Direct/proactive `message.send` and fallback cron delivery can bypass the OpenClaw `reply_payload_sending` hook and are not valid attachment E2E tests.
 
 ## Incident Patterns
 

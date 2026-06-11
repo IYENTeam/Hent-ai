@@ -44,15 +44,15 @@ OpenClaw 플러그인 config에는 서비스 접속 정보만 필요합니다.
 ## Hook 흐름
 
 ```text
-Reply payload
+Final assistant reply payload
   └─ OpenClaw reply_payload_sending
-       ├─ kind=block → adapter POST /v1/pre-reply/media
-       │    └─ service decides channel/profile/policy/media
        ├─ kind=final → adapter POST /v1/final-response/verdict
-       │    └─ service decides verdict.media
+       │    └─ service decides channel/profile/policy/verdict.media
        └─ adapter returns the original payload plus mediaUrl/mediaUrls when media is available
   └─ OpenClaw sends text + media, or text-only on skip
 ```
+
+Block/pre-reply payloads and the legacy `pre_reply_media` / `message_sent_media` hooks are no longer part of the OpenClaw adapter contract.
 
 Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media leaves the original payload unchanged so OpenClaw text continues.
 
@@ -68,6 +68,8 @@ The service package is responsible for exposing profile/channel management APIs,
 
 Use those service APIs or service CLI tools for channel-profile changes. Do not update `openclaw/` plugin config, local `hentai.db`, `manifest.json`, or `channel-overrides.json` expecting runtime adapter changes; those files are no longer adapter runtime sources of truth.
 
+Discord threads need their own mapping when OpenClaw delivers replies from a thread session. The adapter sends the active conversation/channel id to the service, so a parent-channel mapping does not automatically cover thread ids.
+
 ## Migration note
 
 Older docs described a thick OpenClaw plugin that:
@@ -79,3 +81,13 @@ Older docs described a thick OpenClaw plugin that:
 - patched Discord messages directly
 
 That behavior has been removed from `openclaw/`. The service is the only Hent-ai runtime authority; OpenClaw owns text/media delivery mechanics.
+
+
+## Runtime validation checklist
+
+- `plugins.load.paths` includes this repo's `openclaw/` directory.
+- OpenClaw has `plugins.entries.hent-ai-service-adapter` enabled and no stale `plugins.entries.emotion-image` entry for the same behavior.
+- The target channel or thread id has an enabled service mapping.
+- The test is a real assistant final reply. Direct `message.send`, proactive sends, or fallback cron delivery can bypass `reply_payload_sending`.
+- Gateway logs show `/v1/final-response/verdict` and media returned.
+- Discord message readback has non-empty `attachments`.
