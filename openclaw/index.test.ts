@@ -82,18 +82,37 @@ describe("Hent-ai service adapter configuration", () => {
     expect(logger.info).toHaveBeenCalledWith("hent-ai adapter disabled: enabled=false");
   });
 
-  it("registers legacy media lifecycle hooks plus the current reply payload hook when supported", () => {
+  it("registers only the current final reply payload hook when supported", () => {
     const { api, events } = setup();
-    expect([...events.keys()]).toEqual(["pre_reply_media", "message_sent_media", "reply_payload_sending"]);
-    expect(api.on).toHaveBeenCalledWith("pre_reply_media", expect.any(Function), { name: "hent-ai-pre-reply-media" });
-    expect(api.on).toHaveBeenCalledWith("message_sent_media", expect.any(Function), { name: "hent-ai-message-sent-media" });
-    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-reply-payload-media" });
+    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
-  it("does not register the current reply payload hook when the host does not advertise support", () => {
-    const { api, events } = setup(undefined, { supportsReplyPayloadSending: false });
-    expect([...events.keys()]).toEqual(["pre_reply_media", "message_sent_media"]);
+  it("defaults to the current final reply payload hook when the host omits the optional supportsHook probe", () => {
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
+
+    plugin.register(api as any);
+
+    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
+  });
+
+  it("registers no hooks when the host explicitly rejects reply payload support", () => {
+    const { api, events, logger } = setup(undefined, { supportsReplyPayloadSending: false });
+    expect([...events.keys()]).toEqual([]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
     expect(api.on).not.toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(logger.warn).toHaveBeenCalledWith("hent-ai adapter disabled: reply_payload_sending hook unsupported");
   });
 
   it("normalizes service url and base64 media into Stage-1 mediaUrl shape", () => {
@@ -106,7 +125,7 @@ describe("Hent-ai service adapter configuration", () => {
     expect(normalizeServiceMedia({ caption: "no media" })).toBeNull();
   });
 
-  it("calls pre-reply service for block payloads with bearer auth and attaches media", async () => {
+  it("ignores block payloads so media is attached only to the final answer", async () => {
     const fetchMock = vi.fn(async () => okJson({
       media: { url: "https://cdn.test/pre.png", caption: "thinking" },
       diagnostics: [{ reason: "selected" }],
@@ -124,30 +143,25 @@ describe("Hent-ai service adapter configuration", () => {
       runId: "r",
     }, { channelId: "channel:123", replyToBody: "hello" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://hent.test/v1/pre-reply/media");
-    expect(options.headers.authorization).toBe("Bearer secret");
-    expect(JSON.parse(options.body).context).toMatchObject({ channelId: "123", userMessage: "hello", preReplyText: "thinking" });
-    expect(result).toEqual({
-      payload: { text: "thinking", channelData: { channelPolicy: "service-owned" }, mediaUrl: "https://cdn.test/pre.png" },
-    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
-  it("uses hook context when OpenClaw event omits a direct channel id", async () => {
-    const fetchMock = vi.fn(async () => okJson({ media: { url: "https://cdn.test/pre.png" } }));
+
+  it("uses hook context when OpenClaw final event omits a direct channel id", async () => {
+    const fetchMock = vi.fn(async () => okJson({ verdict: { media: { url: "https://cdn.test/final.png" } } }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 2500 } });
 
     await events.get("reply_payload_sending")?.(
-      { kind: "block", payload: { text: "draft", to: "channel:from-to" }, sessionKey: "s", runId: "r" },
-      { conversationId: "channel:from-context", sessionKey: "s", runId: "r", replyToBody: "inbound" },
+      { kind: "final", payload: { text: "done", to: "channel:from-to" }, sessionKey: "s", runId: "r" },
+      { conversationId: "channel:from-context", sessionKey: "s", runId: "r", messageId: "m1" },
     );
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).context).toMatchObject({
       to: "channel:from-to",
       channelId: "from-context",
-      userMessage: "inbound",
-      preReplyText: "draft",
+      content: "done",
+      messageId: "m1",
       sessionKey: "s",
       runId: "r",
     });
@@ -197,11 +211,11 @@ describe("Hent-ai service adapter configuration", () => {
 
   it.each([
     ["null", null],
-    ["malformed", { media: { caption: "missing url" } }],
-  ])("skips pre-reply media on %s service response", async (_name, payload) => {
+    ["malformed", { verdict: { media: { caption: "missing url" } } }],
+  ])("skips final media on %s service response", async (_name, payload) => {
     vi.stubGlobal("fetch", vi.fn(async () => okJson(payload)));
     const { events, logger } = setup();
-    const result = await events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "y" } }, { channelId: "1", replyToBody: "x" });
+    const result = await events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "y", to: "channel:1" } }, { messageId: "m" });
     expect(result).toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("skipping media"));
   });
@@ -220,7 +234,7 @@ describe("Hent-ai service adapter configuration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 10 } });
 
-    const pending = events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "y" } }, { channelId: "1", replyToBody: "x" });
+    const pending = events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "y", to: "channel:1" } }, { messageId: "m" });
     await vi.advanceTimersByTimeAsync(20);
     await expect(pending).resolves.toBeUndefined();
   });

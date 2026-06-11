@@ -28,15 +28,15 @@ describe("channel policy service delegation", () => {
     expect(normalizeDiscordChannelId("123456789")).toBe("123456789");
   });
 
-  it("does not apply local channel toggles before calling pre-reply service", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ media: null }) }));
+  it("does not call pre-reply service for block payloads", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ media: { url: "https://cdn.test/pre.png" } }) }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "thinking" } }, { channelId: "blocked", replyToBody: "hello" });
+    const result = await events.get("reply_payload_sending")?.({ kind: "block", payload: { text: "thinking" } }, { channelId: "blocked", replyToBody: "hello" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).context.channelId).toBe("blocked");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 
   it("does not apply local channel toggles before calling final-response service", async () => {
