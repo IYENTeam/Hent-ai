@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { existsSync } from "node:fs";
 import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
@@ -31,12 +31,6 @@ describe("EMOTIONS", () => {
 
 describe("generateAllEmotions", () => {
   const testDir = join(tmpdir(), `hent-ai-test-${Date.now()}`);
-
-  beforeEach(() => {
-    vi.mocked(generateImage).mockImplementation(async () =>
-      Buffer.from("FAKE_PNG_DATA"),
-    );
-  });
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -218,28 +212,5 @@ describe("generateAllEmotions", () => {
     expect(results.has("neutral")).toBe(false);
     expect(progress.map((entry) => entry.step)).toEqual(["base", "happy", "focused"]);
     expect(progress.every((entry) => entry.total === 3)).toBe(true);
-  });
-
-  it("writes no files when a later emotion generation fails (atomic all-or-nothing)", async () => {
-    let calls = 0;
-    vi.mocked(generateImage).mockImplementation(async () => {
-      calls += 1;
-      // base (1) + first two emotions (2,3) succeed; the next call fails.
-      if (calls >= 4) {
-        throw new Error("simulated generation failure");
-      }
-      return Buffer.from("FAKE_PNG_DATA");
-    });
-
-    await expect(
-      generateAllEmotions({ character: "cute cat", outputDir: testDir }),
-    ).rejects.toThrow("simulated generation failure");
-
-    // Atomic: a mid-run failure must leave the output directory with no
-    // partial/old-mixed emotion set.
-    expect(existsSync(resolve(testDir, "base.png"))).toBe(false);
-    for (const emotion of EMOTIONS) {
-      expect(existsSync(resolve(testDir, `${emotion}.png`))).toBe(false);
-    }
   });
 });

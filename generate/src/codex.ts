@@ -107,14 +107,7 @@ async function loadSession(): Promise<CodexSession> {
       `Cannot read ${authPath}. Log in with the Codex CLI first: codex login`,
     );
   }
-  let auth: CodexAuth;
-  try {
-    auth = JSON.parse(data);
-  } catch {
-    throw new Error(
-      `Failed to parse ${authPath}: file is not valid JSON. Re-authenticate: codex login`,
-    );
-  }
+  const auth: CodexAuth = JSON.parse(data);
   const accessToken = auth.tokens?.access_token;
   const accountId = auth.tokens?.account_id;
   if (!accessToken || !accountId) {
@@ -203,18 +196,10 @@ async function attempt(
       }
     }
   } else {
-    let payload: { output?: unknown[]; id?: string } | null;
-    try {
-      payload = JSON.parse(responseBody);
-    } catch {
-      throw new Error(
-        `Codex backend returned an unparseable non-streaming response ` +
-          `(HTTP ${response.status}): ${responseBody.slice(0, 200)}`,
-      );
-    }
+    const payload = JSON.parse(responseBody);
     parsed = {
       events: [],
-      items: payload && Array.isArray(payload.output) ? payload.output : [],
+      items: Array.isArray(payload?.output) ? payload.output : [],
       responseId: payload?.id ?? null,
     };
   }

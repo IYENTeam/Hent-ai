@@ -34,10 +34,6 @@ function normalizeBooleanOverrides(overrides?: Record<string, boolean>): Map<str
   return normalized;
 }
 
-function hasChannelEnabledLookup(db: ProfileDatabase): db is ProfileDatabase & ChannelEnableStore {
-  return typeof (db as { getChannelEnabled?: unknown }).getChannelEnabled === "function";
-}
-
 export function createChannelEnabledResolver(
   config?: ChannelFilterConfig,
   store?: ChannelEnableStore | null,
@@ -67,7 +63,7 @@ export function createChannelEnabledResolver(
 export function createProfileDbChannelEnableStore(
   db: ProfileDatabase | null,
 ): ChannelEnableStore | null {
-  if (!db || !hasChannelEnabledLookup(db)) return null;
+  if (!db) return null;
   return {
     getChannelEnabled(channelId: string): boolean | null {
       return db.getChannelEnabled(channelId);
