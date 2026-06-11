@@ -35,8 +35,11 @@ class RateLimiter {
   private count = 0;
   private windowStart = Date.now();
   private readonly windowMs = 60 * 60 * 1000; // 1 hour
+  private readonly limit: number;
 
-  constructor(private readonly limit: number) {}
+  constructor(limit: number) {
+    this.limit = limit;
+  }
 
   canGenerate(): boolean {
     this.resetIfNeeded();

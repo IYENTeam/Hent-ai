@@ -1,1 +1,9 @@
-{}
+{
+  "1486627737568546979": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "cronEnabled": true },
+  "1490975104602079273": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "cronEnabled": true },
+  "1498703634098294976": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "mode": "default" },
+  "1505064752421011567": { "profileId": "nibutani", "assetSetId": "nibutani", "enabled": true },
+  "1506217431465463929": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "mode": "date" },
+  "1507227279338508418": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "mode": "date" },
+  "1509563022677377174": { "profileId": "gothic-v1", "assetSetId": "gothic-v1", "enabled": true, "mode": "default" }
+}
