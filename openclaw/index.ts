@@ -310,30 +310,6 @@ function contextRecord(ctx: unknown): HookContext {
   return (asRecord(ctx) ?? {}) as HookContext;
 }
 
-function preReplyBody(event: unknown, ctx?: unknown): Record<string, unknown> {
-  const record = asRecord(event) ?? {};
-  const payload = asRecord(record.payload);
-  const hookCtx = contextRecord(ctx);
-  const to = stringValue(record.to) ?? stringValue(payload?.to);
-  const channelId = normalizeDiscordChannelId(
-    stringValue(record.channelId)
-      ?? stringValue(hookCtx.conversationId)
-      ?? to
-      ?? stringValue(hookCtx.channelId),
-  );
-  return {
-    context: {
-      to,
-      channelId,
-      userMessage: record.userMessage ?? hookCtx.replyToBody,
-      preReplyText: record.preReplyText ?? record.content ?? payload?.text,
-      metadata: record.metadata ?? payload?.channelData,
-      sessionKey: record.sessionKey ?? hookCtx.sessionKey,
-      runId: record.runId ?? hookCtx.runId,
-    },
-  };
-}
-
 function messageSentBody(event: unknown, ctx?: unknown): Record<string, unknown> {
   const record = asRecord(event) ?? {};
   const payload = asRecord(record.payload);
@@ -393,23 +369,6 @@ async function handleReplyPayloadSending(params: {
   });
 
   return serviceResult.media ? { payload: applyMediaToPayload(payload, serviceResult.media) } : undefined;
-}
-
-async function handlePreReplyMedia(params: {
-  event: unknown;
-  ctx: unknown;
-  config: { baseUrl: URL; token: string; timeoutMs: number };
-  logger?: Logger;
-}): Promise<MediaHookResult | undefined> {
-  return callHentAiService({
-    baseUrl: params.config.baseUrl,
-    token: params.config.token,
-    timeoutMs: params.config.timeoutMs,
-    endpoint: "/v1/pre-reply/media",
-    body: preReplyBody(params.event, params.ctx),
-    responseMediaPath: "media",
-    logger: params.logger,
-  });
 }
 
 function supportsReplyPayloadSending(api: PluginApi): boolean {
