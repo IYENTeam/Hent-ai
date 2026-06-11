@@ -23,25 +23,22 @@ describe("date-mode media adapter behavior", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not locally suppress date-mode pre-reply media; channel policy is delegated to service", async () => {
+  it("does not attach media to date-mode pre-reply blocks", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ media: null }),
+      json: async () => ({ media: { url: "https://cdn.test/pre.png" } }),
     }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup();
 
-    await events.get("reply_payload_sending")?.({
+    const result = await events.get("reply_payload_sending")?.({
       kind: "block",
       payload: { text: "text continues", channelData: { mode: "date" } },
     }, { channelId: "date-channel", replyToBody: "date-mode user message" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).context).toMatchObject({
-      channelId: "date-channel",
-      userMessage: "date-mode user message",
-    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 
   it("does not classify or replace focused media locally for date-mode final responses", async () => {

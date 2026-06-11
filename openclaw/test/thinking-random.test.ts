@@ -15,12 +15,12 @@ function setup() {
   return { events, api };
 }
 
-describe("pre-reply media service delegation", () => {
+describe("final-only media service delegation", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("delegates thinking media selection to the service for each block reply payload", async () => {
+  it("does not delegate thinking block media; final-only attachment prevents duplicates", async () => {
     const fetchMock = vi.fn(async (_url: string, options: RequestInit) => ({
       ok: true,
       status: 200,
@@ -30,18 +30,10 @@ describe("pre-reply media service delegation", () => {
     const { events } = setup();
     const handler = events.get("reply_payload_sending");
 
-    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "first" }, { channelId: "111", replyToBody: "first" })).resolves.toMatchObject({
-      payload: { mediaUrl: "https://cdn.test/first.png" },
-    });
-    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "second" }, { channelId: "111", replyToBody: "second" })).resolves.toMatchObject({
-      payload: { mediaUrl: "https://cdn.test/second.png" },
-    });
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "first" }, { channelId: "111", replyToBody: "first" })).resolves.toBeUndefined();
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "second" }, { channelId: "111", replyToBody: "second" })).resolves.toBeUndefined();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/pre-reply/media",
-      "https://hent.test/v1/pre-reply/media",
-    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not register legacy message_received focused-image sender", () => {
