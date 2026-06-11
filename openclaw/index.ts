@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { sendImageBufferMessage, sendTextMessage, type OpenClawMessageSender } from "./discord-utils.js";
+import { resizeImageBufferForDiscordAttachment, sendImageBufferMessage, sendTextMessage, type OpenClawMessageSender } from "./discord-utils.js";
 import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
 import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
 import {
@@ -966,6 +966,7 @@ export async function editMessageWithImage(
    try {
      const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
+    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
 
     // Build multipart/form-data
     const boundary = `----EmotionImage${Date.now()}`;
@@ -984,7 +985,7 @@ export async function editMessageWithImage(
     parts.push(Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
     ));
-    parts.push(imageBuffer);
+    parts.push(attachmentBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);
@@ -1022,8 +1023,9 @@ export async function sendImageMessage(
    try {
      const imageBuffer = await readFile(imagePath);
     const filename = imagePath.split("/").pop() ?? "emotion.png";
+    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
     if (openClawSender?.sendImageBuffer) {
-      const messageId = await openClawSender.sendImageBuffer(channelId, imageBuffer, filename, "");
+      const messageId = await openClawSender.sendImageBuffer(channelId, attachmentBuffer, filename, "");
       if (messageId) {
         logger.info(`emotion-image: sent ${filename} to channel ${channelId} via OpenClaw outbound`);
         return;
@@ -1042,7 +1044,7 @@ export async function sendImageMessage(
     parts.push(Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
     ));
-    parts.push(imageBuffer);
+    parts.push(attachmentBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);
@@ -1276,6 +1278,7 @@ export async function appendImageToMessage(
 
       const imageBuffer = await readFile(imagePath);
      const filename = imagePath.split("/").pop() ?? "emotion.png";
+    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
 
      const boundary = `----EmotionImage${Date.now()}`;
      const parts: Buffer[] = [];
@@ -1294,7 +1297,7 @@ export async function appendImageToMessage(
      parts.push(Buffer.from(
        `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
      ));
-    parts.push(imageBuffer);
+    parts.push(attachmentBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);
@@ -1352,6 +1355,7 @@ export async function appendImageBufferToMessage(
     const existingContent = msg.content ?? "";
     const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
     const newFileIndex = 0;
+    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
 
     const boundary = `----EmotionImage${Date.now()}`;
     const parts: Buffer[] = [];
@@ -1370,7 +1374,7 @@ export async function appendImageBufferToMessage(
     parts.push(Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
     ));
-    parts.push(imageBuffer);
+    parts.push(attachmentBuffer);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);
@@ -1412,6 +1416,10 @@ export async function editMessageWithTwoImages(
        readFile(imagePath1),
        readFile(imagePath2),
      ]);
+    const [attachmentBuffer1, attachmentBuffer2] = await Promise.all([
+      resizeImageBufferForDiscordAttachment(imageBuffer1, "image/png"),
+      resizeImageBufferForDiscordAttachment(imageBuffer2, "image/png"),
+    ]);
     const filename1 = imagePath1.split("/").pop() ?? "emotion1.png";
     const filename2 = imagePath2.split("/").pop() ?? "emotion2.png";
 
@@ -1434,14 +1442,14 @@ export async function editMessageWithTwoImages(
     parts.push(Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename1}"\r\nContent-Type: image/png\r\n\r\n`
     ));
-    parts.push(imageBuffer1);
+    parts.push(attachmentBuffer1);
     parts.push(Buffer.from("\r\n"));
 
     // File 2
     parts.push(Buffer.from(
       `--${boundary}\r\nContent-Disposition: form-data; name="files[1]"; filename="${filename2}"\r\nContent-Type: image/png\r\n\r\n`
     ));
-    parts.push(imageBuffer2);
+    parts.push(attachmentBuffer2);
     parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
 
     const body = Buffer.concat(parts);
