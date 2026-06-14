@@ -1,0 +1,372 @@
+# Hent-ai Identity Roadmap
+
+Hent-ai lets an AI agent express its **hent** — its intent — as a visual emotion layer.
+
+This document is the canonical source of truth for Hent-ai identity, profile, and roadmap decisions. It is written in the OpenWorden/Warden style: preserve the accepted direction, classify drift, and make the next review decision easy.
+
+## Bottom line
+
+Hent-ai is an **agent expression layer**:
+
+> Natural agent voice → inferred emotion → server/client delivery of the matching character/profile image.
+
+The agent writes naturally. Hent-ai reads the emotional signal from the final assistant response, resolves the active profile where the host supports it, selects the matching image, and delivers it through the correct server or client surface. Agents should not hand-write Hent-ai media paths as their identity layer.
+
+## Canonical identity
+
+Hent-ai does not replace the agent's core identity, task policy, or safety rules. It adds a visual character/profile layer around the host agent.
+
+Therefore:
+
+- persona files should shape tone and emotional range;
+- Hent-ai should infer emotion from response text plus configured profile state;
+- fallback behavior should be calm and non-disruptive;
+- profile snippets must not silently override higher-priority system, developer, safety, or operator instructions.
+
+## Canonical emotion contract
+
+The shared emotion contract lives in `@hent-ai/shared` (`shared/emotions.ts`).
+
+The canonical emotion set is:
+
+- `sorry` — apology, mistakes, recovery
+- `happy` — success, completion, celebration
+- `confused` — uncertainty, ambiguity, clarification
+- `focused` — working, investigating, debugging
+- `loyalty` — acknowledgment, greeting, attentive agreement
+- `neutral` — general informational responses
+
+Shared exports include `EMOTIONS`, `DEFAULT_EMOTION`, `DEFAULT_EMOTION_MAP`, `EMOTION_RULES`, `EMOTION_PROMPTS`, `EMOTION_LABELS`, and `VALID_EMOTIONS`.
+
+Any new emotion requires an explicit roadmap decision, asset expectations, classifier behavior, generation prompt behavior, and runtime tests.
+
+## Architecture model
+
+Hent-ai has a **server model**, a **client model**, and a **shared contract**.
+
+### Server model — OpenClaw is canonical
+
+OpenClaw is the canonical server runtime. It owns live message-event orchestration, profile state lookup, channel policy, persona snippet lookup, image delivery, and Discord edit/send behavior.
+
+OpenClaw server responsibilities:
+
+1. **Inbound message phase** (`message_received`)
+   - Send a `focused` thinking image for immediate visual feedback.
+   - Optionally detect explicit cheer/support requests and generate/send cheer media.
+   - Respect channel enable/date-mode policy before sending.
+
+2. **Outbound response phase** (`message_sent`)
+   - Classify the final assistant response by LLM classifier when configured, otherwise rule fallback.
+   - Resolve the active profile image directory.
+   - Select the matching emotion image or variant.
+   - Append the image to the bot message through OpenClaw outbound sender when available, with Discord REST fallback.
+   - Serialize post-send work per workspace/session so edits do not race.
+
+3. **Profile and channel state**
+   - Use SQLite profile state through `ProfileDatabase`.
+   - Resolve channel profile mapping before `defaultProfile`.
+   - Resolve channel enable policy from DB first, then config overrides, then legacy config, then default.
+
+4. **Prompt/persona integration**
+   - Read `soulSnippet` for the active channel/default profile.
+   - Append it under `--- Hent-ai Character ---` only as a bounded character/tone layer.
+
+OpenClaw code references:
+
+- `openclaw/index.ts` — plugin registration, `message_received`, `message_sent`, imageDir resolution, classifier/generation orchestration, send/edit flow.
+- `openclaw/discord-utils.ts` — OpenClaw sender + Discord REST send/edit helpers.
+- `openclaw/profile-manager.ts` — profile DB cache, active profile resolution, profile image directory fallback.
+- `openclaw/dynamic-persona.ts` — soul snippet lookup and prompt append.
+- `openclaw/channel-filter.ts` — DB/config channel enable resolution.
+- `openclaw/migration.ts` — migration from flat files/manifest/channel overrides into profile storage.
+- `openclaw/assets/manifest.ts` and `openclaw/assets/channel-overrides.ts` — legacy/current asset set compatibility.
+- `openclaw/openclaw.plugin.json` — server config schema.
+
+### Client model — Cursor is a lightweight client surface
+
+Cursor is not the identity/profile source of truth. It is a local client integration.
+
+Cursor responsibilities:
+
+- install a Cursor rule;
+- install/copy static optimized emotion assets;
+- instruct the agent to classify the response and append a markdown image as the last line;
+- use the shared six-emotion vocabulary/rule classifier where applicable.
+
+Cursor does **not** own:
+
+- SQLite profile CRUD;
+- channel-to-profile mapping;
+- channel enable policy;
+- `soulSnippet` prompt injection;
+- server-side message hooks;
+- Discord send/edit behavior;
+- image generation orchestration.
+
+Cursor code references:
+
+- `cursor/bin/install.ts` — writes `.cursor/rules/hent-ai.mdc` and installs static assets.
+- `cursor/src/classifier/ruleClassifier.ts` — rule classifier for client-side emotion choice.
+- `cursor/src/types.ts` — client emotion/rule types.
+- `cursor/README.md` — client install and local rule behavior.
+
+### Compatibility server surface — Hermes
+
+Hermes is a compatibility adapter, not the canonical OpenClaw server.
+
+Hermes responsibilities:
+
+- register `transform_llm_output`;
+- detect emotion with lightweight rules;
+- resolve an asset directory via env/config;
+- optionally use `HENT_AI_DEFAULT_PROFILE` as an asset subdirectory selector;
+- append a Hermes `MEDIA:<path>` directive for Hermes Gateway delivery.
+
+Hermes does **not** own:
+
+- SQLite profile DB state;
+- profile CRUD;
+- channel profile mappings;
+- OpenClaw prompt/persona injection;
+- OpenClaw Discord PATCH/send behavior.
+
+Hermes code references:
+
+- `hermes/__init__.py` — rule detection, env-based profile asset resolution, `MEDIA:` directive construction.
+- `hermes/plugin.yaml` — `transform_llm_output` hook and env vars.
+- `hermes/README.md` — compatibility-surface behavior.
+- `tests/hermes/test_hent_ai_plugin.py` — Hermes compatibility tests.
+
+### Shared contract
+
+`@hent-ai/shared` is the shared contract used by server/client surfaces.
+
+Shared responsibilities:
+
+- canonical emotion definitions and prompts (`shared/emotions.ts`);
+- profile type definitions (`shared/profile.ts`);
+- profile ID validation (`shared/profile.ts`);
+- SQLite-backed profile/channel/settings DB utilities (`shared/db.ts`).
+
+Current profile storage:
+
+- DB file: `<imageDir>/hentai.db`
+- Tables:
+  - `profiles(id, name, character, soul_snippet, model, created_at, updated_at)`
+  - `channel_profiles(channel_id, profile_id)`
+  - `channel_settings(channel_id, enabled, asset_set_id)`
+  - `profile_settings(profile_id, key, value)`
+
+Profile IDs are lowercase alphanumeric slugs with hyphen/underscore allowed, max 64 chars, with path traversal and separators rejected.
+
+### Generation contract
+
+`@hent-ai/generate` is a generation package, not the profile SSOT.
+
+Generation responsibilities:
+
+- consume shared `EMOTIONS` and `EMOTION_PROMPTS`;
+- generate a base image and one variant per emotion;
+- support limited regeneration through shared emotion names;
+- resize/reference-limit inputs and optionally rephrase prompts when a caller provides a rephrase provider.
+
+It must not define independent profile DB semantics.
+
+## Current accepted profile architecture
+
+The accepted runtime profile architecture is SQLite-backed profile state plus profile image directories.
+
+### Profile storage
+
+Profiles are stored in SQLite at `<imageDir>/hentai.db` through `ProfileDatabase`.
+
+A profile may include:
+
+- `id`
+- `name`
+- `character`
+- `soulSnippet`
+- `model`
+- timestamps
+
+### Profile image directories
+
+Profile-specific images live under:
+
+```text
+<imageDir>/profiles/<profileId>/
+```
+
+OpenClaw resolves profile image directories as:
+
+1. active channel profile directory, if mapped and present;
+2. `defaultProfile` directory, if configured and present;
+3. root `imageDir` fallback.
+
+### Active profile resolution
+
+For OpenClaw channels, the active profile is resolved in this order:
+
+1. `channel_profiles[channelId]` from SQLite;
+2. plugin config `defaultProfile`;
+3. no profile, falling back to the base image directory.
+
+### Dynamic persona injection
+
+Profiles may define `soulSnippet`. OpenClaw can append it to the base prompt under:
+
+```text
+--- Hent-ai Character ---
+```
+
+This is a bounded server-side character/tone layer. It is not a replacement for host instructions, safety policy, or user task policy.
+
+## Deferred or rejected directions
+
+### Filesystem `characters/<id>/character.json`
+
+Issue #70 originally proposed a filesystem character model:
+
+```text
+characters/<character-id>/character.json
+characters/<character-id>/sets/<set-id>/...
+```
+
+That model is **not** the current accepted runtime architecture. Do not implement a second filesystem character system unless the owner explicitly revives it.
+
+If filesystem import/export is needed later, treat it as an interchange format around the SQLite-backed profile model, not as a competing runtime source of truth.
+
+### Symmetric platform wording
+
+Do not describe OpenClaw, Cursor, and Hermes as equal identity/profile runtimes.
+
+Correct wording:
+
+- OpenClaw: canonical server runtime.
+- Cursor: lightweight client surface.
+- Hermes: compatibility server adapter.
+- Shared: contract layer.
+- Generate: asset generation helper.
+
+### Per-user profile assignment
+
+Per-user character/profile assignment is out of scope until explicitly accepted. The accepted mapping is channel/runtime-level profile assignment.
+
+### Automatic profile switching
+
+Automatic time-based, mood-based, mood-detection, or hidden-context profile switching is out of scope until explicitly accepted. Profile switching should be explicit through approved commands, scripts, onboarding flow, or host runtime configuration.
+
+## Roadmap priorities
+
+### P0 — OpenClaw server correctness
+
+Before broad identity expansion, OpenClaw server behavior must remain reliable.
+
+Priority surfaces:
+
+- OpenClaw package installability and dependency topology.
+- Discord attachment reliability and image sizing.
+- OpenClaw sender vs Discord REST fallback behavior.
+- Token/config handling that avoids implicit host-path reads.
+- Tests for runtime contracts instead of only stubs.
+- Profile DB migrations with backup/readback evidence.
+
+### P1 — Shared classifier and emotion parity
+
+Hent-ai should not feel like a different product on every surface.
+
+Required direction:
+
+- Define a shared classifier fixture/corpus covering the six canonical emotions.
+- Include Korean, English, mixed-language, task-progress, apology, uncertainty, greeting, and noisy media-tag cases.
+- Use the same fixture expectations across OpenClaw, Cursor, and Hermes where practical.
+- Document accepted server/client differences.
+- Treat silent classifier drift as a roadmap risk.
+
+### P2 — Profile system hardening
+
+Multi-character profiles are accepted through the SQLite-backed profile model.
+
+Implementation gates:
+
+- schema changes documented before migration;
+- migration from flat assets and manifest sets is reversible or backed up;
+- channel-level override semantics are explicit;
+- `soulSnippet` injection remains bounded by host prompt policy;
+- OpenClaw server behavior is canonical; client/compat surfaces mirror only the parts they can honestly support.
+
+### P3 — Client and compatibility UX
+
+Client and compatibility surfaces should be honest about their scope.
+
+Direction:
+
+- Cursor should stay a lightweight local rule/assets installer unless a separate client state model is explicitly approved.
+- Hermes should remain compatibility-focused unless it adopts shared profile DB state intentionally.
+- Docs must not imply Cursor/Hermes have OpenClaw profile orchestration.
+
+### P4 — Better creation/onboarding UX
+
+Agent-driven onboarding should stay conversational and context-aware.
+
+Direction:
+
+- infer obvious user intent from context and attachments;
+- ask only for genuinely blocking decisions;
+- preserve base character consistency across emotion variants;
+- verify final files and profile database/manifest state before declaring setup complete.
+
+## Warden review policy
+
+Use OpenWorden-style Warden reviews when Hent-ai has multiple active issues, PRs, or agent tasks.
+
+Classify work as:
+
+- `aligned` — advances this roadmap with evidence;
+- `needs-review` — plausible but missing evidence, scope control, or a decision;
+- `drifting` — related but pulling toward another architecture or product boundary;
+- `misaligned` — conflicts with this roadmap or silently creates a second source of truth;
+- `blocked` — requires a human/product/architecture decision.
+
+Recommended cancellation/pause triggers:
+
+- runtime profile architecture that bypasses SQLite `profiles` / `channel_profiles`;
+- filesystem `characters/<id>/character.json` revived as a second runtime SSOT;
+- docs that present OpenClaw, Cursor, and Hermes as symmetric profile runtimes;
+- dynamic personality injection without host prompt-policy boundaries;
+- platform-specific classifier rewrites without parity evidence;
+- broad profile migrations without backup/diff/readback proof;
+- asset, manifest, or profile DB mutations without diff/readback evidence;
+- completion claims without tests, CI, or runtime evidence.
+
+## Warden checklist for future PRs
+
+Before merging or accepting identity/profile work, verify:
+
+- [ ] The change preserves natural agent writing; Hent-ai still infers emotion and owns image delivery.
+- [ ] The change cites this roadmap if it affects profile/personality identity.
+- [ ] The change keeps OpenClaw as the canonical server runtime for live profile orchestration.
+- [ ] The change uses SQLite `profiles` / `channel_profiles` unless a new owner-approved decision replaces that architecture.
+- [ ] The change describes Cursor as a client surface, not a server/profile SSOT.
+- [ ] The change describes Hermes as a compatibility adapter unless it intentionally adopts shared DB state.
+- [ ] The change does not revive filesystem `characters/<id>/character.json` as a second runtime SSOT.
+- [ ] Classifier behavior changes include parity fixtures or documented server/client differences.
+- [ ] Asset, manifest, or profile DB mutations include diff/readback evidence.
+- [ ] Gateway restart, paid image generation, merge, credential changes, and destructive mutations remain owner-gated.
+
+## Related trackers
+
+- #70 — implementation/transition tracker for multi-character/profile work. It is not the sole SSOT if it conflicts with this roadmap.
+- #46 — classifier parity gate.
+- #47 — OpenClaw aliases/stubs runtime contract gate.
+- #48 — coverage scope gate.
+- #62 — package-manager/toolchain reproducibility gate.
+- #43 — OpenClaw dependency topology/installability gate.
+- #92 — Discord emotion attachment sizing/reliability hardening.
+
+## Immediate next actions
+
+1. Update #70 to reference this roadmap and retire conflicting `characters/<id>/character.json` runtime assumptions.
+2. Resolve or explicitly defer OpenClaw installability/runtime contract issues before large profile work.
+3. Create shared classifier parity fixtures for the canonical six emotions.
+4. Keep Discord attachment reliability fixes narrow and land-ready with CI evidence.
