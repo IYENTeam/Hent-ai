@@ -251,4 +251,5 @@ Special thanks to [MoerAI](https://github.com/MoerAI) for helping name Hent-ai.
 
 ## Docs
 
+- [Identity roadmap](docs/identity-roadmap.md)
 - [Classifier customization](docs/classifier-customization.md)
