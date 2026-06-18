@@ -9,6 +9,18 @@ vi.mock("./codex.js", () => ({
   generateImage: vi.fn(async () => {
     return Buffer.from("FAKE_PNG_DATA");
   }),
+  CodexHttpError: class CodexHttpError extends Error {
+    constructor(public readonly statusCode: number, message: string) {
+      super(message);
+      this.name = "CodexHttpError";
+    }
+  },
+  CodexTimeoutError: class CodexTimeoutError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "CodexTimeoutError";
+    }
+  },
 }));
 
 const { generateAllEmotions } = await import("./generator.js");
@@ -41,6 +53,7 @@ describe("generateAllEmotions", () => {
     const results = await generateAllEmotions({
       character: "cute cat",
       outputDir: testDir,
+      concurrency: 1,
     });
 
     expect(results.size).toBe(7);
@@ -58,6 +71,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "pixel robot",
       outputDir: testDir,
+      concurrency: 1,
     });
 
     const mock = vi.mocked(generateImage);
@@ -85,6 +99,7 @@ describe("generateAllEmotions", () => {
       character: "test",
       outputDir: testDir,
       baseImage: basePath,
+      concurrency: 1,
     });
 
     const mock = vi.mocked(generateImage);
@@ -103,6 +118,7 @@ describe("generateAllEmotions", () => {
       character: "test",
       outputDir: testDir,
       keepBase: false,
+      concurrency: 1,
     });
 
     expect(results.has("base")).toBe(false);
@@ -118,6 +134,7 @@ describe("generateAllEmotions", () => {
       outputDir: testDir,
       model: "gpt-5.4",
       size: "2048x2048",
+      concurrency: 1,
     });
 
     const mock = vi.mocked(generateImage);
@@ -131,6 +148,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "test",
       outputDir: testDir,
+      concurrency: 1,
     });
 
     const mock = vi.mocked(generateImage);
@@ -145,6 +163,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "test",
       outputDir: testDir,
+      concurrency: 1,
       onProgress(step, index, total) {
         progress.push({ step, index, total });
       },
@@ -166,6 +185,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "test",
       outputDir: nestedDir,
+      concurrency: 1,
     });
 
     expect(existsSync(nestedDir)).toBe(true);
@@ -175,6 +195,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "test",
       outputDir: testDir,
+      concurrency: 1,
     });
 
     for (const emotion of EMOTIONS) {
@@ -186,6 +207,7 @@ describe("generateAllEmotions", () => {
     await generateAllEmotions({
       character: "test",
       outputDir: testDir,
+      concurrency: 1,
     });
 
     expect(existsSync(resolve(testDir, "base.png"))).toBe(true);
@@ -200,6 +222,7 @@ describe("generateAllEmotions", () => {
       character: "test",
       outputDir: testDir,
       only: ["happy", "focused"],
+      concurrency: 1,
       onProgress(step, index, total) {
         progress.push({ step, index, total });
       },
@@ -212,5 +235,28 @@ describe("generateAllEmotions", () => {
     expect(results.has("neutral")).toBe(false);
     expect(progress.map((entry) => entry.step)).toEqual(["base", "happy", "focused"]);
     expect(progress.every((entry) => entry.total === 3)).toBe(true);
+  });
+
+  it("writes no files when a later emotion generation fails (atomic all-or-nothing)", async () => {
+    let calls = 0;
+    vi.mocked(generateImage).mockImplementation(async () => {
+      calls += 1;
+      // base (1) + first two emotions (2,3) succeed; the next call fails.
+      if (calls >= 4) {
+        throw new Error("simulated generation failure");
+      }
+      return Buffer.from("FAKE_PNG_DATA");
+    });
+
+    await expect(
+      generateAllEmotions({ character: "cute cat", outputDir: testDir, concurrency: 1 }),
+    ).rejects.toThrow("simulated generation failure");
+
+    // Atomic: a mid-run failure must leave the output directory with no
+    // partial/old-mixed emotion set.
+    expect(existsSync(resolve(testDir, "base.png"))).toBe(false);
+    for (const emotion of EMOTIONS) {
+      expect(existsSync(resolve(testDir, `${emotion}.png`))).toBe(false);
+    }
   });
 });

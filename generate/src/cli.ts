@@ -1,5 +1,16 @@
 import { resolve } from "node:path";
-import { generateAllEmotions, EMOTIONS, type Emotion } from "./generator.js";
+import {
+  AUTO_GENERATE_CONCURRENCY,
+  DEFAULT_GENERATE_CONCURRENCY,
+  EMOTIONS,
+  MAX_GENERATE_CONCURRENCY,
+  generateAllEmotions,
+  type Emotion,
+  type GenerateConcurrency,
+} from "./generator.js";
+
+const MAX_CHARACTER_LENGTH = 1000;
+const SIZE_PATTERN = /^\d+x\d+$/;
 
 interface CliArgs {
   character: string;
@@ -9,9 +20,31 @@ interface CliArgs {
   baseImage?: string;
   keepBase: boolean;
   only?: Emotion[];
+  concurrency?: GenerateConcurrency;
 }
 
-function parseArgs(args: string[]): CliArgs | null {
+function parseConcurrency(value: string | undefined): GenerateConcurrency | null {
+  if (value === AUTO_GENERATE_CONCURRENCY) return AUTO_GENERATE_CONCURRENCY;
+
+  if (!value || !/^\d+$/.test(value)) {
+    console.error(
+      `Invalid --concurrency "${value ?? ""}". Expected "auto" or an integer from 1 to ${MAX_GENERATE_CONCURRENCY}.`,
+    );
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (parsed < 1 || parsed > MAX_GENERATE_CONCURRENCY) {
+    console.error(
+      `Invalid --concurrency "${value}". Expected "auto" or an integer from 1 to ${MAX_GENERATE_CONCURRENCY}.`,
+    );
+    return null;
+  }
+
+  return parsed;
+}
+
+export function parseArgs(args: string[]): CliArgs | null {
   if (args.includes("--help") || args.includes("-h") || args.length === 0) {
     return null;
   }
@@ -23,6 +56,7 @@ function parseArgs(args: string[]): CliArgs | null {
   let baseImage: string | undefined;
   let keepBase = true;
   let only: Emotion[] | undefined;
+  let concurrency: GenerateConcurrency | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -61,6 +95,14 @@ function parseArgs(args: string[]): CliArgs | null {
         only = (next ?? "").split(",").map((s) => s.trim()).filter(Boolean) as Emotion[];
         i++;
         break;
+      case "--concurrency":
+      case "-j": {
+        const parsedConcurrency = parseConcurrency(next);
+        if (parsedConcurrency === null) return null;
+        concurrency = parsedConcurrency;
+        i++;
+        break;
+      }
       default:
         if (!character && !arg.startsWith("-")) {
           character = arg;
@@ -71,6 +113,18 @@ function parseArgs(args: string[]): CliArgs | null {
 
   if (!character) return null;
 
+  if (character.length > MAX_CHARACTER_LENGTH) {
+    console.error(
+      `--character is too long (${character.length} chars; max ${MAX_CHARACTER_LENGTH}).`,
+    );
+    return null;
+  }
+
+  if (size !== undefined && !SIZE_PATTERN.test(size)) {
+    console.error(`Invalid --size "${size}". Expected WxH, e.g. 1024x1024.`);
+    return null;
+  }
+
   if (only?.length) {
     const invalid = only.filter((e) => !(EMOTIONS as readonly string[]).includes(e));
     if (invalid.length) {
@@ -79,7 +133,7 @@ function parseArgs(args: string[]): CliArgs | null {
     }
   }
 
-  return { character, outputDir, model, size, baseImage, keepBase, only };
+  return { character, outputDir, model, size, baseImage, keepBase, only, concurrency };
 }
 
 function printUsage(): void {
@@ -97,6 +151,7 @@ Options:
   -o, --output <dir>        Output directory (default: ./assets)
   -m, --model <model>       Codex model (default: gpt-5.4)
   -s, --size <WxH>          Image size (default: 1024x1024)
+  -j, --concurrency <n>     "auto" or parallel emotion generations, 1-${MAX_GENERATE_CONCURRENCY} (default: ${DEFAULT_GENERATE_CONCURRENCY})
       --no-keep-base        Don't save base.png to output directory
       --only <emotions>     Regenerate specific emotions only (comma-separated)
                             e.g. --only sorry,confused
@@ -126,7 +181,7 @@ export async function run(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const { character, outputDir, model, size, baseImage, keepBase, only } = parsed;
+  const { character, outputDir, model, size, baseImage, keepBase, only, concurrency } = parsed;
 
   console.log(`Generating emotion images for: "${character}"`);
   if (only?.length) {
@@ -147,9 +202,19 @@ export async function run(args: string[]): Promise<void> {
       size,
       baseImage,
       keepBase,
+      concurrency,
       only,
       onProgress(step, index, total) {
         console.log(`[${index + 1}/${total}] Generating ${step}...`);
+      },
+      onConcurrencyChange(event) {
+        if (event.type === "backoff") {
+          console.log(
+            `[rate-limit] backing off to concurrency=${event.nextConcurrency} after item=${event.itemIndex} attempt=${event.attempt}`,
+          );
+        } else {
+          console.log(`[rate-limit] increasing to concurrency=${event.nextConcurrency}`);
+        }
       },
     });
 
