@@ -14,6 +14,9 @@ importers:
       '@hent-ai/shared':
         specifier: file:../shared
         version: file:../shared
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
     devDependencies:
       '@openclaw/plugin-sdk':
         specifier: file:./test/stubs/plugin-sdk

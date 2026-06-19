@@ -1,10 +1,12 @@
+import sharp from "sharp";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  sendTextMessage,
-  sendImageBufferMessage,
+  downloadUrl,
   editTextMessage,
   getMessageAttachments,
-  downloadUrl,
+  resizeImageBufferForDiscordAttachment,
+  sendImageBufferMessage,
+  sendTextMessage,
 } from "../discord-utils.js";
 
 const mockLogger = {
@@ -101,6 +103,24 @@ describe("sendTextMessage", () => {
 });
 
 describe("sendImageBufferMessage", () => {
+
+  it("resizes valid image buffers to 512x512 before room attachment", async () => {
+    const source = await sharp({
+      create: {
+        width: 1024,
+        height: 1024,
+        channels: 4,
+        background: { r: 255, g: 0, b: 0, alpha: 1 },
+      },
+    }).png().toBuffer();
+
+    const resized = await resizeImageBufferForDiscordAttachment(source, "image/png");
+    const metadata = await sharp(resized).metadata();
+
+    expect(metadata.width).toBe(512);
+    expect(metadata.height).toBe(512);
+  });
+
   it("uses OpenClaw sender before Discord REST when available", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
