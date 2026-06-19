@@ -8,11 +8,13 @@ import {
   buildCheerPrompt,
   buildEmotionRules,
   createOpenClawMessageSender,
+  createWatcherChat,
   detectCheerIntentWithLLM,
   detectApiType,
   detectEmotion,
   detectEmotionWithLLM,
   editMessageWithImage,
+  editMessageText,
   expandEnvPlaceholder,
   extractBooleanIntent,
   extractEmotion,
@@ -29,6 +31,7 @@ import {
   selectEmotionImageVariant,
   sendImageMessage,
 } from "./index.js";
+import plugin from "./index.js";
 
 vi.mock("@hent-ai/generate", () => ({
   generateImage: vi.fn(async () => Buffer.from("FAKE_CHEER_PNG")),
@@ -496,6 +499,55 @@ describe("editMessageWithImage", () => {
     expect(bodyStr).toContain("Hello world");
     expect(bodyStr).toContain("neutral.png");
     expect(bodyStr).toContain("files[0]");
+  });
+});
+
+describe("editMessageText (watcher mode-B in-place steer)", () => {
+  const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("PATCHes content-only and returns the message id on success", async () => {
+    const mockFetch = vi.mocked(fetch);
+    mockFetch.mockResolvedValue({ ok: true, text: vi.fn().mockResolvedValue("") } as unknown as Response);
+
+    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
+
+    expect(id).toBe("msg-9");
+    const [url, options] = fetchCallAt(mockFetch, 0);
+    expect(url).toBe("https://discord.com/api/v10/channels/chan-1/messages/msg-9");
+    expect(options.method).toBe("PATCH");
+    expect((options.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(options.body as string)).toEqual({ content: "Let's pivot." });
+    expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("steered message msg-9"));
+  });
+
+  it("returns null and warns on a non-ok response (steer stays retryable)", async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: vi.fn().mockResolvedValue("forbidden"),
+    } as unknown as Response);
+
+    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
+
+    expect(id).toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("steer edit failed 403"));
+  });
+
+  it("returns null and warns when fetch throws", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("net down"));
+
+    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
+
+    expect(id).toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("steer edit error"));
   });
 });
 
@@ -1188,5 +1240,161 @@ describe("sanitizeLogMessage", () => {
     expect(sanitizeLogMessage("prefix data:image/png;base64," + "a".repeat(20))).toBe(
       "prefix data:image/png;base64,<redacted>",
     );
+  });
+});
+
+describe("anti-fixation watcher wiring (register)", () => {
+  it("registers shadow-first hooks before the token guard and audits without sending", () => {
+    const dir = join(tmpdir(), `watcher-wiring-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const infos: string[] = [];
+      const handlers: Record<string, (e: unknown) => unknown> = {};
+      const api = {
+        pluginConfig: {
+          imageDir: dir,
+          watcher: { enabled: true, shadowMode: true },
+          channels: { defaultEnabled: true },
+        },
+        config: {},
+        runtime: { config: { current: () => ({}) } },
+        logger: {
+          info: (...a: unknown[]) => infos.push(a.join(" ")),
+          warn: () => {},
+          error: () => {},
+        },
+        on: (event: string, handler: (e: unknown) => unknown, opts?: { name?: string }) => {
+          handlers[opts?.name ?? event] = handler;
+        },
+      };
+
+      plugin.register(api);
+
+      // Watcher hooks must register even though no Discord token is configured
+      // (they sit before the bot-token early-return guard).
+      expect(infos.some((l) => l.includes("anti-fixation watcher enabled"))).toBe(true);
+      expect(typeof handlers["watcher-record"]).toBe("function");
+      expect(typeof handlers["watcher-evaluate"]).toBe("function");
+
+      const channel = "123456789012345678";
+      handlers["watcher-record"]({ content: "let's chat", metadata: { to: `channel:${channel}` } });
+      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a1" });
+      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a2" });
+
+      const audits = infos.filter((l) => l.includes("watcher: scope="));
+      expect(audits.length).toBe(1); // only the second agent turn produces a signal
+      expect(audits[0]).toContain("suppressed=shadow_mode");
+      expect(audits[0]).toContain("delivered=no");
+
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "thread isolated thread isolated",
+        success: true,
+        messageId: "thread-a1",
+        metadata: { threadId: "thread-a" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "thread isolated thread isolated",
+        success: true,
+        messageId: "thread-b1",
+        metadata: { threadId: "thread-b" },
+      });
+      const threadAudits = infos.filter((l) => l.includes(`channel:${channel}:thread:`));
+      expect(threadAudits.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("steers in place by editing the offending message when live with a token", async () => {
+    const dir = join(tmpdir(), `watcher-live-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: '{"fixated":true,"confidence":0.9}' } }] }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: "Let's switch topics." } }] }) })
+        .mockResolvedValueOnce({ ok: true, text: async () => "" });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const handlers: Record<string, (e: unknown) => unknown> = {};
+      const api = {
+        pluginConfig: {
+          imageDir: dir,
+          discordToken: "bot-tok",
+          classifierModel: "openai/gpt",
+          watcher: { enabled: true, shadowMode: false, confidenceThreshold: 0.7 },
+          channels: { defaultEnabled: true },
+        },
+        config: {},
+        runtime: {
+          config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x/v1/", api: "openai-completions" } } } }) },
+          modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: "sk-test" })) },
+        },
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+        on: (event: string, handler: (e: unknown) => unknown, opts?: { name?: string }) => {
+          handlers[opts?.name ?? event] = handler;
+        },
+      };
+
+      plugin.register(api);
+      const channel = "123456789012345678";
+      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a1" });
+      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a2" });
+
+      // Wait for the async live pipeline: critic -> generate -> PATCH edit (3 fetches).
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      const patchCall = fetchMock.mock.calls[2] as [string, { method?: string; body: string }];
+      expect(patchCall[0]).toBe(`https://discord.com/api/v10/channels/${channel}/messages/a2`);
+      expect(patchCall[1].method).toBe("PATCH");
+      expect(JSON.parse(patchCall[1].body)).toEqual({ content: "Let's switch topics." });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("createWatcherChat", () => {
+  const runtimeWith = (api: string, provider = "openai") => ({
+    config: {
+      current: () => ({ models: { providers: { [provider]: { baseUrl: "https://api.x/v1/", api } } } }),
+    },
+    modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: "sk-test" })) },
+  });
+  const logger = { warn: () => {} };
+
+  it("returns content from an OpenAI-style provider", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }] }) })));
+    const chat = createWatcherChat("openai/gpt", runtimeWith("openai-completions"), logger);
+    expect(await chat("prompt", "sys")).toBe("hi");
+  });
+
+  it("returns text from an Anthropic-style provider", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ content: [{ type: "text", text: "yo" }] }) })));
+    const chat = createWatcherChat("anthropic/claude", runtimeWith("anthropic-messages", "anthropic"), logger);
+    expect(await chat("prompt")).toBe("yo");
+  });
+
+  it("fail-closes on a malformed model, missing provider, missing key, !ok, and fetch error", async () => {
+    expect(await createWatcherChat("noslash", runtimeWith("openai-completions"), logger)("p")).toBeNull();
+    expect(await createWatcherChat("ghost/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
+    const noKey = {
+      config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x", api: "openai-completions" } } } }) },
+      modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: undefined })) },
+    };
+    expect(await createWatcherChat("openai/m", noKey, logger)("p")).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => ({}) })));
+    expect(await createWatcherChat("openai/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("net"); }));
+    expect(await createWatcherChat("openai/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
+  });
+
+  it("fail-closes when apiKey resolution throws", async () => {
+    const rt = {
+      config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x", api: "openai-completions" } } } }) },
+      modelAuth: { resolveApiKeyForProvider: vi.fn(async () => { throw new Error("auth"); }) },
+    };
+    expect(await createWatcherChat("openai/m", rt, logger)("p")).toBeNull();
   });
 });

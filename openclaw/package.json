@@ -9,6 +9,9 @@
   },
   "files": [
     "index.ts",
+    "watcher-core.ts",
+    "watcher-adapter.ts",
+    "watcher-llm.ts",
     "discord-utils.ts",
     "channel-filter.ts",
     "migration.ts",

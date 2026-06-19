@@ -16,6 +16,11 @@ import {
 } from "./channel-filter.js";
 import { runMigration } from "./migration.js";
 import { getProfileDatabase, resolveProfileImageDirForChannel } from "./profile-manager.js";
+import {
+  createOpenClawWatcherAdapter,
+  type WatcherConfig,
+} from "./watcher-adapter.js";
+import { createWatcherLlm, type ChatFn } from "./watcher-llm.js";
 
 export { normalizeDiscordChannelId } from "./channel-filter.js";
 
@@ -874,6 +879,78 @@ async function detectEmotionWithLLM(
   return emotion;
 }
 
+/**
+ * Build a generic chat function for the anti-fixation watcher's LLM layer.
+ * Resolves the provider/auth like detectEmotionWithLLM, then makes one chat
+ * completion call. Fail-closes to null on any error (the watcher then emits no
+ * nudge). Exported for tests; the real provider call is mocked via global fetch.
+ */
+export function createWatcherChat(
+  classifierModel: string,
+  runtime: {
+    config: { current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } } };
+    modelAuth: { resolveApiKeyForProvider: (params: { provider: string; cfg?: unknown }) => Promise<{ apiKey?: string }> };
+  },
+  logger: { warn: (...args: any[]) => void },
+): ChatFn {
+  return async (prompt: string, system?: string): Promise<string | null> => {
+    const slashIdx = classifierModel.indexOf("/");
+    if (slashIdx === -1) return null;
+    const providerName = classifierModel.slice(0, slashIdx);
+    const modelId = classifierModel.slice(slashIdx + 1);
+    if (!providerName || !modelId) return null;
+    const cfg = runtime.config.current();
+    const providerCfg = cfg?.models?.providers?.[providerName];
+    if (!providerCfg?.baseUrl) return null;
+    let apiKey: string | undefined;
+    try {
+      apiKey = (await runtime.modelAuth.resolveApiKeyForProvider({ provider: providerName, cfg })).apiKey;
+    } catch (err) {
+      logger.warn(`emotion-image: watcher chat apiKey resolve failed: ${sanitizeLogMessage(err)}`);
+      return null;
+    }
+    if (!apiKey) return null;
+    const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
+    const apiType: ApiType = detectApiType(providerCfg.api);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+    try {
+      if (apiType === "anthropic-messages") {
+        const res = await fetch(`${baseUrl}/messages`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: JSON.stringify({
+            model: modelId,
+            max_tokens: 200,
+            ...(system ? { system } : {}),
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+        if (!res.ok) return null;
+        const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
+        const block = (data.content ?? []).find((b) => b.type === "text" && b.text);
+        return block?.text ?? null;
+      }
+      const messages = [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }];
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ model: modelId, max_tokens: 200, messages }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      return data.choices?.[0]?.message?.content ?? null;
+    } catch (err) {
+      logger.warn(`emotion-image: watcher chat call failed: ${sanitizeLogMessage(err)}`);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export const MEDIA_LINE_RE = /\nMEDIA:\S+/g;
 
 export function detectEmotion(
@@ -1010,6 +1087,45 @@ export async function editMessageWithImage(
     }
   } catch (err) {
     logger.error(`emotion-image: edit error: ${err}`);
+  }
+}
+
+/**
+ * Replace a Discord message's text content in place (anti-fixation Mode B).
+ * Content-only PATCH: attachments are untouched, so a later emotion-image edit
+ * (which GETs + preserves current content) layers on top without clobbering.
+ * Returns the message id on success (so the watcher commits cooldown/dedup),
+ * or null on failure (the steer stays retryable).
+ */
+export async function editMessageText(
+  token: string,
+  channelId: string,
+  messageId: string,
+  content: string,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bot ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content }),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      logger.warn(`emotion-image: watcher steer edit failed ${res.status}: ${text.slice(0, 200)}`);
+      return null;
+    }
+    logger.info(`emotion-image: watcher steered message ${messageId} in channel=${channelId}`);
+    return messageId;
+  } catch (err) {
+    logger.warn(`emotion-image: watcher steer edit error: ${sanitizeLogMessage(err)}`);
+    return null;
   }
 }
 
@@ -1522,6 +1638,7 @@ export default definePluginEntry({
       miracleRateLimit?: number;
       defaultProfile?: string;
       dateMode?: { enabled?: boolean; channels?: string[]; excludeEmotions?: string[] };
+      watcher?: WatcherConfig;
     };
 
     if (pluginConfig.enabled === false) return;
@@ -1665,9 +1782,87 @@ export default definePluginEntry({
 
       return emotionMap;
     }
+    function stringMetadataValue(metadata: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+      for (const key of keys) {
+        const value = metadata?.[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+      return undefined;
+    }
+
+    function watcherScopeId(channelId: string, metadata?: Record<string, unknown>, sessionKey?: string): { scopeId: string; threadId?: string; sessionId?: string } {
+      const threadId = stringMetadataValue(metadata, ["threadId", "thread_id", "discordThreadId"]);
+      const sessionId = stringMetadataValue(metadata, ["sessionId", "session_id"]) ?? sessionKey;
+      const scopeParts = [`channel:${channelId}`];
+      if (threadId) scopeParts.push(`thread:${threadId}`);
+      if (sessionId) scopeParts.push(`session:${sessionId}`);
+      return { scopeId: scopeParts.join(":"), threadId, sessionId };
+    }
+
 
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
+    }
+
+    // Anti-fixation watcher (shadow-first, event-based). Registered BEFORE the
+    // botToken guard so it runs without a Discord token; when promoted out of
+    // shadow mode, delivery flows through the host outbound adapter (not the
+    // direct bot-token path). All gate/branch logic lives in watcher-adapter.ts;
+    // these hooks are a single thin delegation each.
+    const watcherConfig = pluginConfig.watcher ?? {};
+    if (watcherConfig.enabled) {
+      const watcherSender = createOpenClawMessageSender(api);
+      const watcherLlm = classifierModel
+        ? createWatcherLlm(createWatcherChat(classifierModel, api.runtime, api.logger))
+        : undefined;
+      const watcher = createOpenClawWatcherAdapter({
+        config: watcherConfig,
+        logger: api.logger,
+        deliver: async (channelId, text, opts) => {
+          // Mode B: replace the stale repeat in place by editing the offending
+          // Discord message (the steer takes its slot — no duplicate, no extra
+          // spam message). Falls back to a fresh message when no token/target.
+          const steerToken =
+            process.env.EMOTION_IMAGE_DISCORD_TOKEN ??
+            expandEnvPlaceholder(pluginConfig.discordToken);
+          if (opts?.replaceMessageId && steerToken) {
+            return await editMessageText(steerToken, channelId, opts.replaceMessageId, text, api.logger);
+          }
+          return watcherSender?.sendText ? await watcherSender.sendText(channelId, text) : null;
+        },
+        critic: watcherLlm?.critic,
+        generate: watcherLlm?.generate,
+        moderate: watcherLlm?.moderate,
+      });
+      api.on("message_received", (event: unknown) => {
+        const { content, metadata, sessionKey } = event as {
+          content?: string; metadata?: Record<string, unknown>; sessionKey?: string;
+        };
+        const channelId = normalizeDiscordChannelId((metadata?.to as string) ?? "");
+        if (!content || !/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
+        const scope = watcherScopeId(channelId, metadata, sessionKey);
+        watcher.recordUserTurn(scope.scopeId, content);
+      }, { name: "watcher-record" });
+      api.on("message_sent", (event: unknown) => {
+        const { to, content, success, messageId, metadata, sessionKey } = event as {
+          to?: string; content?: string; success?: boolean; messageId?: string;
+          metadata?: Record<string, unknown>; sessionKey?: string;
+        };
+        if (!success || !messageId || !content || !to) return;
+        const channelId = normalizeDiscordChannelId(to);
+        if (!/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
+        const scope = watcherScopeId(channelId, metadata, sessionKey);
+        void watcher.onAgentTurn({
+          scopeId: scope.scopeId,
+          channelId,
+          text: content.replace(MEDIA_LINE_RE, "").trimEnd(),
+          messageId,
+          sourceThreadId: scope.threadId,
+          targetThreadId: scope.threadId,
+          sessionId: scope.sessionId,
+        });
+      }, { name: "watcher-evaluate" });
+      api.logger.info(`emotion-image: anti-fixation watcher enabled (shadow=${watcherConfig.shadowMode ?? true})`);
     }
 
      const botToken =

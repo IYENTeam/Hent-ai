@@ -21,6 +21,6 @@
       "openclaw/plugin-sdk/plugin-entry": ["./test/stubs/plugin-entry.ts"]
     }
   },
-  "include": ["index.ts", "channel-filter.ts", "discord-utils.ts", "profile-manager.ts", "dynamic-persona.ts", "migration.ts", "scripts/*.ts"],
+  "include": ["index.ts", "watcher-core.ts", "watcher-adapter.ts", "watcher-llm.ts", "channel-filter.ts", "discord-utils.ts", "profile-manager.ts", "dynamic-persona.ts", "migration.ts", "scripts/*.ts"],
   "exclude": ["dist", "node_modules", "**/*.test.ts"]
 }

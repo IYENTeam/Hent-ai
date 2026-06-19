@@ -1,0 +1,68 @@
+{
+  "schema": "conversation_watcher.golden_replay_fixtures.v1",
+  "description": "Shared TS<->Python parity fixtures for the hent-ai anti-fixation pure core. Each scenario is evaluated by openclaw/watcher-core.ts (evaluateFixtureResult) and hermes/watcher_core.py and MUST produce identical fixated/patterns. Defaults: windowN=8, persistenceK=3, simThreshold=0.6, persistenceSimFloor=0.4.",
+  "fixtures": [
+    {
+      "name": "self_repetition_positive",
+      "description": "Agent restates near-identical content across three turns with no user correction.",
+      "scopeId": "channel:1001",
+      "rawMessages": [
+        { "id": "m1", "senderRole": "agent", "ts": "2026-06-16T00:00:00.000Z", "text": "I think we should ship the release today for sure." },
+        { "id": "m2", "senderRole": "user", "ts": "2026-06-16T00:00:01.000Z", "text": "ok" },
+        { "id": "m3", "senderRole": "agent", "ts": "2026-06-16T00:00:02.000Z", "text": "I think we should ship the release today for sure." },
+        { "id": "m4", "senderRole": "user", "ts": "2026-06-16T00:00:03.000Z", "text": "hmm" },
+        { "id": "m5", "senderRole": "agent", "ts": "2026-06-16T00:00:04.000Z", "text": "I think we should ship the release today for sure." }
+      ],
+      "expectedFixated": true,
+      "expectedPatterns": ["stale_expression_repeated"]
+    },
+    {
+      "name": "legit_elaboration_negative",
+      "description": "Agent advances the deployment topic with genuinely new substance each turn (low similarity, shifting frame).",
+      "scopeId": "channel:1002",
+      "rawMessages": [
+        { "id": "m1", "senderRole": "agent", "ts": "2026-06-16T00:00:00.000Z", "text": "Let me outline the deployment steps for the staging environment." },
+        { "id": "m2", "senderRole": "agent", "ts": "2026-06-16T00:00:01.000Z", "text": "First we provision the database and run schema migrations carefully." },
+        { "id": "m3", "senderRole": "agent", "ts": "2026-06-16T00:00:02.000Z", "text": "Then configure load balancers and verify health checks end to end." }
+      ],
+      "expectedFixated": false,
+      "expectedPatterns": []
+    },
+    {
+      "name": "user_driven_continuation_negative",
+      "description": "User keeps a topic alive with questions; agent replies vary substantially.",
+      "scopeId": "channel:1003",
+      "rawMessages": [
+        { "id": "m1", "senderRole": "user", "ts": "2026-06-16T00:00:00.000Z", "text": "what is the weather like today?" },
+        { "id": "m2", "senderRole": "agent", "ts": "2026-06-16T00:00:01.000Z", "text": "It is sunny and warm around 24 degrees this afternoon." },
+        { "id": "m3", "senderRole": "user", "ts": "2026-06-16T00:00:02.000Z", "text": "and tomorrow?" },
+        { "id": "m4", "senderRole": "agent", "ts": "2026-06-16T00:00:03.000Z", "text": "Tomorrow brings light rain in the morning then clearing skies." }
+      ],
+      "expectedFixated": false,
+      "expectedPatterns": []
+    },
+    {
+      "name": "similarity_boundary_positive",
+      "description": "Two agent turns whose token-set Jaccard is exactly 0.6 (3 shared of 5 union); fires at the epsilon-compared threshold.",
+      "scopeId": "channel:1004",
+      "rawMessages": [
+        { "id": "m1", "senderRole": "agent", "ts": "2026-06-16T00:00:00.000Z", "text": "alpha beta gamma" },
+        { "id": "m2", "senderRole": "agent", "ts": "2026-06-16T00:00:01.000Z", "text": "alpha beta gamma delta epsilon" }
+      ],
+      "expectedFixated": true,
+      "expectedPatterns": ["stale_expression_repeated"]
+    },
+    {
+      "name": "correction_driven_positive",
+      "description": "Agent repeats the same frame after the user explicitly redirects; isolates the secondary correction signal (low textual similarity, run<K so no stale signal).",
+      "scopeId": "channel:1005",
+      "rawMessages": [
+        { "id": "m1", "senderRole": "agent", "ts": "2026-06-16T00:00:00.000Z", "text": "should deploy staging server right away before lunch" },
+        { "id": "m2", "senderRole": "user", "ts": "2026-06-16T00:00:01.000Z", "text": "stop, focus on the billing bug instead" },
+        { "id": "m3", "senderRole": "agent", "ts": "2026-06-16T00:00:02.000Z", "text": "should deploy staging server because priority today honestly" }
+      ],
+      "expectedFixated": true,
+      "expectedPatterns": ["new_context_ignored_previous_frame_repeated"]
+    }
+  ]
+}
