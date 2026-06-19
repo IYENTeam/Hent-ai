@@ -1249,7 +1249,7 @@ describe("anti-fixation watcher wiring (register)", () => {
     mkdirSync(dir, { recursive: true });
     try {
       const infos: string[] = [];
-      const handlers: Record<string, (e: unknown) => unknown> = {};
+      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
       const api = {
         pluginConfig: {
           imageDir: dir,
@@ -1263,7 +1263,7 @@ describe("anti-fixation watcher wiring (register)", () => {
           warn: () => {},
           error: () => {},
         },
-        on: (event: string, handler: (e: unknown) => unknown, opts?: { name?: string }) => {
+        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
           handlers[opts?.name ?? event] = handler;
         },
       };
@@ -1291,17 +1291,185 @@ describe("anti-fixation watcher wiring (register)", () => {
         content: "thread isolated thread isolated",
         success: true,
         messageId: "thread-a1",
-        metadata: { threadId: "thread-a" },
+        threadId: "thread-a",
       });
       handlers["watcher-evaluate"]({
         to: `channel:${channel}`,
         content: "thread isolated thread isolated",
         success: true,
         messageId: "thread-b1",
-        metadata: { threadId: "thread-b" },
+        threadId: "thread-b",
       });
       const threadAudits = infos.filter((l) => l.includes(`channel:${channel}:thread:`));
       expect(threadAudits.length).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+
+  it("uses typed threadId for inbound thread conversations before legacy metadata", () => {
+    const dir = join(tmpdir(), `watcher-threadid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const infos: string[] = [];
+      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
+      const api = {
+        pluginConfig: {
+          imageDir: dir,
+          watcher: { enabled: true, shadowMode: true },
+          channels: { defaultEnabled: true },
+        },
+        config: {},
+        runtime: { config: { current: () => ({}) } },
+        logger: {
+          info: (...a: unknown[]) => infos.push(a.join(" ")),
+          warn: () => {},
+          error: () => {},
+        },
+        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
+          handlers[opts?.name ?? event] = handler;
+        },
+      };
+
+      plugin.register(api);
+
+      const channel = "123456789012345678";
+      handlers["watcher-record"]({
+        content: "아니 그 말고 단톡 맥락 보고 대화해",
+        threadId: "typed-thread",
+        metadata: { to: `channel:${channel}`, threadId: "legacy-thread" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "typed-a1",
+        threadId: "typed-thread",
+        metadata: { threadId: "legacy-thread" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "typed-a2",
+        threadId: "typed-thread",
+        metadata: { threadId: "legacy-thread" },
+      });
+
+      const audits = infos.filter((l) => l.includes("watcher: scope="));
+      expect(audits.length).toBe(1);
+      expect(audits[0]).toContain(`scope=channel:${channel}:thread:typed-thread`);
+      expect(audits[0]).not.toContain("legacy-thread");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records inbound messages using hook context conversation id when metadata.to is absent", () => {
+    const dir = join(tmpdir(), `watcher-context-channel-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const infos: string[] = [];
+      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
+      const api = {
+        pluginConfig: {
+          imageDir: dir,
+          watcher: { enabled: true, shadowMode: true },
+          channels: { defaultEnabled: true },
+        },
+        config: {},
+        runtime: { config: { current: () => ({}) } },
+        logger: {
+          info: (...a: unknown[]) => infos.push(a.join(" ")),
+          warn: () => {},
+          error: () => {},
+        },
+        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
+          handlers[opts?.name ?? event] = handler;
+        },
+      };
+
+      plugin.register(api);
+
+      const channel = "123456789012345678";
+      handlers["watcher-record"]({ content: "단톡 보고 대화해", metadata: {} }, { conversationId: `channel:${channel}` });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "ctx-a1",
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "ctx-a2",
+      });
+
+      const audits = infos.filter((l) => l.includes("watcher: scope="));
+      expect(audits.length).toBe(1);
+      expect(audits[0]).toContain(`scope=channel:${channel}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps legacy thread metadata fallback and session scope when typed threadId is blank", () => {
+    const dir = join(tmpdir(), `watcher-thread-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const infos: string[] = [];
+      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
+      const api = {
+        pluginConfig: {
+          imageDir: dir,
+          watcher: { enabled: true, shadowMode: true },
+          channels: { defaultEnabled: true },
+        },
+        config: {},
+        runtime: { config: { current: () => ({}) } },
+        logger: {
+          info: (...a: unknown[]) => infos.push(a.join(" ")),
+          warn: () => {},
+          error: () => {},
+        },
+        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
+          handlers[opts?.name ?? event] = handler;
+        },
+      };
+
+      plugin.register(api);
+
+      const channel = "123456789012345678";
+      handlers["watcher-record"]({
+        content: "단톡 맥락 유지",
+        threadId: "   ",
+        sessionKey: "session-a",
+        metadata: { to: `channel:${channel}`, threadId: "legacy-thread" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "fallback-a1",
+        threadId: "   ",
+        sessionKey: "session-a",
+        metadata: { threadId: "legacy-thread" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "ship it now ship it now",
+        success: true,
+        messageId: "fallback-a2",
+        threadId: "   ",
+        sessionKey: "session-a",
+        metadata: { threadId: "legacy-thread" },
+      });
+
+      const audits = infos.filter((l) => l.includes("watcher: scope="));
+      expect(audits.length).toBe(1);
+      expect(audits[0]).toContain(`scope=channel:${channel}:thread:legacy-thread:session:session-a`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1317,7 +1485,7 @@ describe("anti-fixation watcher wiring (register)", () => {
         .mockResolvedValueOnce({ ok: true, text: async () => "" });
       vi.stubGlobal("fetch", fetchMock);
 
-      const handlers: Record<string, (e: unknown) => unknown> = {};
+      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
       const api = {
         pluginConfig: {
           imageDir: dir,
@@ -1332,7 +1500,7 @@ describe("anti-fixation watcher wiring (register)", () => {
           modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: "sk-test" })) },
         },
         logger: { info: () => {}, warn: () => {}, error: () => {} },
-        on: (event: string, handler: (e: unknown) => unknown, opts?: { name?: string }) => {
+        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
           handlers[opts?.name ?? event] = handler;
         },
       };

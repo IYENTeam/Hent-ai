@@ -1782,13 +1782,40 @@ export default definePluginEntry({
       return undefined;
     }
 
-    function watcherScopeId(channelId: string, metadata?: Record<string, unknown>, sessionKey?: string): { scopeId: string; threadId?: string; sessionId?: string } {
-      const threadId = stringMetadataValue(metadata, ["threadId", "thread_id", "discordThreadId"]);
+    function watcherScopeId(
+      channelId: string,
+      metadata?: Record<string, unknown>,
+      sessionKey?: string,
+      typedThreadId?: string,
+    ): { scopeId: string; threadId?: string; sessionId?: string } {
+      const normalizedTypedThreadId = typeof typedThreadId === "string" && typedThreadId.trim()
+        ? typedThreadId.trim()
+        : undefined;
+      const threadId = normalizedTypedThreadId ?? stringMetadataValue(metadata, ["threadId", "thread_id", "discordThreadId"]);
       const sessionId = stringMetadataValue(metadata, ["sessionId", "session_id"]) ?? sessionKey;
       const scopeParts = [`channel:${channelId}`];
       if (threadId) scopeParts.push(`thread:${threadId}`);
       if (sessionId) scopeParts.push(`session:${sessionId}`);
       return { scopeId: scopeParts.join(":"), threadId, sessionId };
+    }
+
+    function watcherChannelId(
+      directTo?: string,
+      metadata?: Record<string, unknown>,
+      context?: { conversationId?: string; parentConversationId?: string },
+    ): string {
+      const candidates = [
+        directTo,
+        metadata?.to,
+        context?.conversationId,
+        context?.parentConversationId,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate !== "string") continue;
+        const channelId = normalizeDiscordChannelId(candidate);
+        if (/^\d+$/.test(channelId)) return channelId;
+      }
+      return "";
     }
 
 
@@ -1826,24 +1853,24 @@ export default definePluginEntry({
         generate: watcherLlm?.generate,
         moderate: watcherLlm?.moderate,
       });
-      api.on("message_received", (event: unknown) => {
-        const { content, metadata, sessionKey } = event as {
-          content?: string; metadata?: Record<string, unknown>; sessionKey?: string;
+      api.on("message_received", (event: unknown, context?: unknown) => {
+        const { content, metadata, sessionKey, threadId } = event as {
+          content?: string; metadata?: Record<string, unknown>; sessionKey?: string; threadId?: string;
         };
-        const channelId = normalizeDiscordChannelId((metadata?.to as string) ?? "");
+        const channelId = watcherChannelId(undefined, metadata, asRecord(context) ?? undefined);
         if (!content || !/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
-        const scope = watcherScopeId(channelId, metadata, sessionKey);
+        const scope = watcherScopeId(channelId, metadata, sessionKey, threadId);
         watcher.recordUserTurn(scope.scopeId, content);
       }, { name: "watcher-record" });
       api.on("message_sent", (event: unknown) => {
-        const { to, content, success, messageId, metadata, sessionKey } = event as {
+        const { to, content, success, messageId, metadata, sessionKey, threadId } = event as {
           to?: string; content?: string; success?: boolean; messageId?: string;
-          metadata?: Record<string, unknown>; sessionKey?: string;
+          metadata?: Record<string, unknown>; sessionKey?: string; threadId?: string;
         };
         if (!success || !messageId || !content || !to) return;
-        const channelId = normalizeDiscordChannelId(to);
+        const channelId = watcherChannelId(to, metadata);
         if (!/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
-        const scope = watcherScopeId(channelId, metadata, sessionKey);
+        const scope = watcherScopeId(channelId, metadata, sessionKey, threadId);
         void watcher.onAgentTurn({
           scopeId: scope.scopeId,
           channelId,
