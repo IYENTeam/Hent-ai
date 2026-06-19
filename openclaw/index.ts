@@ -1774,6 +1774,23 @@ export default definePluginEntry({
 
       return emotionMap;
     }
+    function stringMetadataValue(metadata: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+      for (const key of keys) {
+        const value = metadata?.[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+      return undefined;
+    }
+
+    function watcherScopeId(channelId: string, metadata?: Record<string, unknown>, sessionKey?: string): { scopeId: string; threadId?: string; sessionId?: string } {
+      const threadId = stringMetadataValue(metadata, ["threadId", "thread_id", "discordThreadId"]);
+      const sessionId = stringMetadataValue(metadata, ["sessionId", "session_id"]) ?? sessionKey;
+      const scopeParts = [`channel:${channelId}`];
+      if (threadId) scopeParts.push(`thread:${threadId}`);
+      if (sessionId) scopeParts.push(`session:${sessionId}`);
+      return { scopeId: scopeParts.join(":"), threadId, sessionId };
+    }
+
 
     if (classifierModel) {
       api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
@@ -1810,23 +1827,31 @@ export default definePluginEntry({
         moderate: watcherLlm?.moderate,
       });
       api.on("message_received", (event: unknown) => {
-        const { content, metadata } = event as { content?: string; metadata?: Record<string, unknown> };
+        const { content, metadata, sessionKey } = event as {
+          content?: string; metadata?: Record<string, unknown>; sessionKey?: string;
+        };
         const channelId = normalizeDiscordChannelId((metadata?.to as string) ?? "");
         if (!content || !/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
-        watcher.recordUserTurn(`channel:${channelId}`, content);
+        const scope = watcherScopeId(channelId, metadata, sessionKey);
+        watcher.recordUserTurn(scope.scopeId, content);
       }, { name: "watcher-record" });
       api.on("message_sent", (event: unknown) => {
-        const { to, content, success, messageId } = event as {
+        const { to, content, success, messageId, metadata, sessionKey } = event as {
           to?: string; content?: string; success?: boolean; messageId?: string;
+          metadata?: Record<string, unknown>; sessionKey?: string;
         };
         if (!success || !messageId || !content || !to) return;
         const channelId = normalizeDiscordChannelId(to);
         if (!/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
+        const scope = watcherScopeId(channelId, metadata, sessionKey);
         void watcher.onAgentTurn({
-          scopeId: `channel:${channelId}`,
+          scopeId: scope.scopeId,
           channelId,
           text: content.replace(MEDIA_LINE_RE, "").trimEnd(),
           messageId,
+          sourceThreadId: scope.threadId,
+          targetThreadId: scope.threadId,
+          sessionId: scope.sessionId,
         });
       }, { name: "watcher-evaluate" });
       api.logger.info(`emotion-image: anti-fixation watcher enabled (shadow=${watcherConfig.shadowMode ?? true})`);

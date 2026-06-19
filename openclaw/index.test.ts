@@ -1285,6 +1285,23 @@ describe("anti-fixation watcher wiring (register)", () => {
       expect(audits.length).toBe(1); // only the second agent turn produces a signal
       expect(audits[0]).toContain("suppressed=shadow_mode");
       expect(audits[0]).toContain("delivered=no");
+
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "thread isolated thread isolated",
+        success: true,
+        messageId: "thread-a1",
+        metadata: { threadId: "thread-a" },
+      });
+      handlers["watcher-evaluate"]({
+        to: `channel:${channel}`,
+        content: "thread isolated thread isolated",
+        success: true,
+        messageId: "thread-b1",
+        metadata: { threadId: "thread-b" },
+      });
+      const threadAudits = infos.filter((l) => l.includes(`channel:${channel}:thread:`));
+      expect(threadAudits.length).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
