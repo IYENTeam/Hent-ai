@@ -47,7 +47,7 @@ Requests use bearer auth and JSON bodies containing the OpenClaw hook context. S
 
 ### Final-response media
 
-OpenClaw calls `reply_payload_sending` before final payload delivery. The adapter calls the service verdict endpoint and attaches `verdict.media` to the payload. OpenClaw owns delivery.
+OpenClaw calls `reply_payload_sending` before final payload delivery. The adapter calls the service verdict endpoint and attaches `verdict.media` to the payload. OpenClaw owns the final text send and payload delivery mechanics; the Hent-ai service owns media selection, policy, profile/channel lookup, and verdict state.
 
 Expected service response:
 
@@ -77,6 +77,8 @@ The Hent-ai service owns:
 
 The OpenClaw adapter intentionally contains no fallback classifier, no local asset selection, no manifest scanning, no `shared/db` access, no `@hent-ai/generate` calls, no Discord token, and no direct `discord.com` REST calls.
 
+PR/release gate: any proposal that adds those responsibilities back into `openclaw/` is misaligned with the service-owned architecture unless an owner-approved architecture decision explicitly changes this boundary. CI success alone is not enough. See `../docs/service-owned-gates.md`.
+
 ## Local Verification
 
 From `openclaw/`:
@@ -84,6 +86,14 @@ From `openclaw/`:
 ```bash
 npx vitest run index.test.ts test/thinking-random.test.ts test/date-mode-e2e.test.ts test/channel-toggle.test.ts
 ```
+
+Boundary regression checks for PRs touching `openclaw/`:
+
+```bash
+rg -n "detectEmotion|EMOTION_RULES|@hent-ai/generate|discord\.com/api|ProfileDatabase|manifest" openclaw/index.ts openclaw/*.ts --glob "!*.test.ts"
+```
+
+Expected result for runtime adapter files: no adapter-owned classifier, generate import, direct Discord REST call, profile DB read, or manifest scan. Test fixtures may mention legacy terms only when asserting they are absent or superseded.
 
 
 ## Current OpenClaw Setup Checklist
