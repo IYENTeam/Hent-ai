@@ -435,6 +435,29 @@ function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { sco
   return { scopeId: parts.join(":"), threadId, sessionId };
 }
 
+
+async function serviceMediaForPreReply(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<OpenClawStage1Media | null> {
+  const record = asRecord(params.event) ?? {};
+  const content = stringValue(record.content);
+  const channelId = channelIdFromEvent(params.event, params.ctx);
+  if (!content || !channelId) return null;
+  const result = await callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/pre-reply/media",
+    body: { context: { channelId, content, messageId: record.messageId }, userMessage: content },
+    responseMediaPath: "media",
+    logger: params.logger,
+  });
+  return result.media;
+}
+
 async function callJsonService(params: {
   baseUrl: URL; token: string; timeoutMs: number; endpoint: string; body: unknown; logger?: Logger;
 }): Promise<Record<string, unknown> | null> {
