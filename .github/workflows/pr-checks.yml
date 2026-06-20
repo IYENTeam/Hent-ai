@@ -50,6 +50,9 @@ jobs:
   changeset:
     name: Changeset Validation
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
 
     steps:
       - name: Checkout
@@ -58,17 +61,64 @@ jobs:
           fetch-depth: 0
 
       - name: Check for breaking changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER_REVIEWERS: changeroa
+          OWNER_REVIEW_LABEL: owner-reviewed
         run: |
+          set -euo pipefail
+
           CHANGED=$(git diff --name-only origin/main...HEAD)
+          OWNER_GATE_REQUIRED=0
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          require_owner_review() {
+            local reason="$1"
+            local pr_number="${{ github.event.pull_request.number }}"
+            local repo="${{ github.repository }}"
+
+            if jq -e --arg label "$OWNER_REVIEW_LABEL" '.pull_request.labels[]?.name == $label' "$GITHUB_EVENT_PATH" >/dev/null; then
+              echo "✅ Owner review gate satisfied by label: $OWNER_REVIEW_LABEL ($reason)"
+              return 0
+            fi
+
+            local approved_owner
+            approved_owner=$(gh api "repos/$repo/pulls/$pr_number/reviews" --paginate --slurp \
+              | jq -r --arg owners "$OWNER_REVIEWERS" --arg head_sha "$HEAD_SHA" '
+                  ($owners | split(",") | map(ascii_downcase)) as $allowed
+                  | flatten
+                  | map(select((.user.login | ascii_downcase) as $login | $allowed | index($login)))
+                  | map(select(.commit_id == $head_sha))
+                  | sort_by(.submitted_at // "")
+                  | group_by(.user.login | ascii_downcase)
+                  | map(max_by(.submitted_at // ""))
+                  | map(select(.state == "APPROVED"))
+                  | first.user.login // empty
+                ')
+
+            if [ -n "$approved_owner" ]; then
+              echo "✅ Owner review gate satisfied by approval from: $approved_owner ($reason)"
+              return 0
+            fi
+
+            echo "::error::$reason Request owner review by one of [$OWNER_REVIEWERS] for head $HEAD_SHA or add label '$OWNER_REVIEW_LABEL'."
+            return 1
+          }
 
           # Check if configSchema changed (potential breaking for existing users)
           if echo "$CHANGED" | grep -q "openclaw.plugin.json"; then
-            echo "::warning::Plugin manifest changed. Verify backward compatibility of configSchema."
+            OWNER_GATE_REQUIRED=1
+            if ! require_owner_review "Plugin manifest changed. Verify backward compatibility of configSchema."; then
+              exit 1
+            fi
           fi
 
           # Check if entry point signature changed
           if echo "$CHANGED" | grep -q "openclaw/index.ts"; then
-            echo "::notice::Plugin entry point changed. Ensure definePluginEntry contract is preserved."
+            OWNER_GATE_REQUIRED=1
+            if ! require_owner_review "Plugin entry point changed. Ensure definePluginEntry contract is preserved."; then
+              exit 1
+            fi
           fi
 
           # Check if assets were removed
@@ -79,4 +129,8 @@ jobs:
             exit 1
           fi
 
-          echo "✅ No breaking changes detected."
+          if [ "$OWNER_GATE_REQUIRED" -eq 1 ]; then
+            echo "✅ Breaking-risk changes detected and owner review gate satisfied."
+          else
+            echo "✅ No breaking changes detected."
+          fi
