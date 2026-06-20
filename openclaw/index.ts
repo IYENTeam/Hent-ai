@@ -50,7 +50,8 @@ type ReplyPayloadSendingEvent = {
 
 type PluginApi = {
   pluginConfig?: unknown;
-  runtime?: RuntimeConfigProvider;
+  config?: unknown;
+  runtime?: RuntimeConfigProvider & { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{ sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>; sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown> } | undefined> } } };
   logger?: Logger;
   on: (name: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown, options?: { name?: string }) => void;
   supportsHook?: (name: string) => boolean;
@@ -63,6 +64,55 @@ type Logger = {
 };
 
 type FetchLike = typeof fetch;
+
+
+export type OpenClawMessageSender = {
+  sendText?: (channelId: string, text: string) => Promise<string | null>;
+  sendMedia?: (channelId: string, mediaUrl: string, text?: string) => Promise<string | null>;
+};
+
+function extractOutboundMessageId(result: unknown): string | null {
+  const record = asRecord(result);
+  if (typeof record?.messageId === "string") return record.messageId;
+  const nested = asRecord(record?.result);
+  return typeof nested?.messageId === "string" ? nested.messageId : null;
+}
+
+export function createOpenClawMessageSender(api: {
+  config?: unknown;
+  runtime?: { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{
+    sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>;
+    sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown>;
+  } | undefined> } } };
+  logger?: Logger;
+}): OpenClawMessageSender | undefined {
+  const loadAdapter = api.runtime?.channel?.outbound?.loadAdapter;
+  if (!loadAdapter) return undefined;
+  return {
+    async sendText(channelId, text) {
+      try {
+        const adapter = await loadAdapter("discord");
+        if (!adapter?.sendText) return null;
+        const result = await adapter.sendText({ cfg: api.config ?? {}, to: `channel:${channelId}`, text });
+        return extractOutboundMessageId(result);
+      } catch (error) {
+        loggerWarn(api.logger, `hent-ai adapter: outbound text send failed: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    },
+    async sendMedia(channelId, mediaUrl, text = "") {
+      try {
+        const adapter = await loadAdapter("discord");
+        if (!adapter?.sendMedia) return null;
+        const result = await adapter.sendMedia({ cfg: api.config ?? {}, to: `channel:${channelId}`, text, mediaUrl });
+        return extractOutboundMessageId(result);
+      } catch (error) {
+        loggerWarn(api.logger, `hent-ai adapter: outbound media send failed: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    },
+  };
+}
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MEDIA_CACHE_DIR = join(homedir(), ".openclaw", "media", "hent-ai-service-adapter");
@@ -345,6 +395,80 @@ function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawSt
   };
 }
 
+
+function channelIdFromEvent(event: unknown, ctx?: unknown): string | undefined {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  return normalizeDiscordChannelId(
+    stringValue(record.channelId)
+      ?? stringValue(record.to)
+      ?? stringValue(metadata?.to)
+      ?? stringValue(context?.conversationId)
+      ?? stringValue(context?.parentConversationId)
+      ?? stringValue(context?.channelId),
+  );
+}
+
+function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { scopeId: string; threadId?: string; sessionId?: string } {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  const threadId = stringValue(record.threadId) ?? stringValue(metadata?.threadId) ?? stringValue(metadata?.thread_id) ?? stringValue(context?.threadId);
+  const sessionId = stringValue(record.sessionKey) ?? stringValue(metadata?.sessionId) ?? stringValue(metadata?.session_id) ?? stringValue(context?.sessionKey);
+  const parts = [`channel:${channelId}`];
+  if (threadId) parts.push(`thread:${threadId}`);
+  if (sessionId) parts.push(`session:${sessionId}`);
+  return { scopeId: parts.join(":"), threadId, sessionId };
+}
+
+async function serviceMediaForPreReply(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<OpenClawStage1Media | null> {
+  const record = asRecord(params.event) ?? {};
+  const content = stringValue(record.content);
+  const channelId = channelIdFromEvent(params.event, params.ctx);
+  if (!content || !channelId) return null;
+  const result = await callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/pre-reply/media",
+    body: { context: { channelId, content, messageId: record.messageId }, userMessage: content },
+    responseMediaPath: "media",
+    logger: params.logger,
+  });
+  return result.media;
+}
+
+async function callJsonService(params: {
+  baseUrl: URL; token: string; timeoutMs: number; endpoint: string; body: unknown; logger?: Logger;
+}): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
+  try {
+    const response = await fetch(endpointUrl(params.baseUrl, params.endpoint), {
+      method: "POST",
+      headers: { authorization: `Bearer ${params.token}`, "content-type": "application/json" },
+      body: JSON.stringify(params.body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      loggerWarn(params.logger, `hent-ai adapter: ${params.endpoint} returned HTTP ${response.status}`);
+      return null;
+    }
+    return asRecord(await response.json());
+  } catch (error) {
+    loggerWarn(params.logger, `hent-ai adapter: ${params.endpoint} failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function handleReplyPayloadSending(params: {
   event: unknown;
   ctx: unknown;
@@ -403,6 +527,65 @@ export default definePluginEntry({
       loggerWarn(api.logger, "hent-ai adapter disabled: reply_payload_sending hook unsupported");
       return;
     }
+
+    const sender = createOpenClawMessageSender(api);
+
+    api.on("message_received", async (event: unknown, ctx: unknown) => {
+      const channelId = channelIdFromEvent(event, ctx);
+      const record = asRecord(event) ?? {};
+      const content = stringValue(record.content);
+      if (!channelId || !content) return;
+      const scope = watcherScopeId(channelId, event, ctx);
+      await callJsonService({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        endpoint: "/v1/watcher/record-user",
+        body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId) },
+        logger: api.logger,
+      });
+      const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
+      if (media?.mediaUrl) await sender?.sendMedia?.(channelId, media.mediaUrl, media.caption ?? "");
+    }, { name: "hent-ai-service-message-received" });
+
+    api.on("message_sent", async (event: unknown, ctx: unknown) => {
+      const record = asRecord(event) ?? {};
+      if (record.success === false) return;
+      const content = stringValue(record.content);
+      const messageId = stringValue(record.messageId);
+      const channelId = normalizeDiscordChannelId(stringValue(record.to)) ?? channelIdFromEvent(event, ctx);
+      if (!channelId || !content || !messageId) return;
+      const marker = asRecord(record.metadata)?.hentAiWatcherNudge;
+      if (marker === true) return;
+      const scope = watcherScopeId(channelId, event, ctx);
+      const sourceThreadId = stringValue(record.sourceThreadId) ?? stringValue(asRecord(record.metadata)?.sourceThreadId) ?? scope.threadId;
+      const targetThreadId = stringValue(record.targetThreadId) ?? stringValue(asRecord(record.metadata)?.targetThreadId) ?? scope.threadId;
+      const result = await callJsonService({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        endpoint: "/v1/watcher/evaluate",
+        body: { scopeId: scope.scopeId, channelId, text: content, messageId, sourceThreadId, targetThreadId, sessionId: scope.sessionId },
+        logger: api.logger,
+      });
+      const nudge = stringValue(result?.nudgeText);
+      if (nudge) {
+        const deliveryMessageId = await sender?.sendText?.(channelId, nudge);
+        const audit = asRecord(result?.audit);
+        const cooldownKey = stringValue(audit?.cooldownKey);
+        const signalId = stringValue(audit?.internalSignalId);
+        if (deliveryMessageId && cooldownKey && signalId) {
+          await callJsonService({
+            baseUrl: config.baseUrl,
+            token: config.token,
+            timeoutMs: config.timeoutMs,
+            endpoint: "/v1/watcher/commit-delivery",
+            body: { cooldownKey, scopeId: scope.scopeId, signalId, deliveryMessageId },
+            logger: api.logger,
+          });
+        }
+      }
+    }, { name: "hent-ai-service-watcher" });
 
     api.on("reply_payload_sending", async (event: unknown, ctx: unknown) => handleReplyPayloadSending({
       event,

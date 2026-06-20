@@ -84,9 +84,11 @@ describe("Hent-ai service adapter configuration", () => {
 
   it("registers only the current final reply payload hook when supported", () => {
     const { api, events } = setup();
-    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect([...events.keys()]).toEqual(["message_received", "message_sent", "reply_payload_sending"]);
     expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
     expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
     expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
@@ -100,9 +102,11 @@ describe("Hent-ai service adapter configuration", () => {
 
     plugin.register(api as any);
 
-    expect([...events.keys()]).toEqual(["reply_payload_sending"]);
+    expect([...events.keys()]).toEqual(["message_received", "message_sent", "reply_payload_sending"]);
     expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
     expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
     expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
@@ -237,6 +241,98 @@ describe("Hent-ai service adapter configuration", () => {
     const pending = events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "y", to: "channel:1" } }, { messageId: "m" });
     await vi.advanceTimersByTimeAsync(20);
     await expect(pending).resolves.toBeUndefined();
+  });
+
+
+  it("delegates inbound message media and watcher recording to the service", async () => {
+    const sent: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string, options: RequestInit) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/pre-reply/media") return okJson({ media: { url: "https://cdn.test/focused.png", caption: "" } });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-media" }; } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
+    plugin.register(api as any);
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user", "https://hent.test/v1/pre-reply/media"]);
+    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/pre-reply/media", expect.objectContaining({ method: "POST" }));
+    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", mediaUrl: "https://cdn.test/focused.png" })]);
+  });
+
+  it("delegates sent-message watcher evaluation, emits service nudge, and commits delivery", async () => {
+    const sent: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "nudge", nudgeText: "fresh angle", audit: { cooldownKey: "scope:stale_expression_repeated", internalSignalId: "sig-1" } });
+      if (url === "https://hent.test/v1/watcher/commit-delivery") return okJson({ ok: true });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-text" }; } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
+    plugin.register(api as any);
+
+    await events.get("message_sent")?.({ to: "channel:123", content: "repeat repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
+
+    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", text: "fresh angle" })]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/evaluate", "https://hent.test/v1/watcher/commit-delivery"]);
+  });
+
+  it("does not evaluate watcher-generated nudges as normal agent turns", async () => {
+    const fetchMock = vi.fn(async () => okJson({ decision: "nudge", nudgeText: "fresh angle" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup();
+
+    await events.get("message_sent")?.({
+      to: "channel:123",
+      content: "fresh angle",
+      success: true,
+      messageId: "nudge-1",
+      metadata: { hentAiWatcherNudge: true },
+    }, {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fail-opens watcher hook service and outbound failures", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") throw new Error("record down");
+      if (url === "https://hent.test/v1/pre-reply/media") return { ok: false, status: 503, json: async () => ({}) };
+      if (url === "https://hent.test/v1/watcher/evaluate") throw new Error("evaluate down");
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async () => { throw new Error("send down"); }, sendText: async () => { throw new Error("send down"); } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
+    plugin.register(api as any);
+
+    await expect(events.get("message_received")?.({ content: "hello", to: "channel:123" }, {})).resolves.toBeUndefined();
+    await expect(events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1" }, {})).resolves.toBeUndefined();
   });
 
   it("contains no forbidden thick-plugin runtime imports or Discord REST paths", () => {

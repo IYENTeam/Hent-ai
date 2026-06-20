@@ -4,6 +4,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier, VerifierJudgment } from "./verifier.js";
+import { evaluateFixation, createNeutralConversationContext, evaluateHostPolicyGate, type RawConversationMessage } from "./watcher-core.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -18,6 +19,34 @@ export type HentAiServerOptions = {
   assetRoot?: string;
   verifier: FinalResponseVerifier;
 };
+
+type WatcherScope = { messages: RawConversationMessage[]; lastTouched: number };
+type WatcherState = { scopes: Map<string, WatcherScope>; seq: number; lastDelivered: Map<string, number>; deliveredSignals: Set<string> };
+const WATCHER_WINDOW_N = 8;
+const WATCHER_SCOPE_TTL_MS = 1_800_000;
+const WATCHER_DEFAULT_COOLDOWN_MS = 600_000;
+
+function pushWatcherMessage(state: WatcherState, scopeId: string, message: RawConversationMessage): RawConversationMessage[] {
+  const now = Date.now();
+  for (const [key, scope] of state.scopes) {
+    if (now - scope.lastTouched > WATCHER_SCOPE_TTL_MS) state.scopes.delete(key);
+  }
+  const scope = state.scopes.get(scopeId) ?? { messages: [], lastTouched: now };
+  scope.messages.push(message);
+  if (scope.messages.length > WATCHER_WINDOW_N) scope.messages = scope.messages.slice(-WATCHER_WINDOW_N);
+  scope.lastTouched = now;
+  state.scopes.set(scopeId, scope);
+  return scope.messages;
+}
+
+function watcherString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readWatcherRecord(body: unknown): Record<string, unknown> {
+  return body && typeof body === "object" ? body as Record<string, unknown> : {};
+}
+
 
 export function redactBearerToken(value: string): string {
   if (!value) return "<missing>";
@@ -318,6 +347,7 @@ function serveStatic(assetRoot: string | undefined, pathname: string, res: Serve
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const watcherState: WatcherState = { scopes: new Map(), seq: 0, lastDelivered: new Map(), deliveredSignals: new Set() };
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -340,6 +370,64 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         const body = await readJsonBody(req);
         const result = await finalVerdictForBody(options.db, options.verifier, body);
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/watcher/record-user") {
+        const body = readWatcherRecord(await readJsonBody(req));
+        const scopeId = watcherString(body.scopeId);
+        const text = watcherString(body.text);
+        if (!scopeId || !text) return badRequest(res, "scopeId and text are required");
+        watcherState.seq += 1;
+        pushWatcherMessage(watcherState, scopeId, {
+          id: watcherString(body.id) ?? `u-${watcherState.seq}`,
+          senderRole: "user",
+          ts: new Date().toISOString(),
+          text,
+        });
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/watcher/evaluate") {
+        const body = readWatcherRecord(await readJsonBody(req));
+        const scopeId = watcherString(body.scopeId);
+        const channelId = watcherString(body.channelId);
+        const text = watcherString(body.text);
+        const messageId = watcherString(body.messageId);
+        if (!scopeId || !channelId || !text || !messageId) return badRequest(res, "scopeId, channelId, text, and messageId are required");
+        const messages = pushWatcherMessage(watcherState, scopeId, {
+          id: messageId, senderRole: "agent", ts: new Date().toISOString(), text,
+          threadId: watcherString(body.sourceThreadId), sessionId: watcherString(body.sessionId),
+        });
+        const signal = evaluateFixation(messages, scopeId)[0];
+        if (!signal) { sendJson(res, 200, { decision: "no_reply", audit: null }); return; }
+        const context = createNeutralConversationContext(scopeId, messages, new Date().toISOString());
+        const cooldownMs = Number.isFinite(Number(body.cooldownMs)) && Number(body.cooldownMs) > 0 ? Number(body.cooldownMs) : WATCHER_DEFAULT_COOLDOWN_MS;
+        const cooldownKey = `${scopeId}:${signal.fixationPattern}`;
+        const nowMs = Date.now();
+        const cooldownHit = nowMs - (watcherState.lastDelivered.get(cooldownKey) ?? Number.NEGATIVE_INFINITY) < cooldownMs;
+        const duplicateHit = watcherState.deliveredSignals.has(`${scopeId}:${signal.signalId}`);
+        const privacyRisk = body.privacyRisk === true;
+        const crossThreadRisk = body.crossThreadRisk === true;
+        const deliveryMessageId = watcherString(body.deliveryMessageId);
+        const audit = evaluateHostPolicyGate({
+          runtime: "openclaw", signal, criticConfidence: signal.confidence,
+          sourceThreadId: watcherString(body.sourceThreadId), targetThreadId: watcherString(body.targetThreadId), sessionId: watcherString(body.sessionId),
+          shadowMode: false, cooldownHit, duplicateHit, privacyRisk, crossThreadRisk, deliveryMessageId, now: new Date().toISOString(),
+        });
+        const nudgeText = audit.allowed ? `방금 답변이 같은 프레임에 고정됐습니다. ${signal.suggestedPivot}` : undefined;
+        sendJson(res, 200, { decision: audit.allowed ? "nudge" : "no_reply", nudgeText, audit, context });
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/watcher/commit-delivery") {
+        const body = readWatcherRecord(await readJsonBody(req));
+        const cooldownKey = watcherString(body.cooldownKey);
+        const scopeId = watcherString(body.scopeId);
+        const signalId = watcherString(body.signalId);
+        const deliveryMessageId = watcherString(body.deliveryMessageId);
+        if (!cooldownKey || !scopeId || !signalId || !deliveryMessageId) return badRequest(res, "cooldownKey, scopeId, signalId, and deliveryMessageId are required");
+        watcherState.lastDelivered.set(cooldownKey, Date.now());
+        watcherState.deliveredSignals.add(`${scopeId}:${signalId}`);
+        sendJson(res, 200, { ok: true });
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {
@@ -403,7 +491,8 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
 }
 
 export function createHentAiServer(options: HentAiServerOptions): Server {
-  return createServer((req, res) => { void createHentAiHandler(options)(req, res); });
+  const handler = createHentAiHandler(options);
+  return createServer((req, res) => { void handler(req, res); });
 }
 
 export async function listen(server: Server, port = 0, hostname = "127.0.0.1"): Promise<{ url: string; close: () => Promise<void> }> {
