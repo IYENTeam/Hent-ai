@@ -1,2107 +1,597 @@
-// emotion-image plugin v3.1.0 - broad trigger support
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { generateImage, type GenerateOptions, type RephraseProvider } from "@hent-ai/generate";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { resizeImageBufferForDiscordAttachment, sendImageBufferMessage, sendTextMessage, type OpenClawMessageSender } from "./discord-utils.js";
-import { loadManifestSync, buildEmotionMapFromSet, getActiveSet } from "./assets/manifest.js";
-import { loadChannelOverridesSync } from "./assets/channel-overrides.js";
-import {
-  createChannelEnabledResolver,
-  createProfileDbChannelEnableStore,
-  normalizeDiscordChannelId,
-  type ChannelFilterConfig,
-} from "./channel-filter.js";
-import { runMigration } from "./migration.js";
-import { getProfileDatabase, resolveProfileImageDirForChannel } from "./profile-manager.js";
-import {
-  createOpenClawWatcherAdapter,
-  type WatcherConfig,
-} from "./watcher-adapter.js";
-import { createWatcherLlm, type ChatFn } from "./watcher-llm.js";
 
-export { normalizeDiscordChannelId } from "./channel-filter.js";
+export type HentAiServiceConfig = {
+  url?: string;
+  token?: string;
+  timeoutMs?: number;
+};
 
-const LLM_TIMEOUT_MS = 15_000;
+export type ServiceDiagnostics = Array<Record<string, unknown>>;
 
-interface OnboardingConfig {
-  enabled?: boolean;
-  model?: string;
-  size?: string;
-}
+export type OpenClawStage1Media = {
+  mediaUrl: string;
+  mediaUrls?: string[];
+  caption?: string;
+  sensitiveMedia?: boolean;
+  channelData?: Record<string, unknown>;
+  contentType?: string;
+};
 
-/**
- * Rate limiter for miracle mode image generation.
- * Tracks generation count per hour and resets every hour.
- */
-class RateLimiter {
-  private count = 0;
-  private windowStart = Date.now();
-  private readonly windowMs = 60 * 60 * 1000; // 1 hour
-  private readonly limit: number;
-
-  constructor(limit: number) {
-    this.limit = limit;
-  }
-
-  canGenerate(): boolean {
-    this.resetIfNeeded();
-    return this.count < this.limit;
-  }
-
-  recordGeneration(): void {
-    this.resetIfNeeded();
-    this.count++;
-  }
-
-  private resetIfNeeded(): void {
-    const now = Date.now();
-    if (now - this.windowStart >= this.windowMs) {
-      this.count = 0;
-      this.windowStart = now;
-    }
-  }
-
-  getRemainingCount(): number {
-    this.resetIfNeeded();
-    return Math.max(0, this.limit - this.count);
-  }
-}
-
-/**
- * Ensure a candidate path resolves to a location inside (or equal to) the
- * trusted root directory. Prevents path traversal via `imageDir` or
- * `emotionMap` values smuggling something like "../../etc/passwd".
- *
- * Returns the normalized absolute path on success, or null when the candidate
- * escapes the root. Both inputs may be relative or absolute; both are
- * normalized to absolute form using `resolve`.
- */
-export function assertPathInside(root: string, candidate: string): string | null {
-   const normalizedRoot = resolve(root);
-   const normalizedCandidate = resolve(normalizedRoot, candidate);
-   const rootWithSep = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep;
-   if (
-     normalizedCandidate === normalizedRoot ||
-     normalizedCandidate.startsWith(rootWithSep)
-   ) {
-     return normalizedCandidate;
-   }
-   return null;
- }
-
-export type ApiType = "openai-completions" | "anthropic-messages";
-
-export function detectApiType(apiFromConfig?: string): ApiType {
-   if (apiFromConfig === "anthropic-messages") return "anthropic-messages";
-   return "openai-completions";
- }
-
-/**
- * Expand a value of the form `${ENV_VAR}` to `process.env.ENV_VAR`.
- * Returns the original string if no placeholder is present, or undefined when
- * the referenced env var is missing.
- */
-export function expandEnvPlaceholder(value: string | undefined): string | undefined {
-    if (!value) return undefined;
-    const m = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/i);
-    if (!m) return value;
-    return process.env[m[1]];
-  }
-
-export function isOnboardingActive(imageDir: string, activeImageDir?: string): boolean {
-  const rootDir = resolve(imageDir);
-  const activeDir = activeImageDir ? resolve(activeImageDir) : rootDir;
-  const dirs = activeDir === rootDir ? [rootDir] : [activeDir, rootDir];
-  return dirs.some((dir) => existsSync(resolve(dir, ".onboarding-active")));
-}
-
+export type MediaHookResult = {
+  media: OpenClawStage1Media | null;
+  diagnostics: ServiceDiagnostics;
+};
 
 type RuntimeConfigProvider = {
   config?: {
     current?: () => unknown;
   };
 };
-
-export interface ImageDirContext {
-  metadata?: Record<string, unknown>;
+type HookContext = {
+  channelId?: unknown;
+  conversationId?: unknown;
+  accountId?: unknown;
+  messageId?: unknown;
+  replyToBody?: unknown;
+  sessionKey?: unknown;
+  runId?: unknown;
+};
+type ReplyPayloadSendingEvent = {
+  payload?: Record<string, unknown>;
+  kind?: "tool" | "block" | "final" | string;
+  channel?: string;
   sessionKey?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? value as Record<string, unknown> : null;
-}
-
-function stringAtPath(root: unknown, path: string[]): string | undefined {
-  let cursor: unknown = root;
-  for (const segment of path) {
-    const record = asRecord(cursor);
-    if (!record) return undefined;
-    cursor = record[segment];
-  }
-  return typeof cursor === "string" && cursor.trim() ? cursor : undefined;
-}
-
-export function resolveProfileWorkspaceDir(config: unknown): string | undefined {
-  const paths = [
-    ["workspace"],
-    ["workspaceDir"],
-    ["agentDir"],
-    ["agent", "workspace"],
-    ["agent", "workspaceDir"],
-    ["agent", "agentDir"],
-    ["profile", "workspace"],
-    ["profile", "workspaceDir"],
-    ["profile", "agentDir"],
-    ["gateway", "workspace"],
-    ["gateway", "workspaceDir"],
-  ];
-
-  for (const path of paths) {
-    const value = stringAtPath(config, path);
-    if (value) return value;
-  }
-  return undefined;
-}
-
-function workspaceIdFromSessionKey(sessionKey: string | undefined): string | undefined {
-  if (!sessionKey) return undefined;
-  const [first] = sessionKey.split(/[:/]/);
-  return first && first !== sessionKey ? first : undefined;
-}
-
-function resolveProfileWorkspaceId(
-  config: unknown,
-  context?: ImageDirContext,
-): string | undefined {
-  const metadata = context?.metadata;
-  const metadataId =
-    stringAtPath(metadata, ["workspaceId"]) ??
-    stringAtPath(metadata, ["workspace"]) ??
-    stringAtPath(metadata, ["profileId"]) ??
-    stringAtPath(metadata, ["profile"]);
-  if (metadataId) return metadataId;
-
-  const sessionWorkspace = workspaceIdFromSessionKey(context?.sessionKey);
-  if (sessionWorkspace) return sessionWorkspace;
-
-  const configId =
-    stringAtPath(config, ["workspaceId"]) ??
-    stringAtPath(config, ["profileId"]) ??
-    stringAtPath(config, ["agent", "id"]) ??
-    stringAtPath(config, ["profile", "id"]);
-  if (configId) return configId;
-
-  return process.env.OPENCLAW_WORKSPACE ?? process.env.OPENCLAW_PROFILE;
-}
-
-function sanitizePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "unknown";
-}
-
-export function resolveImageDir(
-  configuredImageDir: string | undefined,
-  extensionDir: string,
-  runtime?: RuntimeConfigProvider,
-  context?: ImageDirContext,
-): string {
-  if (configuredImageDir) return resolve(configuredImageDir);
-
-  const config = runtime?.config?.current?.();
-  const workspaceDir = resolveProfileWorkspaceDir(config);
-  if (workspaceDir) return resolve(workspaceDir, ".hent-ai", "emotion-image-assets");
-
-  const workspaceId = resolveProfileWorkspaceId(config, context);
-  if (workspaceId) {
-    return resolve(extensionDir, "..", "assets", "profiles", sanitizePathSegment(workspaceId));
-  }
-
-  return resolve(extensionDir, "..", "assets");
-}
-
-/**
- * Extract a valid emotion from LLM response text with robust parsing.
- * Handles exact matches, surrounding quotes, extra text/whitespace, and multi-line responses.
- */
-function extractEmotion(
-  content: string | undefined | null,
-  validEmotions: string[],
-): string | null {
-  if (!content) return null;
-
-  const trimmed = content.trim().toLowerCase();
-  if (!trimmed) return null;
-
-  if (validEmotions.includes(trimmed)) return trimmed;
-
-  for (const line of trimmed.split("\n")) {
-    const clean = line.trim();
-    if (validEmotions.includes(clean)) return clean;
-  }
-
-  const unquoted = trimmed.replace(/^["'`\u2018\u2019\u201c\u201d]+|["'`\u2018\u2019\u201c\u201d]+$/g, "").trim();
-  if (validEmotions.includes(unquoted)) return unquoted;
-
-  for (const line of unquoted.split("\n")) {
-    const clean = line.trim();
-    if (validEmotions.includes(clean)) return clean;
-  }
-
-  let earliestMatch: { emotion: string; index: number } | null = null;
-  for (const emotion of validEmotions) {
-    const re = new RegExp(`\\b${emotion}\\b`, "i");
-    const match = re.exec(content);
-    if (match && (earliestMatch === null || match.index < earliestMatch.index)) {
-      earliestMatch = { emotion, index: match.index };
-    }
-  }
-  if (earliestMatch) return earliestMatch.emotion;
-
-  return null;
-}
-
-async function classifyEmotionViaOpenAI(
-  baseUrl: string,
-  apiKey: string,
-  modelId: string,
-  text: string,
-  validEmotions: string[],
-  signal: AbortSignal,
-  logger: { warn: (...args: any[]) => void },
-): Promise<string | null> {
-  const emotionList = validEmotions.map((e) => `"${e}"`).join(", ");
-  const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "User-Agent": "OpenClaw-EmotionImage/1.0",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [
-        {
-          role: "user",
-          content: `Classify the emotion of this message into exactly one of: ${emotionList}. Reply with ONLY the emotion word, nothing else.\n\nMessage: ${text}`,
-        },
-      ],
-      max_tokens: 10,
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: OpenAI API returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
-    return null;
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = data?.choices?.[0]?.message?.content;
-  const emotion = extractEmotion(content, validEmotions);
-  if (!emotion) {
-    logger.warn(`emotion-image: OpenAI response parse failed, raw="${content ?? "(no content)"}", valid=[${validEmotions}]`);
-  }
-  return emotion;
-}
-
-async function classifyEmotionViaAnthropic(
-  baseUrl: string,
-  apiKey: string,
-  modelId: string,
-  text: string,
-  validEmotions: string[],
-  signal: AbortSignal,
-  logger: { warn: (...args: any[]) => void },
-): Promise<string | null> {
-  const emotionList = validEmotions.map((e) => `"${e}"`).join(", ");
-  const url = `${baseUrl.replace(/\/+$/, "")}/messages`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "User-Agent": "OpenClaw-EmotionImage/1.0",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      max_tokens: 10,
-      messages: [
-        {
-          role: "user",
-          content: `Classify the emotion of this message into exactly one of: ${emotionList}. Reply with ONLY the emotion word, nothing else.\n\nMessage: ${text}`,
-        },
-      ],
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: Anthropic API returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
-    return null;
-  }
-
-  const data = (await response.json()) as {
-    content?: Array<{ text?: string }>;
-  };
-  const content = data?.content?.[0]?.text;
-  const emotion = extractEmotion(content, validEmotions);
-  if (!emotion) {
-    logger.warn(`emotion-image: Anthropic response parse failed, raw="${content ?? "(no content)"}", valid=[${validEmotions}]`);
-  }
-  return emotion;
-}
-
-async function classifyBooleanIntentViaOpenAI(
-  baseUrl: string,
-  apiKey: string,
-  modelId: string,
-  prompt: string,
-  signal: AbortSignal,
-  logger: { warn: (...args: any[]) => void },
-  intentName = "cheer",
-): Promise<boolean | null> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "User-Agent": "OpenClaw-EmotionImage/1.0",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 10,
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: OpenAI ${intentName} intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
-    return null;
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = data?.choices?.[0]?.message?.content;
-  const intent = extractBooleanIntent(content);
-  if (intent === null) {
-    logger.warn(`emotion-image: OpenAI ${intentName} intent parse failed, raw="${content ?? "(no content)"}"`);
-  }
-  return intent;
-}
-
-async function classifyCheerIntentViaOpenAI(
-  baseUrl: string, apiKey: string, modelId: string, text: string,
-  signal: AbortSignal, logger: { warn: (...args: any[]) => void },
-): Promise<boolean | null> {
-  return classifyBooleanIntentViaOpenAI(baseUrl, apiKey, modelId, buildCheerIntentPrompt(text), signal, logger, "cheer");
-}
-
-async function classifyBooleanIntentViaAnthropic(
-  baseUrl: string,
-  apiKey: string,
-  modelId: string,
-  prompt: string,
-  signal: AbortSignal,
-  logger: { warn: (...args: any[]) => void },
-  intentName = "cheer",
-): Promise<boolean | null> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/messages`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "User-Agent": "OpenClaw-EmotionImage/1.0",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      max_tokens: 10,
-      messages: [{ role: "user", content: prompt }],
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "(no body)");
-    logger.warn(`emotion-image: Anthropic ${intentName} intent returned ${response.status} from ${url}: ${body.slice(0, 500)}`);
-    return null;
-  }
-
-  const data = (await response.json()) as {
-    content?: Array<{ text?: string }>;
-  };
-  const content = data?.content?.[0]?.text;
-  const intent = extractBooleanIntent(content);
-  if (intent === null) {
-    logger.warn(`emotion-image: Anthropic ${intentName} intent parse failed, raw="${content ?? "(no content)"}"`);
-  }
-  return intent;
-}
-
-async function classifyCheerIntentViaAnthropic(
-  baseUrl: string, apiKey: string, modelId: string, text: string,
-  signal: AbortSignal, logger: { warn: (...args: any[]) => void },
-): Promise<boolean | null> {
-  return classifyBooleanIntentViaAnthropic(baseUrl, apiKey, modelId, buildCheerIntentPrompt(text), signal, logger, "cheer");
-}
-
-export async function detectCheerIntentWithLLM(
-  classifierModel: string,
-  text: string,
-  runtime: {
-    config: {
-      current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } };
-    };
-    modelAuth: {
-      resolveApiKeyForProvider: (params: {
-        provider: string;
-        cfg?: unknown;
-      }) => Promise<{ apiKey?: string }>;
-    };
-  },
-  logger: { warn: (...args: any[]) => void },
-): Promise<boolean> {
-  const slashIdx = classifierModel.indexOf("/");
-  if (slashIdx === -1) {
-    logger.warn(`emotion-image: cheer intent model "${classifierModel}" missing "/" separator`);
-    return false;
-  }
-  const providerName = classifierModel.slice(0, slashIdx);
-  const modelId = classifierModel.slice(slashIdx + 1);
-  if (!providerName || !modelId) {
-    logger.warn(`emotion-image: cheer intent model "${classifierModel}" could not be parsed`);
-    return false;
-  }
-
-  const cfg = runtime.config.current();
-  const providerCfg = cfg.models?.providers?.[providerName];
-  if (!providerCfg?.baseUrl) {
-    logger.warn(`emotion-image: cheer intent provider "${providerName}" not found or missing baseUrl in config`);
-    return false;
-  }
-
-  let apiKey: string | undefined;
-  try {
-    const auth = await runtime.modelAuth.resolveApiKeyForProvider({
-      provider: providerName,
-      cfg: cfg as unknown as Record<string, unknown> | undefined,
-    });
-    apiKey = auth.apiKey;
-  } catch (err) {
-    logger.warn(`emotion-image: failed to resolve cheer intent apiKey for "${providerName}": ${err}`);
-    return false;
-  }
-
-  if (!apiKey) {
-    logger.warn(`emotion-image: no cheer intent apiKey resolved for provider "${providerName}"`);
-    return false;
-  }
-
-  const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
-  const apiType: ApiType = detectApiType(providerCfg.api);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-  try {
-    const result = apiType === "anthropic-messages"
-      ? await classifyCheerIntentViaAnthropic(baseUrl, apiKey, modelId, text, controller.signal, logger)
-      : await classifyCheerIntentViaOpenAI(baseUrl, apiKey, modelId, text, controller.signal, logger);
-    return result ?? false;
-  } catch (err) {
-    logger.warn(`emotion-image: cheer intent LLM call error: ${err}`);
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Emotion Image Plugin v3
- *
- * Works at the Discord gateway level:
- * 1. Hooks into message_sent to detect outbound bot messages
- * 2. Classifies emotion via LLM or keyword pattern matching
- * 3. Edits the original message via Discord REST API to attach an image
- *
- * No OpenClaw core patches required.
- */
-
-type EmotionImageInput =
-  | string
-  | {
-    file?: string;
-    filename?: string;
-    label?: string;
-    weight?: number;
-  };
-
-type EmotionImageConfig = EmotionImageInput | EmotionImageInput[];
-
-interface EmotionImageVariant {
-  filename: string;
-  label?: string;
-  weight: number;
-  buffer?: Buffer;
-}
-
-const DEFAULT_EMOTION_MAP: Record<string, EmotionImageConfig> = {
-  happy: "happy.png",
-  neutral: "neutral.png",
-  sorry: "sorry.png",
-  confused: "confused.png",
-  focused: "focused.png",
+  runId?: string;
 };
 
-const LABEL_TOKEN_RE = /[\p{L}\p{N}]+/gu;
-const FILENAME_LABEL_SEPARATORS_RE = /[-_\s]+/g;
-const IMAGE_EXTENSION_RE = /\.(png|jpe?g|webp|gif)$/i;
-const AUTO_LABEL_STOPWORDS = new Set([
-  ...Object.keys(DEFAULT_EMOTION_MAP),
-  "image",
-  "img",
-  "emotion",
-  "variant",
-]);
+type PluginApi = {
+  pluginConfig?: unknown;
+  config?: unknown;
+  runtime?: RuntimeConfigProvider & { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{ sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>; sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown> } | undefined> } } };
+  logger?: Logger;
+  on: (name: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown, options?: { name?: string }) => void;
+  supportsHook?: (name: string) => boolean;
+};
 
-const EMOTION_RULES: Array<{ emotion: string; patterns: RegExp[] }> = [
-  {
-    emotion: "sorry",
-    patterns: [
-      /sorry|apolog|my bad|mistake|messed up|regret|oops/i,
-    ],
-  },
-  {
-    emotion: "happy",
-    patterns: [
-      /done|complete|succeed|fixed|shipped|great|awesome|excellent|perfect|nailed|pass|resolved|✅|🎉|🔥/i,
-      /proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay/i,
-    ],
-  },
-  {
-    emotion: "confused",
-    patterns: [
-      /confused|unclear|not sure|strange|unknown cause|weird|unexpected/i,
-      /question|how do we|what should|any idea/i,
-    ],
-  },
-  {
-    emotion: "focused",
-    patterns: [
-      /investigating|debugging|analyzing|implementing|working on|coding|building/i,
-      /in progress|checking|processing|deploying|testing|verifying/i,
-    ],
-  },
+type Logger = {
+  info?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+};
 
-];
+type FetchLike = typeof fetch;
 
-const DEFAULT_EMOTION = "neutral";
 
-export interface CheerConfig {
-  enabled?: boolean;
-  character?: string;
-  intentModel?: string;
-  model?: string;
-  size?: string;
-}
-
-export function buildCheerPrompt(character?: string): string {
-  const subject = character?.trim()
-    ? `Character: ${character.trim()}.`
-    : "Character: use the same character as the reference image if provided; otherwise create a charming original Hent-ai mascot.";
-
-  return [
-    "Create a polished single-scene 2D anime illustration for cheering up the user.",
-    subject,
-    "Scene: the character warmly cheers for the viewer with an energetic pose, bright smile, direct eye contact, supportive body language, and celebratory props such as glow sticks, pom-poms, ribbons, or a small encouragement banner reading \"화이팅!\".",
-    "Outfit: tasteful adult fanservice fashion with more visible skin, such as an off-shoulder top, crop top, short skirt, high slit dress, festival outfit, or swimsuit-inspired stage costume; stylish, confident, and non-explicit.",
-    "Mood: uplifting, affectionate, playful fanservice energy, confidence boost, personal support from the character to the user, glamorous but wholesome.",
-    "Style: modern Japanese visual novel CG art, bishoujo dating sim game illustration, high-quality 2D anime game CG, hand-drawn anime illustration, clean thin lineart, refined cel shading, soft ambient lighting, expressive glossy anime eyes, delicate facial features, cinematic composition.",
-    "Safety requirements: adult character, tasteful and non-explicit, no nudity, no nipples, no genitals, no lingerie, no sexual act, no fetish focus, no minors, no explicit pose, no exposed underwear, no erotic text.",
-    "Format requirements: single coherent illustration, square format, no panels, no character sheet, no turnaround views, no text other than the short Korean cheer banner if included.",
-  ].join(" ");
-}
-
-export function normalizeEmotionImageConfig(config: EmotionImageConfig): EmotionImageVariant[] {
-  const entries = Array.isArray(config) ? config : [config];
-  return entries.flatMap((entry) => {
-    if (typeof entry === "string") return [{ filename: entry, weight: 1 }];
-
-    const filename = entry.file ?? entry.filename;
-    if (!filename) return [];
-    const label = entry.label ?? inferAutomaticImageLabel(filename);
-    return [{
-      filename,
-      ...(label ? { label } : {}),
-      weight: entry.weight && entry.weight > 0 ? entry.weight : 1,
-    }];
-  });
-}
-
-export function inferAutomaticImageLabel(filename: string): string | undefined {
-  const basename = filename.split(/[\\/]/).pop() ?? filename;
-  const stem = basename.replace(IMAGE_EXTENSION_RE, "");
-  const tokens = stem
-    .split(FILENAME_LABEL_SEPARATORS_RE)
-    .map((token) => token.trim().toLowerCase())
-    .filter((token) => token && !AUTO_LABEL_STOPWORDS.has(token));
-
-  return tokens.length > 0 ? tokens.join(" ") : undefined;
-}
-
-export function imageLabelMatchesContext(label: string | undefined, contextText: string): boolean {
-  if (!label || !contextText.trim()) return false;
-
-  const labelText = label.trim().toLowerCase();
-  const context = contextText.toLowerCase();
-  if (!labelText) return false;
-  if (context.includes(labelText)) return true;
-
-  const labelTokens = labelText.match(LABEL_TOKEN_RE) ?? [];
-  const contextTokens = new Set(context.match(LABEL_TOKEN_RE) ?? []);
-  return labelTokens.some((token) => contextTokens.has(token));
-}
-
-/**
- * Get cached image or generate a new one via miracle mode.
- * Returns the image buffer when successful, or null when rate-limited or generation fails.
- */
-export async function getCachedOrGenerateImage(
-  emotion: string,
-  variants: EmotionImageVariant[],
-  miracleMode: boolean,
-  rateLimiter: RateLimiter,
-  generateOptions: Omit<GenerateOptions, "prompt">,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
-  random = Math.random,
-  contextText = "",
-): Promise<Buffer | null> {
-  // Try cached variants first
-  const variant = selectEmotionImageVariant(variants, random, contextText, false);
-  if (variant?.buffer) {
-    return variant.buffer;
-  }
-
-  // If no cached variant and miracle mode is enabled, try to generate
-  if (!miracleMode) {
-    return null;
-  }
-
-  if (!rateLimiter.canGenerate()) {
-    logger.warn(
-      `emotion-image: miracle mode rate limit reached. ` +
-      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
-    );
-    return null;
-  }
-
-  try {
-    logger.info(`emotion-image: miracle mode generating image for emotion="${emotion}"`);
-    const prompt = `A cute anime-style character expressing ${emotion} emotion. ` +
-                   `Simple, clean illustration with soft colors and expressive face.`;
-    const buffer = await generateImage({
-      ...generateOptions,
-      prompt,
-    });
-    rateLimiter.recordGeneration();
-    logger.info(
-      `emotion-image: miracle mode generated image (${buffer.length} bytes). ` +
-      `Remaining: ${rateLimiter.getRemainingCount()}/${rateLimiter['limit']}`
-    );
-    return buffer;
-  } catch (err) {
-    logger.warn(`emotion-image: miracle mode generation failed: ${err}`);
-    return null;
-  }
-}
-
-export function selectEmotionImageVariant(
-  variants: EmotionImageVariant[],
-  random = Math.random,
-  contextText = "",
-  miracleMode = false,
-): EmotionImageVariant | null {
-  const pool = contextText
-    ? variants.filter((variant) => imageLabelMatchesContext(variant.label, contextText))
-    : [];
-  const candidates = pool.length > 0 ? pool : variants;
-
-  // If no candidates and miracle mode is enabled, return null so caller can generate
-  if (candidates.length === 0) {
-    return miracleMode ? null : null; // Both return null, but keeping param for clarity
-  }
-
-  const totalWeight = candidates.reduce((sum, variant) => sum + variant.weight, 0);
-  let cursor = random() * totalWeight;
-  for (const variant of candidates) {
-    cursor -= variant.weight;
-    if (cursor <= 0) return variant;
-  }
-  return candidates[candidates.length - 1] ?? null;
-}
-
-function pngBufferToDataUrl(buffer: Buffer): string {
-  return `data:image/png;base64,${buffer.toString("base64")}`;
-}
-
-function extractBooleanIntent(content: string | undefined | null): boolean | null {
-  if (!content) return null;
-
-  const normalized = content.trim().toLowerCase();
-  if (!normalized) return null;
-
-  if (["yes", "true", "y"].includes(normalized)) return true;
-  if (["no", "false", "n"].includes(normalized)) return false;
-
-  const unquoted = normalized.replace(/^(["'`\u2018\u2019\u201c\u201d]+)|(["'`\u2018\u2019\u201c\u201d]+)$/g, "").trim();
-  if (["yes", "true", "y"].includes(unquoted)) return true;
-  if (["no", "false", "n"].includes(unquoted)) return false;
-
-  const match = /\b(yes|true|no|false)\b/i.exec(unquoted);
-  if (!match) return null;
-  return match[1].toLowerCase() === "yes" || match[1].toLowerCase() === "true";
-}
-
-function buildCheerIntentPrompt(text: string): string {
-  return [
-    "Decide whether the user's message is EXPLICITLY asking the character/bot to encourage, cheer up, comfort, support, motivate, or give emotional energy to the user.",
-    "Return ONLY yes or no.",
-    "Answer yes for DIRECT requests like: 응원해줘, 화이팅 해줘, 힘내라고 해줘, cheer me up, give me energy, I need encouragement.",
-    "Answer yes for indirect requests like being tired and wanting energy, wanting emotional support, or asking the character to root for them.",
-    "Answer no for: task requests, bug reports, debugging requests, complaints about something not working, status questions, status updates, normal greetings, thanks, or any message asking the bot to investigate/fix/check something.",
-    "Answer no for frustration about technical issues (e.g. '왜 대답을 안해', '안되는데', '문제 확인해줘') — these are task requests, NOT emotional support requests.",
-    `Message: ${text}`,
-  ].join("\n");
-}
-
-/**
- * Attempt LLM-based emotion classification via the configured provider/model.
- *
- * Returns the detected emotion word when the LLM call succeeds, or null when
- * it fails or times out so the caller can fall back to rule-based detection.
- */
-async function detectEmotionWithLLM(
-  classifierModel: string,
-  text: string,
-  validEmotions: string[],
-  runtime: {
-    config: {
-      current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } };
-    };
-    modelAuth: {
-      resolveApiKeyForProvider: (params: {
-        provider: string;
-        cfg?: unknown;
-      }) => Promise<{ apiKey?: string }>;
-    };
-  },
-  logger: { warn: (...args: any[]) => void },
-): Promise<string | null> {
-  const slashIdx = classifierModel.indexOf("/");
-  if (slashIdx === -1) {
-    logger.warn(`emotion-image: classifierModel "${classifierModel}" missing "/" separator`);
-    return null;
-  }
-  const providerName = classifierModel.slice(0, slashIdx);
-  const modelId = classifierModel.slice(slashIdx + 1);
-  if (!providerName || !modelId) {
-    logger.warn(`emotion-image: classifierModel "${classifierModel}" could not be parsed`);
-    return null;
-  }
-
-  const cfg = runtime.config.current();
-  const providerCfg = cfg?.models?.providers?.[providerName];
-  if (!providerCfg?.baseUrl) {
-    logger.warn(`emotion-image: provider "${providerName}" not found or missing baseUrl in config`);
-    return null;
-  }
-
-  let apiKey: string | undefined;
-  try {
-    const auth = await runtime.modelAuth.resolveApiKeyForProvider({
-      provider: providerName,
-      cfg: cfg as unknown as Record<string, unknown> | undefined,
-    });
-    apiKey = auth.apiKey;
-  } catch (err) {
-    logger.warn(`emotion-image: failed to resolve apiKey for "${providerName}": ${err}`);
-    return null;
-  }
-
-  if (!apiKey) {
-    logger.warn(`emotion-image: no apiKey resolved for provider "${providerName}"`);
-    return null;
-  }
-  const resolvedApiKey = apiKey;
-
-  const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
-  const apiType: ApiType = detectApiType(providerCfg.api);
-
-  async function attemptOnce(): Promise<string | null> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-    try {
-      if (apiType === "anthropic-messages") {
-        return await classifyEmotionViaAnthropic(baseUrl, resolvedApiKey, modelId, text, validEmotions, controller.signal, logger);
-      }
-      return await classifyEmotionViaOpenAI(baseUrl, resolvedApiKey, modelId, text, validEmotions, controller.signal, logger);
-    } catch (err) {
-      logger.warn(`emotion-image: LLM call error: ${err}`);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  logger.warn(`emotion-image: calling ${apiType} at ${baseUrl}, model=${modelId}, apiKey len=${resolvedApiKey.length}`);
-
-  let emotion = await attemptOnce();
-  if (emotion === null) {
-    logger.warn(`emotion-image: LLM returned null, retrying once...`);
-    emotion = await attemptOnce();
-  }
-
-  logger.warn(`emotion-image: LLM result=${JSON.stringify(emotion)}`);
-  if (emotion) {
-    logger.warn(`emotion-image: LLM classified emotion="${emotion}" for classifierModel="${classifierModel}"`);
-  }
-  return emotion;
-}
-
-/**
- * Build a generic chat function for the anti-fixation watcher's LLM layer.
- * Resolves the provider/auth like detectEmotionWithLLM, then makes one chat
- * completion call. Fail-closes to null on any error (the watcher then emits no
- * nudge). Exported for tests; the real provider call is mocked via global fetch.
- */
-export function createWatcherChat(
-  classifierModel: string,
-  runtime: {
-    config: { current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } } };
-    modelAuth: { resolveApiKeyForProvider: (params: { provider: string; cfg?: unknown }) => Promise<{ apiKey?: string }> };
-  },
-  logger: { warn: (...args: any[]) => void },
-): ChatFn {
-  return async (prompt: string, system?: string): Promise<string | null> => {
-    const slashIdx = classifierModel.indexOf("/");
-    if (slashIdx === -1) return null;
-    const providerName = classifierModel.slice(0, slashIdx);
-    const modelId = classifierModel.slice(slashIdx + 1);
-    if (!providerName || !modelId) return null;
-    const cfg = runtime.config.current();
-    const providerCfg = cfg?.models?.providers?.[providerName];
-    if (!providerCfg?.baseUrl) return null;
-    let apiKey: string | undefined;
-    try {
-      apiKey = (await runtime.modelAuth.resolveApiKeyForProvider({ provider: providerName, cfg })).apiKey;
-    } catch (err) {
-      logger.warn(`emotion-image: watcher chat apiKey resolve failed: ${sanitizeLogMessage(err)}`);
-      return null;
-    }
-    if (!apiKey) return null;
-    const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
-    const apiType: ApiType = detectApiType(providerCfg.api);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-    try {
-      if (apiType === "anthropic-messages") {
-        const res = await fetch(`${baseUrl}/messages`, {
-          method: "POST",
-          signal: controller.signal,
-          headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-          body: JSON.stringify({
-            model: modelId,
-            max_tokens: 200,
-            ...(system ? { system } : {}),
-            messages: [{ role: "user", content: prompt }],
-          }),
-        });
-        if (!res.ok) return null;
-        const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
-        const block = (data.content ?? []).find((b) => b.type === "text" && b.text);
-        return block?.text ?? null;
-      }
-      const messages = [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }];
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: modelId, max_tokens: 200, messages }),
-      });
-      if (!res.ok) return null;
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      return data.choices?.[0]?.message?.content ?? null;
-    } catch (err) {
-      logger.warn(`emotion-image: watcher chat call failed: ${sanitizeLogMessage(err)}`);
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-}
-
-export const MEDIA_LINE_RE = /\nMEDIA:\S+/g;
-
-export function detectEmotion(
-  text: string,
-  rules: Array<{ emotion: string; patterns: RegExp[] }> = EMOTION_RULES,
-  fallback: string = DEFAULT_EMOTION,
-): string {
-  for (const rule of rules) {
-    for (const pattern of rule.patterns) {
-      if (pattern.test(text)) return rule.emotion;
-    }
-  }
-  return fallback;
-}
-
-const DATA_URL_LOG_RE = /data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,[a-z0-9+/=\r\n]+/gi;
-
-export function sanitizeLogMessage(value: unknown): string {
-  return String(value).replace(DATA_URL_LOG_RE, (_match, mime: string) => `data:${mime};base64,<redacted>`);
-}
+export type OpenClawMessageSender = {
+  sendText?: (channelId: string, text: string) => Promise<string | null>;
+  sendMedia?: (channelId: string, mediaUrl: string, text?: string) => Promise<string | null>;
+};
 
 function extractOutboundMessageId(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
-  const record = result as Record<string, unknown>;
-  if (typeof record.messageId === "string") return record.messageId;
-  const nested = record.result;
-  if (nested && typeof nested === "object") {
-    const nestedRecord = nested as Record<string, unknown>;
-    if (typeof nestedRecord.messageId === "string") return nestedRecord.messageId;
-  }
-  return null;
+  const record = asRecord(result);
+  if (typeof record?.messageId === "string") return record.messageId;
+  const nested = asRecord(record?.result);
+  return typeof nested?.messageId === "string" ? nested.messageId : null;
 }
 
 export function createOpenClawMessageSender(api: {
   config?: unknown;
-  runtime?: {
-    channel?: {
-      outbound?: {
-        loadAdapter?: (id: string) => Promise<{
-          sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>;
-          sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown>;
-        } | undefined>;
-      };
-    };
-  };
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
+  runtime?: { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{
+    sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>;
+    sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown>;
+  } | undefined> } } };
+  logger?: Logger;
 }): OpenClawMessageSender | undefined {
   const loadAdapter = api.runtime?.channel?.outbound?.loadAdapter;
   if (!loadAdapter) return undefined;
-
   return {
     async sendText(channelId, text) {
       try {
         const adapter = await loadAdapter("discord");
         if (!adapter?.sendText) return null;
         const result = await adapter.sendText({ cfg: api.config ?? {}, to: `channel:${channelId}`, text });
-        const messageId = extractOutboundMessageId(result);
-        api.logger.info(`emotion-image: sent text to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
-        return messageId;
-      } catch (err) {
-        api.logger.warn(`emotion-image: OpenClaw text send failed: ${sanitizeLogMessage(err)}`);
+        return extractOutboundMessageId(result);
+      } catch (error) {
+        loggerWarn(api.logger, `hent-ai adapter: outbound text send failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
     },
-    async sendImageBuffer(channelId, buffer, filename, text) {
+    async sendMedia(channelId, mediaUrl, text = "") {
       try {
         const adapter = await loadAdapter("discord");
         if (!adapter?.sendMedia) return null;
-        const mediaUrl = `data:image/png;base64,${buffer.toString("base64")}`;
         const result = await adapter.sendMedia({ cfg: api.config ?? {}, to: `channel:${channelId}`, text, mediaUrl });
-        const messageId = extractOutboundMessageId(result);
-        api.logger.info(`emotion-image: sent ${filename} to channel=${channelId} via OpenClaw outbound${messageId ? ` msg=${messageId}` : ""}`);
-        return messageId;
-      } catch (err) {
-        api.logger.warn(`emotion-image: OpenClaw image send failed for ${filename}: ${sanitizeLogMessage(err)}`);
+        return extractOutboundMessageId(result);
+      } catch (error) {
+        loggerWarn(api.logger, `hent-ai adapter: outbound media send failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
     },
   };
 }
 
-export async function editMessageWithImage(
-   token: string,
-   channelId: string,
-   messageId: string,
-   originalContent: string,
-   imagePath: string,
-   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
- ) {
-   try {
-     const imageBuffer = await readFile(imagePath);
-    const filename = imagePath.split("/").pop() ?? "emotion.png";
-    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
+const DEFAULT_TIMEOUT_MS = 15_000;
+const MEDIA_CACHE_DIR = join(homedir(), ".openclaw", "media", "hent-ai-service-adapter");
+const TOKEN_PLACEHOLDER_RE = /^\$\{([A-Z_][A-Z0-9_]*)\}$/i;
+const COMMUNITY_CRON_POLL_INTERVAL_MS = 1_000;
 
-    // Build multipart/form-data
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
-
-    // JSON payload part
-    const jsonPayload = JSON.stringify({
-      content: originalContent,
-      attachments: [{ id: 0, filename }],
-    });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
-
-    // File part
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(attachmentBuffer);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: Discord edit failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: attached ${filename} to message ${messageId}`);
-    }
-  } catch (err) {
-    logger.error(`emotion-image: edit error: ${err}`);
-  }
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
 }
 
-/**
- * Replace a Discord message's text content in place (anti-fixation Mode B).
- * Content-only PATCH: attachments are untouched, so a later emotion-image edit
- * (which GETs + preserves current content) layers on top without clobbering.
- * Returns the message id on success (so the watcher commits cooldown/dedup),
- * or null on failure (the steer stays retryable).
- */
-export async function editMessageText(
-  token: string,
-  channelId: string,
-  messageId: string,
-  content: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-): Promise<string | null> {
+function loggerInfo(logger: Logger | undefined, message: string): void {
+  logger?.info?.(message);
+}
+
+function loggerWarn(logger: Logger | undefined, message: string): void {
+  logger?.warn?.(message);
+}
+
+export function expandEnvPlaceholder(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const match = TOKEN_PLACEHOLDER_RE.exec(value);
+  if (!match) return value;
+  return process.env[match[1]];
+}
+
+export function normalizeDiscordChannelId(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.startsWith("channel:") ? trimmed.slice("channel:".length) : trimmed;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberOrDefault(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  return value;
+}
+
+function isLocalhostUrl(url: URL): boolean {
+  const host = url.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+}
+
+export function validateServiceConfig(config: HentAiServiceConfig | undefined):
+  | { ok: true; baseUrl: URL; token: string; timeoutMs: number }
+  | { ok: false; reason: string } {
+  const urlValue = typeof config?.url === "string" ? config.url.trim() : "";
+  if (!urlValue) return { ok: false, reason: "missing hentAiService.url" };
+
+  let baseUrl: URL;
   try {
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ content }),
-      },
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: watcher steer edit failed ${res.status}: ${text.slice(0, 200)}`);
-      return null;
-    }
-    logger.info(`emotion-image: watcher steered message ${messageId} in channel=${channelId}`);
-    return messageId;
-  } catch (err) {
-    logger.warn(`emotion-image: watcher steer edit error: ${sanitizeLogMessage(err)}`);
-    return null;
+    baseUrl = new URL(urlValue);
+  } catch {
+    return { ok: false, reason: "invalid hentAiService.url" };
   }
-}
 
-export async function sendImageMessage(
-   token: string,
-   channelId: string,
-   imagePath: string,
-   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-   openClawSender?: OpenClawMessageSender,
- ) {
-   try {
-     const imageBuffer = await readFile(imagePath);
-    const filename = imagePath.split("/").pop() ?? "emotion.png";
-    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
-    if (openClawSender?.sendImageBuffer) {
-      const messageId = await openClawSender.sendImageBuffer(channelId, attachmentBuffer, filename, "");
-      if (messageId) {
-        logger.info(`emotion-image: sent ${filename} to channel ${channelId} via OpenClaw outbound`);
-        return;
-      }
-      logger.warn("emotion-image: OpenClaw image send unavailable; falling back to Discord REST");
-    }
-
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
-
-    const jsonPayload = JSON.stringify({ content: "" });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(attachmentBuffer);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: send image failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: sent ${filename} to channel ${channelId}`);
-    }
-  } catch (err) {
-    logger.error(`emotion-image: send image error: ${err}`);
+  if (baseUrl.protocol !== "https:" && !(baseUrl.protocol === "http:" && isLocalhostUrl(baseUrl))) {
+    return { ok: false, reason: "hentAiService.url must be HTTPS unless it targets localhost" };
   }
-}
 
-export function createRephraseProvider(
-  classifierModel: string,
-  runtime: {
-    config: {
-      current: () => { models?: { providers?: Record<string, { baseUrl?: string; api?: string }> } };
-    };
-    modelAuth: {
-      resolveApiKeyForProvider: (params: {
-        provider: string;
-        cfg?: unknown;
-      }) => Promise<{ apiKey?: string }>;
-    };
-  },
-  logger: { warn: (...args: any[]) => void },
-): RephraseProvider | undefined {
-  const slashIdx = classifierModel.indexOf("/");
-  if (slashIdx === -1) return undefined;
-
-  const providerName = classifierModel.slice(0, slashIdx);
-  const modelId = classifierModel.slice(slashIdx + 1);
-  if (!providerName || !modelId) return undefined;
+  const token = expandEnvPlaceholder(config?.token)?.trim();
+  if (!token) return { ok: false, reason: "missing hentAiService.token" };
 
   return {
-    async rephrase(prompt: string, rejectionReason: string): Promise<string> {
-      const cfg = runtime.config.current();
-      const providerCfg = cfg.models?.providers?.[providerName];
-      if (!providerCfg?.baseUrl) {
-        logger.warn(`emotion-image: rephrase provider "${providerName}" not found`);
-        return prompt;
+    ok: true,
+    baseUrl,
+    token,
+    timeoutMs: numberOrDefault(config?.timeoutMs, DEFAULT_TIMEOUT_MS),
+  };
+}
+
+function configFromRuntime(runtime?: RuntimeConfigProvider): HentAiServiceConfig | undefined {
+  const current = runtime?.config?.current?.();
+  const record = asRecord(current);
+  const namespace = asRecord(record?.hentAiService);
+  return namespace ? namespace as HentAiServiceConfig : undefined;
+}
+
+export function resolveServiceConfig(api: { pluginConfig?: unknown; runtime?: RuntimeConfigProvider }): HentAiServiceConfig | undefined {
+  const pluginConfig = asRecord(api.pluginConfig);
+  const pluginNamespace = asRecord(pluginConfig?.hentAiService);
+  if (pluginNamespace) return pluginNamespace as HentAiServiceConfig;
+  return configFromRuntime(api.runtime);
+}
+
+function endpointUrl(baseUrl: URL, endpoint: string): string {
+  const url = new URL(baseUrl.toString());
+  url.pathname = `${url.pathname.replace(/\/$/, "")}${endpoint}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function diagnostic(reason: string, extra?: Record<string, unknown>): ServiceDiagnostics {
+  return [{ reason, skipped: true, sourcePluginId: "hent-ai", ...extra }];
+}
+
+function dataUrlFromBase64(dataBase64: string, contentType: string): string {
+  return `data:${contentType};base64,${dataBase64}`;
+}
+
+function extensionForContentType(contentType: string): string {
+  if (contentType === "image/jpeg") return "jpg";
+  if (contentType === "image/webp") return "webp";
+  if (contentType === "image/gif") return "gif";
+  return "png";
+}
+
+export function normalizeServiceMedia(value: unknown): OpenClawStage1Media | null {
+  const media = asRecord(value);
+  if (!media) return null;
+
+  const url = typeof media.url === "string" && media.url.trim()
+    ? media.url.trim()
+    : typeof media.mediaUrl === "string" && media.mediaUrl.trim()
+      ? media.mediaUrl.trim()
+      : undefined;
+  const contentType = typeof media.contentType === "string" && media.contentType.trim()
+    ? media.contentType.trim()
+    : "image/png";
+  const dataBase64 = typeof media.dataBase64 === "string" && media.dataBase64.trim()
+    ? media.dataBase64.trim()
+    : undefined;
+  const mediaUrl = url ?? (dataBase64 ? dataUrlFromBase64(dataBase64, contentType) : undefined);
+  if (!mediaUrl) return null;
+
+  const mediaUrls = Array.isArray(media.mediaUrls)
+    ? media.mediaUrls.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+    : undefined;
+
+  const result: OpenClawStage1Media = { mediaUrl };
+  if (mediaUrls?.length) result.mediaUrls = mediaUrls;
+  if (typeof media.caption === "string") result.caption = media.caption;
+  if (typeof media.sensitiveMedia === "boolean") result.sensitiveMedia = media.sensitiveMedia;
+  if (asRecord(media.channelData)) result.channelData = media.channelData as Record<string, unknown>;
+  if (contentType) result.contentType = contentType;
+  return result;
+}
+
+async function saveServiceMediaBuffer(buffer: Buffer, contentType: string): Promise<string> {
+  await mkdir(MEDIA_CACHE_DIR, { recursive: true });
+  const digest = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  const path = join(MEDIA_CACHE_DIR, `${digest}.${extensionForContentType(contentType)}`);
+  await writeFile(path, buffer);
+  return path;
+}
+
+async function hydrateLocalServiceMedia(media: OpenClawStage1Media, baseUrl: URL, fetchImpl: FetchLike): Promise<OpenClawStage1Media> {
+  const mediaUrl = new URL(media.mediaUrl, baseUrl);
+  if (mediaUrl.origin !== baseUrl.origin) return media;
+
+  const response = await fetchImpl(mediaUrl, { method: "GET" });
+  if (!response.ok) throw new Error(`media fetch returned HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") ?? media.contentType ?? "image/png";
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return { ...media, mediaUrl: await saveServiceMediaBuffer(buffer, contentType), contentType };
+}
+
+async function callHentAiService(params: {
+  baseUrl: URL;
+  token: string;
+  timeoutMs: number;
+  endpoint: string;
+  body: unknown;
+  responseMediaPath: "media" | "verdict.media";
+  logger?: Logger;
+  fetchImpl?: FetchLike;
+}): Promise<MediaHookResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
+  const fetchImpl = params.fetchImpl ?? globalThis.fetch;
+
+  try {
+    loggerInfo(params.logger, `hent-ai adapter: calling service endpoint=${params.endpoint}`);
+    const response = await fetchImpl(endpointUrl(params.baseUrl, params.endpoint), {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${params.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(params.body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const reason = `service returned HTTP ${response.status}`;
+      loggerWarn(params.logger, `hent-ai adapter: ${reason}; skipping media`);
+      return { media: null, diagnostics: diagnostic(reason, { status: response.status }) };
+    }
+
+    const payload = await response.json() as unknown;
+    if (payload === null) {
+      loggerWarn(params.logger, "hent-ai adapter: service returned null; skipping media");
+      return { media: null, diagnostics: diagnostic("service returned null") };
+    }
+
+    const root = asRecord(payload);
+    const mediaValue = params.responseMediaPath === "media"
+      ? root?.media
+      : asRecord(root?.verdict)?.media;
+    const media = normalizeServiceMedia(mediaValue);
+    if (!media) {
+      // The service answers `media: null` / `verdict: null` (with diagnostics)
+      // when it intentionally has nothing to attach — unmapped channel, null
+      // verdict, etc. Only an answer that lacks those keys is malformed.
+      const explicitSkip = params.responseMediaPath === "media"
+        ? root !== null && "media" in root && root.media === null
+        : root !== null && "verdict" in root && root.verdict === null;
+      const reasons = Array.isArray(root?.diagnostics)
+        ? root.diagnostics.map((entry) => asRecord(entry)?.reason).filter((reason): reason is string => typeof reason === "string")
+        : [];
+      const detail = reasons.length ? ` (${reasons.join(", ")})` : "";
+      if (explicitSkip) {
+        const isServiceError = reasons.some((reason) => reason.includes("error"));
+        const message = `hent-ai adapter: service returned no media; skipping${detail}`;
+        if (isServiceError) loggerWarn(params.logger, message);
+        else loggerInfo(params.logger, message);
+        return { media: null, diagnostics: diagnostic(reasons[0] ?? "service returned no media") };
       }
+      loggerWarn(params.logger, `hent-ai adapter: service media missing or malformed; skipping media${detail}`);
+      return { media: null, diagnostics: diagnostic("service media missing or malformed") };
+    }
+    const hydratedMedia = await hydrateLocalServiceMedia(media, params.baseUrl, fetchImpl);
 
-      let apiKey: string | undefined;
-      try {
-        const auth = await runtime.modelAuth.resolveApiKeyForProvider({
-          provider: providerName,
-          cfg: cfg as unknown as Record<string, unknown> | undefined,
-        });
-        apiKey = auth.apiKey;
-      } catch {
-        return prompt;
-      }
-      if (!apiKey) return prompt;
+    loggerInfo(params.logger, `hent-ai adapter: service returned media endpoint=${params.endpoint}`);
+    const diagnostics = Array.isArray(root?.diagnostics)
+      ? root.diagnostics.filter((entry): entry is Record<string, unknown> => Boolean(asRecord(entry)))
+      : [];
+    return { media: hydratedMedia, diagnostics };
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "AbortError"
+      ? "service request timed out"
+      : `service request failed: ${error instanceof Error ? error.message : String(error)}`;
+    loggerWarn(params.logger, `hent-ai adapter: ${reason}; skipping media`);
+    return { media: null, diagnostics: diagnostic(reason) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
-      const baseUrl = providerCfg.baseUrl.replace(/\/+$/, "");
-      const apiType = detectApiType(providerCfg.api);
+function contextRecord(ctx: unknown): HookContext {
+  return (asRecord(ctx) ?? {}) as HookContext;
+}
 
-      const systemPrompt = [
-        "You are a prompt rephrasing assistant.",
-        "The user's image generation prompt was rejected by a content safety filter.",
-        "Rewrite the prompt to preserve the original creative intent while avoiding policy violations.",
-        "Return ONLY the rephrased prompt text, nothing else.",
-        "Do NOT explain what you changed.",
-      ].join(" ");
-
-      const userMessage = [
-        `Original prompt:\n${prompt}`,
-        `\nRejection reason:\n${rejectionReason}`,
-        "\nRewrite the prompt to avoid the safety filter while keeping the same artistic intent.",
-      ].join("");
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-
-      try {
-        let rephrased: string | undefined;
-
-        if (apiType === "anthropic-messages") {
-          const url = `${baseUrl}/messages`;
-          const res = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": apiKey,
-              "anthropic-version": "2023-06-01",
-            },
-            body: JSON.stringify({
-              model: modelId,
-              max_tokens: 1024,
-              system: systemPrompt,
-              messages: [{ role: "user", content: userMessage }],
-            }),
-            signal: controller.signal,
-          });
-          if (res.ok) {
-            const data = (await res.json()) as { content?: Array<{ text?: string }> };
-            rephrased = data?.content?.[0]?.text?.trim();
-          }
-        } else {
-          const url = `${baseUrl}/chat/completions`;
-          const res = await fetch(url, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-              model: modelId,
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userMessage },
-              ],
-              max_tokens: 1024,
-              temperature: 0.7,
-            }),
-            signal: controller.signal,
-          });
-          if (res.ok) {
-            const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-            rephrased = data?.choices?.[0]?.message?.content?.trim();
-          }
-        }
-
-        return rephrased || prompt;
-      } catch {
-        return prompt;
-      } finally {
-        clearTimeout(timer);
-      }
+function messageSentBody(event: unknown, ctx?: unknown): Record<string, unknown> {
+  const record = asRecord(event) ?? {};
+  const payload = asRecord(record.payload);
+  const hookCtx = contextRecord(ctx);
+  const to = stringValue(record.to) ?? stringValue(payload?.to);
+  const channelId = normalizeDiscordChannelId(
+    stringValue(record.channelId)
+      ?? stringValue(hookCtx.conversationId)
+      ?? to
+      ?? stringValue(hookCtx.channelId),
+  );
+  return {
+    context: {
+      to,
+      channelId,
+      content: record.content ?? payload?.text,
+      messageId: record.messageId ?? hookCtx.messageId,
+      deliveredMessageId: record.deliveredMessageId,
+      metadata: record.metadata ?? payload?.channelData,
+      sessionKey: record.sessionKey ?? hookCtx.sessionKey,
+      runId: record.runId ?? hookCtx.runId,
     },
   };
 }
 
-export async function handleCheerRequest(
-  params: {
-    token: string;
-    channelId: string;
-    imageDir: string;
-    config: CheerConfig;
-    onboardingConfig?: OnboardingConfig;
-    rephraseProvider?: RephraseProvider;
-    logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void };
-    openClawSender?: OpenClawMessageSender;
-  },
-): Promise<void> {
-  const { token, channelId, imageDir, config, onboardingConfig, rephraseProvider, logger, openClawSender } = params;
-  const baseImagePath = assertPathInside(imageDir, "base.png");
-  await sendTextMessage(
-    token,
-    channelId,
-    "응원 이미지를 만들고 있어요. 잠깐만 기다려주세요!",
-    logger,
+function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawStage1Media): Record<string, unknown> {
+  return {
+    ...payload,
+    mediaUrl: media.mediaUrl,
+    ...(media.mediaUrls ? { mediaUrls: media.mediaUrls } : {}),
+    ...(media.sensitiveMedia !== undefined ? { sensitiveMedia: media.sensitiveMedia } : {}),
+    ...(media.channelData ? { channelData: { ...(asRecord(payload.channelData) ?? {}), ...media.channelData } } : {}),
+  };
+}
+
+
+function channelIdFromEvent(event: unknown, ctx?: unknown): string | undefined {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  return normalizeDiscordChannelId(
+    stringValue(record.channelId)
+      ?? stringValue(record.to)
+      ?? stringValue(metadata?.to)
+      ?? stringValue(context?.conversationId)
+      ?? stringValue(context?.parentConversationId)
+      ?? stringValue(context?.channelId),
   );
-
-  try {
-    const options: GenerateOptions = {
-      prompt: buildCheerPrompt(config.character),
-      model: config.model ?? onboardingConfig?.model,
-      size: config.size ?? onboardingConfig?.size ?? "1024x1024",
-      referenceImages:
-        baseImagePath && existsSync(baseImagePath)
-          ? [pngBufferToDataUrl(await readFile(baseImagePath))]
-          : undefined,
-      rephraseProvider,
-    };
-    const buffer = await generateImage(options);
-    await sendImageBufferMessage(
-      token,
-      channelId,
-      buffer,
-      "cheer.png",
-      "화이팅! 오늘도 충분히 잘하고 있어요.",
-      logger,
-      openClawSender,
-    );
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    await sendTextMessage(
-      token,
-      channelId,
-      `응원 이미지 생성에 실패했어요: ${errMsg}`,
-      logger,
-      openClawSender,
-    );
-    logger.error(`emotion-image: cheer generation failed: ${err}`);
-  }
 }
 
-export async function appendImageToMessage(
-  token: string,
-  channelId: string,
-  messageId: string,
-  imagePath: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
-  try {
-    // GET current message to preserve existing content and attachments
-    const getRes = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      { headers: { Authorization: `Bot ${token}` } },
-    );
-    if (!getRes.ok) {
-      const errText = await getRes.text();
-      logger.warn(`emotion-image: GET message failed ${getRes.status}: ${errText.slice(0, 200)}`);
-      return;
-    }
-    const msg = (await getRes.json()) as {
-      content?: string;
-      attachments?: Array<{ id: string; filename: string }>;
-    };
-
-     const existingContent = msg.content ?? "";
-     const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
-     const newFileIndex = 0;
-
-      const imageBuffer = await readFile(imagePath);
-     const filename = imagePath.split("/").pop() ?? "emotion.png";
-    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
-
-     const boundary = `----EmotionImage${Date.now()}`;
-     const parts: Buffer[] = [];
-
-     const jsonPayload = JSON.stringify({
-       content: existingContent,
-       attachments: [
-         ...existingAttachments,
-         { id: newFileIndex, filename },
-       ],
-     });
-     parts.push(Buffer.from(
-       `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-     ));
-
-     parts.push(Buffer.from(
-       `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-     ));
-    parts.push(attachmentBuffer);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: append image failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: appended ${filename} to message ${messageId}`);
-    }
-  } catch (err) {
-    logger.error(`emotion-image: append error: ${err}`);
-  }
+function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { scopeId: string; threadId?: string; sessionId?: string } {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  const threadId = stringValue(record.threadId) ?? stringValue(metadata?.threadId) ?? stringValue(metadata?.thread_id) ?? stringValue(context?.threadId);
+  const sessionId = stringValue(record.sessionKey) ?? stringValue(metadata?.sessionId) ?? stringValue(metadata?.session_id) ?? stringValue(context?.sessionKey);
+  const parts = [`channel:${channelId}`];
+  if (threadId) parts.push(`thread:${threadId}`);
+  if (sessionId) parts.push(`session:${sessionId}`);
+  return { scopeId: parts.join(":"), threadId, sessionId };
 }
 
-/**
- * Append an image buffer (e.g., from miracle mode generation) to an existing Discord message.
- */
-export async function appendImageBufferToMessage(
-  token: string,
-  channelId: string,
-  messageId: string,
-  imageBuffer: Buffer,
-  filename: string,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
-) {
+async function serviceMediaForPreReply(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<OpenClawStage1Media | null> {
+  const record = asRecord(params.event) ?? {};
+  const content = stringValue(record.content);
+  const channelId = channelIdFromEvent(params.event, params.ctx);
+  if (!content || !channelId) return null;
+  const result = await callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/pre-reply/media",
+    body: { context: { channelId, content, messageId: record.messageId }, userMessage: content },
+    responseMediaPath: "media",
+    logger: params.logger,
+  });
+  return result.media;
+}
+
+async function callJsonService(params: {
+  baseUrl: URL; token: string; timeoutMs: number; endpoint: string; body: unknown; logger?: Logger;
+}): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
   try {
-    // GET current message to preserve existing content and attachments
-    const getRes = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      { headers: { Authorization: `Bot ${token}` } },
-    );
-    if (!getRes.ok) {
-      const errText = await getRes.text();
-      logger.warn(`emotion-image: GET message failed ${getRes.status}: ${errText.slice(0, 200)}`);
-      return;
-    }
-    const msg = (await getRes.json()) as {
-      content?: string;
-      attachments?: Array<{ id: string; filename: string }>;
-    };
-
-    const existingContent = msg.content ?? "";
-    const existingAttachments = (msg.attachments ?? []).map((a) => ({ id: a.id }));
-    const newFileIndex = 0;
-    const attachmentBuffer = await resizeImageBufferForDiscordAttachment(imageBuffer, "image/png");
-
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
-
-    const jsonPayload = JSON.stringify({
-      content: existingContent,
-      attachments: [
-        ...existingAttachments,
-        { id: newFileIndex, filename },
-      ],
+    const response = await fetch(endpointUrl(params.baseUrl, params.endpoint), {
+      method: "POST",
+      headers: { authorization: `Bearer ${params.token}`, "content-type": "application/json" },
+      body: JSON.stringify(params.body),
+      signal: controller.signal,
     });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
-
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[${newFileIndex}]"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(attachmentBuffer);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: append image buffer failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: appended generated ${filename} to message ${messageId}`);
+    if (!response.ok) {
+      loggerWarn(params.logger, `hent-ai adapter: ${params.endpoint} returned HTTP ${response.status}`);
+      return null;
     }
-  } catch (err) {
-    logger.error(`emotion-image: append buffer error: ${err}`);
+    return asRecord(await response.json());
+  } catch (error) {
+    loggerWarn(params.logger, `hent-ai adapter: ${params.endpoint} failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-export async function editMessageWithTwoImages(
-   token: string,
-   channelId: string,
-   messageId: string,
-   originalContent: string,
-   imagePath1: string,
-   imagePath2: string,
-   logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
- ) {
-   try {
-     const [imageBuffer1, imageBuffer2] = await Promise.all([
-       readFile(imagePath1),
-       readFile(imagePath2),
-     ]);
-    const [attachmentBuffer1, attachmentBuffer2] = await Promise.all([
-      resizeImageBufferForDiscordAttachment(imageBuffer1, "image/png"),
-      resizeImageBufferForDiscordAttachment(imageBuffer2, "image/png"),
-    ]);
-    const filename1 = imagePath1.split("/").pop() ?? "emotion1.png";
-    const filename2 = imagePath2.split("/").pop() ?? "emotion2.png";
+async function handleReplyPayloadSending(params: {
+  event: unknown;
+  ctx: unknown;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  logger?: Logger;
+}): Promise<{ payload?: Record<string, unknown> } | void> {
+  const event = asRecord(params.event) ?? {};
+  const payload = asRecord(event.payload);
+  if (!payload) return undefined;
+  const kind = stringValue(event.kind);
+  const text = stringValue(payload.text);
+  if (!text || kind !== "final") return undefined;
 
-    const boundary = `----EmotionImage${Date.now()}`;
-    const parts: Buffer[] = [];
+  const serviceResult = await callHentAiService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/final-response/verdict",
+    body: messageSentBody({ payload, content: text, sessionKey: event.sessionKey, runId: event.runId }, params.ctx),
+    responseMediaPath: "verdict.media",
+    logger: params.logger,
+  });
 
-    // JSON payload with two attachments
-    const jsonPayload = JSON.stringify({
-      content: originalContent,
-      attachments: [
-        { id: 0, filename: filename1 },
-        { id: 1, filename: filename2 },
-      ],
-    });
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n${jsonPayload}\r\n`
-    ));
-
-    // File 1
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[0]"; filename="${filename1}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(attachmentBuffer1);
-    parts.push(Buffer.from("\r\n"));
-
-    // File 2
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="files[1]"; filename="${filename2}"\r\nContent-Type: image/png\r\n\r\n`
-    ));
-    parts.push(attachmentBuffer2);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-    const body = Buffer.concat(parts);
-
-    const res = await fetch(
-      `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`,
-      {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bot ${token}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      logger.warn(`emotion-image: Discord two-image edit failed ${res.status}: ${text.slice(0, 200)}`);
-    } else {
-      logger.info(`emotion-image: attached ${filename1}+${filename2} to message ${messageId}`);
-    }
-  } catch (err) {
-    logger.error(`emotion-image: two-image edit error: ${err}`);
-  }
+  return serviceResult.media ? { payload: applyMediaToPayload(payload, serviceResult.media) } : undefined;
 }
 
-export function buildEmotionRules(
-  customRules?: Record<string, string[]>,
-): Array<{ emotion: string; patterns: RegExp[] }> {
-  if (!customRules || Object.keys(customRules).length === 0) return EMOTION_RULES;
-
-  const merged: Record<string, RegExp[]> = {};
-
-  for (const rule of EMOTION_RULES) {
-    merged[rule.emotion] = [...rule.patterns];
-  }
-
-  for (const [emotion, keywords] of Object.entries(customRules)) {
-    const patterns = keywords.map((kw) => new RegExp(kw, "i"));
-    if (merged[emotion]) {
-      merged[emotion] = [...merged[emotion], ...patterns];
-    } else {
-      merged[emotion] = patterns;
-    }
-  }
-
-  return Object.entries(merged).map(([emotion, patterns]) => ({ emotion, patterns }));
+function supportsReplyPayloadSending(api: PluginApi): boolean {
+  // Current OpenClaw hosts support reply_payload_sending but do not always
+  // expose the optional supportsHook probe to plugins. Treat an absent probe as
+  // supported. There is intentionally no legacy hook fallback: unsupported hosts
+  // should skip registration instead of registering ignored/unknown hooks.
+  if (!api.supportsHook) return true;
+  return api.supportsHook("reply_payload_sending") === true;
 }
 
-export { detectEmotionWithLLM, extractBooleanIntent, extractEmotion };
 export default definePluginEntry({
-  id: "emotion-image",
-  name: "Emotion Image Attachment",
-  description: "Auto-detect emotion in agent responses and attach matching images to Discord messages.",
+  id: "hent-ai-service-adapter",
+  name: "Hent-ai Service Adapter",
+  description: "Delegates OpenClaw media lifecycle hooks to the Hent-ai service.",
 
-  register(api: any) {
-    const pluginConfig = (api.pluginConfig ?? {}) as {
-      enabled?: boolean;
-      imageDir?: string;
-      emotionMap?: Record<string, EmotionImageConfig>;
-      channels?: ChannelFilterConfig;
-      defaultEmotion?: string;
-      emotionRules?: Record<string, string[]>;
-      classifierModel?: string;
-      discordToken?: string;
-      onboarding?: OnboardingConfig;
-      cheer?: CheerConfig;
-      miracleMode?: boolean;
-      miracleRateLimit?: number;
-      defaultProfile?: string;
-      dateMode?: { enabled?: boolean; channels?: string[]; excludeEmotions?: string[] };
-      watcher?: WatcherConfig;
-    };
-
-    if (pluginConfig.enabled === false) return;
-
-    const defaultProfileId = pluginConfig.defaultProfile;
-
-    const extensionDir = dirname(fileURLToPath(import.meta.url));
-    const resolveActiveImageDir = (context?: ImageDirContext) =>
-      resolveImageDir(pluginConfig.imageDir, extensionDir, api.runtime, context);
-    const imageDir = resolveActiveImageDir();
-
-    try {
-      const migrationResult = runMigration(imageDir);
-      if (!migrationResult.skipped) {
-        api.logger.info(
-          `emotion-image: migration complete — flatAssets=${migrationResult.flatAssetsMigrated}, ` +
-          `sets=${migrationResult.setsMigrated}, channelOverrides=${migrationResult.channelOverridesMigrated}`,
-        );
-      }
-    } catch (err) {
-      api.logger.warn(`emotion-image: migration failed (non-fatal): ${err}`);
+  register(api: PluginApi) {
+    const pluginConfig = asRecord(api.pluginConfig);
+    if (pluginConfig?.enabled === false) {
+      loggerInfo(api.logger, "hent-ai adapter disabled: enabled=false");
+      return;
+    }
+    const config = validateServiceConfig(resolveServiceConfig(api));
+    if (!config.ok) {
+      loggerWarn(api.logger, `hent-ai adapter disabled: ${config.reason}`);
+      return;
     }
 
-    const profileDb = (() => {
-      try { return getProfileDatabase(imageDir); }
-      catch { return null; }
-    })();
+    loggerInfo(api.logger, `hent-ai adapter enabled: url=${config.baseUrl.origin} timeoutMs=${config.timeoutMs}`);
 
-    const isChannelEnabled = createChannelEnabledResolver(
-      pluginConfig.channels,
-      createProfileDbChannelEnableStore(profileDb),
-    );
-    const channelConfigSummary = pluginConfig.channels?.overrides
-      ? `defaultEnabled=${pluginConfig.channels.defaultEnabled ?? true} overrides=[${Object.keys(pluginConfig.channels.overrides).map(normalizeDiscordChannelId).join(",")}]`
-      : `legacyMode=${pluginConfig.channels?.mode ?? "blocklist"} legacyList=[${(pluginConfig.channels?.list ?? []).map(normalizeDiscordChannelId).join(",")}]`;
-    api.logger.info(`emotion-image: channel control ${channelConfigSummary} db=${profileDb ? "enabled" : "unavailable"}`);
-
-    if (defaultProfileId) {
-      api.logger.info(`emotion-image: defaultProfile="${defaultProfileId}"`);
+    if (!supportsReplyPayloadSending(api)) {
+      loggerWarn(api.logger, "hent-ai adapter disabled: reply_payload_sending hook unsupported");
+      return;
     }
 
-     // Build emotionMap: manifest-based sets take priority, then config, then defaults
-     let manifestEmotionMap: Record<string, EmotionImageConfig> = {};
-     const manifest = loadManifestSync(imageDir);
-     if (manifest) {
-       const active = getActiveSet(manifest);
-       if (active) {
-         manifestEmotionMap = buildEmotionMapFromSet(active.id, active.set) as unknown as Record<string, EmotionImageConfig>;
-         api.logger.info(`emotion-image: loaded asset set "${active.id}" (${active.set.name}) with ${Object.keys(active.set.emotions).length} emotions`);
-       }
-     }
+    const sender = createOpenClawMessageSender(api);
 
-     const emotionMap: Record<string, EmotionImageVariant[]> = Object.fromEntries(
-       Object.entries({
-       ...DEFAULT_EMOTION_MAP,
-       ...manifestEmotionMap,
-       ...pluginConfig.emotionMap,
-       }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
-     );
-
-     for (const [emotion, variants] of Object.entries(emotionMap)) {
-       const safeVariants = variants.filter((variant) => {
-         if (isAbsolute(variant.filename)) {
-           api.logger.error(`emotion-image: emotionMap["${emotion}"]="${variant.filename}" must be a filename relative to imageDir, not an absolute path. Skipping.`);
-           return false;
-         }
-         if (assertPathInside(imageDir, variant.filename) === null) {
-           api.logger.error(`emotion-image: emotionMap["${emotion}"]="${variant.filename}" escapes imageDir="${imageDir}". Skipping.`);
-           return false;
-         }
-         return true;
-       });
-       if (safeVariants.length === 0) {
-         delete emotionMap[emotion];
-       } else {
-         emotionMap[emotion] = safeVariants;
-       }
-     }
-
-     const validEmotions = Object.keys(emotionMap);
-    const activeEmotion = pluginConfig.defaultEmotion ?? DEFAULT_EMOTION;
-    const activeRules = buildEmotionRules(pluginConfig.emotionRules);
-    const classifierModel = pluginConfig.classifierModel;
-
-    const rephraseProvider = classifierModel
-      ? createRephraseProvider(classifierModel, api.runtime, api.logger)
-      : undefined;
-
-    const miracleMode = pluginConfig.miracleMode ?? false;
-    const miracleRateLimit = pluginConfig.miracleRateLimit ?? 10;
-
-    // Workspace-scoped state for multi-agent isolation
-    const rateLimiters = new Map<string, RateLimiter>();
-    const channelQueuesPerWorkspace = new Map<string, Map<string, Promise<void>>>();
-
-    function getRateLimiterForWorkspace(workspaceKey: string): RateLimiter {
-      let limiter = rateLimiters.get(workspaceKey);
-      if (!limiter) {
-        limiter = new RateLimiter(miracleRateLimit);
-        rateLimiters.set(workspaceKey, limiter);
-      }
-      return limiter;
-    }
-
-    function getChannelQueuesForWorkspace(workspaceKey: string): Map<string, Promise<void>> {
-      let queues = channelQueuesPerWorkspace.get(workspaceKey);
-      if (!queues) {
-        queues = new Map<string, Promise<void>>();
-        channelQueuesPerWorkspace.set(workspaceKey, queues);
-      }
-      return queues;
-    }
-
-    function getChannelAssetSetId(channelId: string): string | null {
-      const setId = profileDb?.getChannelAssetSet(channelId) ?? loadChannelOverridesSync(imageDir)[channelId];
-      return setId && manifest?.sets[setId] ? setId : null;
-    }
-
-    function getEmotionMapForChannel(channelId: string): Record<string, EmotionImageVariant[]> {
-      const overrideSetId = getChannelAssetSetId(channelId);
-      if (overrideSetId && manifest) {
-        const overrideSet = manifest.sets[overrideSetId];
-        const overrideEmotionConfig = buildEmotionMapFromSet(overrideSetId, overrideSet) as unknown as Record<string, EmotionImageConfig>;
-        return Object.fromEntries(
-          Object.entries({
-            ...DEFAULT_EMOTION_MAP,
-            ...overrideEmotionConfig,
-          }).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
-        );
-      }
-
-      // When a profile is mapped via DB, use flat filenames (profile dirs have flat structure)
-      if (profileDb) {
-        const profileId = profileDb.getChannelProfile(channelId) ?? defaultProfileId;
-        if (profileId && profileDb.getProfile(profileId)) {
-          return Object.fromEntries(
-            Object.entries(DEFAULT_EMOTION_MAP).map(([emotion, config]) => [emotion, normalizeEmotionImageConfig(config)]),
-          );
-        }
-      }
-
-      return emotionMap;
-    }
-    function stringMetadataValue(metadata: Record<string, unknown> | undefined, keys: string[]): string | undefined {
-      for (const key of keys) {
-        const value = metadata?.[key];
-        if (typeof value === "string" && value.trim()) return value.trim();
-      }
-      return undefined;
-    }
-
-    function watcherScopeId(
-      channelId: string,
-      metadata?: Record<string, unknown>,
-      sessionKey?: string,
-      typedThreadId?: string,
-    ): { scopeId: string; threadId?: string; sessionId?: string } {
-      const normalizedTypedThreadId = typeof typedThreadId === "string" && typedThreadId.trim()
-        ? typedThreadId.trim()
-        : undefined;
-      const threadId = normalizedTypedThreadId ?? stringMetadataValue(metadata, ["threadId", "thread_id", "discordThreadId"]);
-      const sessionId = stringMetadataValue(metadata, ["sessionId", "session_id"]) ?? sessionKey;
-      const scopeParts = [`channel:${channelId}`];
-      if (threadId) scopeParts.push(`thread:${threadId}`);
-      if (sessionId) scopeParts.push(`session:${sessionId}`);
-      return { scopeId: scopeParts.join(":"), threadId, sessionId };
-    }
-
-    function watcherChannelId(
-      directTo?: string,
-      metadata?: Record<string, unknown>,
-      context?: { conversationId?: string; parentConversationId?: string },
-    ): string {
-      const candidates = [
-        directTo,
-        metadata?.to,
-        context?.conversationId,
-        context?.parentConversationId,
-      ];
-      for (const candidate of candidates) {
-        if (typeof candidate !== "string") continue;
-        const channelId = normalizeDiscordChannelId(candidate);
-        if (/^\d+$/.test(channelId)) return channelId;
-      }
-      return "";
-    }
-
-
-    if (classifierModel) {
-      api.logger.info(`emotion-image: LLM classifier enabled with model="${classifierModel}"`);
-    }
-
-    // Anti-fixation watcher (shadow-first, event-based). Registered BEFORE the
-    // botToken guard so it runs without a Discord token; when promoted out of
-    // shadow mode, delivery flows through the host outbound adapter (not the
-    // direct bot-token path). All gate/branch logic lives in watcher-adapter.ts;
-    // these hooks are a single thin delegation each.
-    const watcherConfig = pluginConfig.watcher ?? {};
-    if (watcherConfig.enabled) {
-      const watcherSender = createOpenClawMessageSender(api);
-      const watcherLlm = classifierModel
-        ? createWatcherLlm(createWatcherChat(classifierModel, api.runtime, api.logger))
-        : undefined;
-      const watcher = createOpenClawWatcherAdapter({
-        config: watcherConfig,
+    api.on("message_received", async (event: unknown, ctx: unknown) => {
+      const channelId = channelIdFromEvent(event, ctx);
+      const record = asRecord(event) ?? {};
+      const content = stringValue(record.content);
+      if (!channelId || !content) return;
+      const scope = watcherScopeId(channelId, event, ctx);
+      await callJsonService({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        endpoint: "/v1/watcher/record-user",
+        body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId) },
         logger: api.logger,
-        deliver: async (channelId, text, opts) => {
-          // Mode B: replace the stale repeat in place by editing the offending
-          // Discord message (the steer takes its slot — no duplicate, no extra
-          // spam message). Falls back to a fresh message when no token/target.
-          const steerToken =
-            process.env.EMOTION_IMAGE_DISCORD_TOKEN ??
-            expandEnvPlaceholder(pluginConfig.discordToken);
-          if (opts?.replaceMessageId && steerToken) {
-            return await editMessageText(steerToken, channelId, opts.replaceMessageId, text, api.logger);
-          }
-          return watcherSender?.sendText ? await watcherSender.sendText(channelId, text) : null;
-        },
-        critic: watcherLlm?.critic,
-        generate: watcherLlm?.generate,
-        moderate: watcherLlm?.moderate,
       });
-      api.on("message_received", (event: unknown, context?: unknown) => {
-        const { content, metadata, sessionKey, threadId } = event as {
-          content?: string; metadata?: Record<string, unknown>; sessionKey?: string; threadId?: string;
-        };
-        const channelId = watcherChannelId(undefined, metadata, asRecord(context) ?? undefined);
-        if (!content || !/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
-        const scope = watcherScopeId(channelId, metadata, sessionKey, threadId);
-        watcher.recordUserTurn(scope.scopeId, content);
-      }, { name: "watcher-record" });
-      api.on("message_sent", (event: unknown) => {
-        const { to, content, success, messageId, metadata, sessionKey, threadId } = event as {
-          to?: string; content?: string; success?: boolean; messageId?: string;
-          metadata?: Record<string, unknown>; sessionKey?: string; threadId?: string;
-        };
-        if (!success || !messageId || !content || !to) return;
-        const channelId = watcherChannelId(to, metadata);
-        if (!/^\d+$/.test(channelId) || !isChannelEnabled(channelId)) return;
-        const scope = watcherScopeId(channelId, metadata, sessionKey, threadId);
-        void watcher.onAgentTurn({
-          scopeId: scope.scopeId,
-          channelId,
-          text: content.replace(MEDIA_LINE_RE, "").trimEnd(),
-          messageId,
-          sourceThreadId: scope.threadId,
-          targetThreadId: scope.threadId,
-          sessionId: scope.sessionId,
-        });
-      }, { name: "watcher-evaluate" });
-      api.logger.info(`emotion-image: anti-fixation watcher enabled (shadow=${watcherConfig.shadowMode ?? true})`);
-    }
+      const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
+      if (media?.mediaUrl) await sender?.sendMedia?.(channelId, media.mediaUrl, media.caption ?? "");
+    }, { name: "hent-ai-service-message-received" });
 
-     const botToken =
-       process.env.EMOTION_IMAGE_DISCORD_TOKEN ??
-       expandEnvPlaceholder(pluginConfig.discordToken);
-
-     if (!botToken) {
-       api.logger.warn(
-         `emotion-image: Discord token not configured. Set EMOTION_IMAGE_DISCORD_TOKEN env var ` +
-         `or pluginConfig.discordToken (supports "\${ENV_VAR}" placeholder).`,
-       );
-       return;
-     }
-
-    api.logger.info(`emotion-image: token found (len=${botToken.length}), imageDir=${imageDir}`);
-    const openClawSender = createOpenClawMessageSender(api);
-
-      const cheerConfig = pluginConfig.cheer ?? {};
-      const cheerEnabled = cheerConfig.enabled !== false;
-      const cheerIntentModel = cheerConfig.intentModel ?? classifierModel;
-
-      // Phase 1: On user message received, immediately send focused (thinking) image
-      if (cheerEnabled || (emotionMap.focused?.length ?? 0) > 0) {
-        api.on("message_received", async (event: unknown) => {
-         const { content, metadata, sessionKey } = event as {
-           content?: string;
-           metadata?: Record<string, unknown>;
-           sessionKey?: string;
-         };
-         if (!content || content.trim() === "NO_REPLY") return;
-
-        // Extract Discord channel snowflake from metadata.to ("channel:ID" format)
-        const rawTo = metadata?.to as string | undefined;
-        if (!rawTo) return;
-          const discordChannelId = normalizeDiscordChannelId(rawTo);
-          if (!discordChannelId || !/^\d+$/.test(discordChannelId)) return;
-          if (!isChannelEnabled(discordChannelId)) return;
-          // Date mode channels: skip thinking (focused) image entirely
-          const dateModeChannels = pluginConfig.dateMode?.channels ?? [];
-          if (pluginConfig.dateMode?.enabled && dateModeChannels.includes(discordChannelId)) {
-            api.logger.info(`emotion-image: date mode active for channel=${discordChannelId}, skipping thinking image`);
-            return;
-          }
-          // Asset-set overrides use the root imageDir; profiles use flat profile dirs.
-          const activeImageDir = getChannelAssetSetId(discordChannelId)
-            ? imageDir
-            : profileDb
-              ? resolveProfileImageDirForChannel(imageDir, profileDb, discordChannelId, defaultProfileId)
-              : resolveActiveImageDir({ metadata, sessionKey });
-
-          // Agent-driven onboarding: skip emotion images when lock file exists
-          if (isOnboardingActive(imageDir, activeImageDir)) return;
-
-          if (
-           cheerEnabled &&
-           cheerIntentModel &&
-           await detectCheerIntentWithLLM(cheerIntentModel, content, api.runtime, api.logger)
-         ) {
-           await handleCheerRequest({
-               token: botToken,
-               channelId: discordChannelId,
-               imageDir: activeImageDir,
-               config: cheerConfig,
-               onboardingConfig: pluginConfig.onboarding,
-               rephraseProvider,
-               logger: api.logger,
-               openClawSender,
-            });
-           return;
-         }
-
-           const channelEmotionMap = getEmotionMapForChannel(discordChannelId);
-           const thinkingVariant = selectEmotionImageVariant(channelEmotionMap.focused ?? []);
-           const thinkingImagePath = thinkingVariant ? assertPathInside(activeImageDir, thinkingVariant.filename) : null;
-          if (!thinkingImagePath || !existsSync(thinkingImagePath)) return;
-
-         api.logger.info(`emotion-image: received user msg, sending thinking image to channel=${discordChannelId}`);
-         try {
-            await sendImageMessage(botToken, discordChannelId, thinkingImagePath, api.logger, openClawSender);
-        } catch (err) {
-          api.logger.warn(`emotion-image: thinking image send failed: ${err}`);
+    api.on("message_sent", async (event: unknown, ctx: unknown) => {
+      const record = asRecord(event) ?? {};
+      if (record.success === false) return;
+      const content = stringValue(record.content);
+      const messageId = stringValue(record.messageId);
+      const channelId = normalizeDiscordChannelId(stringValue(record.to)) ?? channelIdFromEvent(event, ctx);
+      if (!channelId || !content || !messageId) return;
+      const marker = asRecord(record.metadata)?.hentAiWatcherNudge;
+      if (marker === true) return;
+      const scope = watcherScopeId(channelId, event, ctx);
+      const sourceThreadId = stringValue(record.sourceThreadId) ?? stringValue(asRecord(record.metadata)?.sourceThreadId) ?? scope.threadId;
+      const targetThreadId = stringValue(record.targetThreadId) ?? stringValue(asRecord(record.metadata)?.targetThreadId) ?? scope.threadId;
+      const result = await callJsonService({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        timeoutMs: config.timeoutMs,
+        endpoint: "/v1/watcher/evaluate",
+        body: { scopeId: scope.scopeId, channelId, text: content, messageId, sourceThreadId, targetThreadId, sessionId: scope.sessionId },
+        logger: api.logger,
+      });
+      const nudge = stringValue(result?.nudgeText);
+      if (nudge) {
+        const deliveryMessageId = await sender?.sendText?.(channelId, nudge);
+        const audit = asRecord(result?.audit);
+        const cooldownKey = stringValue(audit?.cooldownKey);
+        const signalId = stringValue(audit?.internalSignalId);
+        if (deliveryMessageId && cooldownKey && signalId) {
+          await callJsonService({
+            baseUrl: config.baseUrl,
+            token: config.token,
+            timeoutMs: config.timeoutMs,
+            endpoint: "/v1/watcher/commit-delivery",
+            body: { cooldownKey, scopeId: scope.scopeId, signalId, deliveryMessageId },
+            logger: api.logger,
+          });
         }
-       }, { name: "emotion-image-thinking" });
-     }
+      }
+    }, { name: "hent-ai-service-watcher" });
 
-     // Phase 2: On bot message sent, LLM classifies emotion and appends image
-     api.on("message_sent", async (event: unknown) => {
-      const {
-        to,
-        content,
-        success,
-        messageId,
-        metadata,
-        sessionKey,
-      } = event as {
-        to?: string;
-        content?: string;
-        success?: boolean;
-        messageId?: string;
-        metadata?: Record<string, unknown>;
-        sessionKey?: string;
-      };
-
-      if (!success || !messageId || !content || !to) return;
-
-      // Skip NO_REPLY messages
-      if (content.trim() === "NO_REPLY") return;
-
-      // Strip channel: prefix from to field (OpenClaw passes "channel:ID" format)
-      const channelId = normalizeDiscordChannelId(to);
-      if (!channelId || !/^\d+$/.test(channelId)) return;
-
-      const cleaned = content.replace(MEDIA_LINE_RE, "").trimEnd();
-
-      // Per-channel toggle check
-      if (!isChannelEnabled(channelId)) return;
-
-      // Resolve workspace context for isolation
-      const context: ImageDirContext = { metadata, sessionKey };
-      const runtimeConfig = api.runtime.config?.current?.();
-      const workspaceId = resolveProfileWorkspaceId(runtimeConfig, context) ?? "default";
-      // Asset-set overrides use the root imageDir; profiles use flat profile dirs.
-      const activeImageDir = getChannelAssetSetId(channelId)
-        ? imageDir
-        : profileDb
-          ? resolveProfileImageDirForChannel(imageDir, profileDb, channelId, defaultProfileId)
-          : resolveActiveImageDir(context);
-      if (isOnboardingActive(imageDir, activeImageDir)) return;
-      const rateLimiter = getRateLimiterForWorkspace(workspaceId);
-      const channelQueues = getChannelQueuesForWorkspace(workspaceId);
-
-      // LLM classifies emotion and appends result image to the sent message
-      const classifyAndAppend = async () => {
-        let finalEmotion: string;
-        if (pluginConfig.classifierModel) {
-          try {
-            api.logger.info(`emotion-image: LLM classification starting for msg=${messageId}`);
-            const llmEmotion = await detectEmotionWithLLM(
-              pluginConfig.classifierModel,
-              cleaned,
-              validEmotions,
-              api.runtime,
-              api.logger,
-            );
-            api.logger.info(`emotion-image: LLM result=${llmEmotion} for msg=${messageId}`);
-            finalEmotion = llmEmotion ?? detectEmotion(cleaned, activeRules, activeEmotion);
-          } catch (err) {
-            api.logger.warn(`emotion-image: LLM threw: ${err}`);
-            finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
-          }
-        } else {
-          finalEmotion = detectEmotion(cleaned, activeRules, activeEmotion);
-        }
-
-          // Date mode: replace focused with neutral (no "working" vibe in date mode)
-          const dateModeConfig = pluginConfig.dateMode;
-          if (dateModeConfig?.enabled && dateModeConfig.channels?.includes(channelId)) {
-            const excluded = dateModeConfig.excludeEmotions ?? ["focused"];
-            if (excluded.includes(finalEmotion)) {
-              api.logger.info(`emotion-image: date mode replacing excluded emotion "${finalEmotion}" with "${activeEmotion}"`);
-              finalEmotion = activeEmotion;
-            }
-          }
-
-          const channelEmotionMap = getEmotionMapForChannel(channelId);
-          const variants = channelEmotionMap[finalEmotion] ?? channelEmotionMap[activeEmotion] ?? normalizeEmotionImageConfig("neutral.png");
-
-          // Try to get cached or generate via miracle mode
-          const imageBuffer = await getCachedOrGenerateImage(
-            finalEmotion,
-            variants,
-            miracleMode,
-            rateLimiter,
-            {}, // generateOptions - will use defaults
-            api.logger,
-            Math.random,
-            cleaned,
-          );
-          const finalVariant = selectEmotionImageVariant(variants, Math.random, cleaned, false);
-          if (finalVariant?.filename) {
-            const finalImagePath = assertPathInside(activeImageDir, finalVariant.filename);
-            if (!finalImagePath) {
-              api.logger.warn(`emotion-image: resolved path for "${finalEmotion}" escapes imageDir; skipping`);
-              return;
-            }
-            if (!existsSync(finalImagePath)) {
-              api.logger.warn(`emotion-image: image not found: ${finalImagePath}`);
-              return;
-            }
-            api.logger.info(`emotion-image: appending ${finalEmotion} image${finalVariant.label ? ` (${finalVariant.label})` : ""} for msg=${messageId}`);
-            await appendImageToMessage(botToken, channelId, messageId, finalImagePath, api.logger);
-            return;
-          }
-
-          if (!imageBuffer) {
-            api.logger.warn(`emotion-image: no image available for "${finalEmotion}"; skipping`);
-            return;
-          }
-
-          // Use the generated buffer
-          api.logger.info(`emotion-image: appending miracle-generated ${finalEmotion} image for msg=${messageId}`);
-          await appendImageBufferToMessage(botToken, channelId, messageId, imageBuffer, "emotion.png", api.logger);
-       };
-
-       const prev = channelQueues.get(channelId) ?? Promise.resolve();
-       const next = prev.then(classifyAndAppend).catch((err) => {
-         api.logger.error(`emotion-image: classifyAndAppend failed for msg=${messageId}: ${err}`);
-       });
-       channelQueues.set(channelId, next);
-       next.finally(() => {
-         if (channelQueues.get(channelId) === next) channelQueues.delete(channelId);
-       });
-    }, { name: "emotion-image-sent" });
+    api.on("reply_payload_sending", async (event: unknown, ctx: unknown) => handleReplyPayloadSending({
+      event,
+      ctx,
+      config,
+      logger: api.logger,
+    }), { name: "hent-ai-final-reply-payload-media" });
   },
 });

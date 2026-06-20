@@ -27,9 +27,6 @@ export default defineConfig({
       provider: "v8",
       include: [
         "index.ts",
-        "watcher-core.ts",
-        "watcher-adapter.ts",
-        "watcher-llm.ts",
         "discord-utils.ts",
         "assets/channel-overrides.ts",
         "assets/manifest.ts",

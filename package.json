@@ -1,11 +1,4 @@
 {
-  "private": true,
-  "scripts": {
-    "build": "npm run build --prefix generate && npm run build --prefix cursor && pnpm --dir openclaw exec tsc --noEmit --skipLibCheck",
-    "test": "npm test --prefix generate && npm test --prefix cursor && pnpm --dir openclaw test && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/hermes/ -v",
-    "typecheck": "pnpm --dir openclaw exec tsc --noEmit --skipLibCheck && (cd generate && npx tsc --noEmit) && (cd cursor && npx tsc -p tsconfig.json --noEmit) && (cd cursor && npx tsc -p tsconfig.cli.json --noEmit)",
-    "pack:check": "npm run build && (cd generate && npm pack --dry-run --json >/tmp/hent-generate-pack.json) && (cd cursor && npm pack --dry-run --json >/tmp/hent-cursor-pack.json) && (cd openclaw && npm pack --dry-run --json >/tmp/hent-openclaw-pack.json)"
-  },
   "devDependencies": {
     "@types/node": "^25.8.0",
     "@vitest/coverage-v8": "^3.2.4",
@@ -21,5 +14,7 @@
       "sharp"
     ]
   },
-  "packageManager": "pnpm@9.15.9"
+  "scripts": {
+    "release:check": "node scripts/release-gate.mjs"
+  }
 }

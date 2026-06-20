@@ -1,1568 +1,355 @@
-import { generateImage } from "@hent-ai/generate";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  assertPathInside,
-  buildCheerPrompt,
-  buildEmotionRules,
-  createOpenClawMessageSender,
-  createWatcherChat,
-  detectCheerIntentWithLLM,
-  detectApiType,
-  detectEmotion,
-  detectEmotionWithLLM,
-  editMessageWithImage,
-  editMessageText,
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import plugin, {
   expandEnvPlaceholder,
-  extractBooleanIntent,
-  extractEmotion,
-  getCachedOrGenerateImage,
-  handleCheerRequest,
-  imageLabelMatchesContext,
-  inferAutomaticImageLabel,
-  isOnboardingActive,
-  MEDIA_LINE_RE,
-  normalizeEmotionImageConfig,
-  resolveImageDir,
-  resolveProfileWorkspaceDir,
-  sanitizeLogMessage,
-  selectEmotionImageVariant,
-  sendImageMessage,
+  normalizeServiceMedia,
+  resolveServiceConfig,
+  validateServiceConfig,
 } from "./index.js";
-import plugin from "./index.js";
 
-vi.mock("@hent-ai/generate", () => ({
-  generateImage: vi.fn(async () => Buffer.from("FAKE_CHEER_PNG")),
-}));
+type Handler = (event: unknown, ctx?: unknown) => Promise<unknown>;
 
-type FetchOptionsWithBody = { method?: string; headers?: Record<string, string>; body: Buffer | string };
-
-function fetchCallAt(mock: ReturnType<typeof vi.fn>, index: number): [unknown, FetchOptionsWithBody] {
-  const call = mock.mock.calls[index];
-  expect(call).toBeDefined();
-  const options = call?.[1] as FetchOptionsWithBody | undefined;
-  expect(options).toBeDefined();
-  return [call?.[0], options as FetchOptionsWithBody];
+function setup(
+  config: unknown = { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+  options: { supportsReplyPayloadSending?: boolean } = { supportsReplyPayloadSending: true },
+) {
+  const events = new Map<string, Handler>();
+  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const api = {
+    pluginConfig: config,
+    logger,
+    supportsHook: vi.fn((name: string) => name === "reply_payload_sending" && options.supportsReplyPayloadSending === true),
+    on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+  };
+  plugin.register(api as any);
+  return { api, events, logger };
 }
 
-function mockRuntime(overrides?: {
-  baseUrl?: string;
-  api?: string;
-  resolveApiKeyError?: boolean;
-  noApiKey?: boolean;
-}) {
-  const baseUrl = overrides?.baseUrl ?? "https://api.openai.com/v1";
-  const api = overrides?.api ?? "openai-completions";
+function okJson(payload: unknown) {
+  return { ok: true, status: 200, json: async () => payload };
+}
 
-  let resolveApiKeyFn: ReturnType<typeof vi.fn>;
-  if (overrides?.resolveApiKeyError) {
-    resolveApiKeyFn = vi.fn().mockRejectedValue(new Error("auth error"));
-  } else if (overrides?.noApiKey) {
-    resolveApiKeyFn = vi.fn().mockResolvedValue({ apiKey: undefined });
-  } else {
-    resolveApiKeyFn = vi.fn().mockResolvedValue({ apiKey: "sk-test-key" });
-  }
-
+function okBytes(bytes: Uint8Array, contentType = "image/png") {
   return {
-    config: {
-      current: () => ({
-        models: {
-          providers: {
-            openai: { baseUrl, api },
-          },
-        },
-      }),
-    },
-    modelAuth: {
-      resolveApiKeyForProvider: resolveApiKeyFn,
-    },
+    ok: true,
+    status: 200,
+    headers: new Headers({ "content-type": contentType }),
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
   };
 }
 
-describe("detectEmotion", () => {
-  it("returns 'happy' when text contains completion keywords", () => {
-    expect(detectEmotion("Task completed successfully")).toBe("happy");
+describe("Hent-ai service adapter configuration", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
-  it("returns 'sorry' when text contains apology keywords", () => {
-    expect(detectEmotion("Sorry, I made a mistake.")).toBe("sorry");
+  it("expands token environment placeholders", () => {
+    vi.stubEnv("HENT_AI_TOKEN", "from-env");
+    expect(expandEnvPlaceholder("${HENT_AI_TOKEN}")).toBe("from-env");
+    expect(expandEnvPlaceholder("literal-token")).toBe("literal-token");
   });
 
-  it("returns 'confused' for question-like text", () => {
-    expect(detectEmotion("How should we proceed? I have a question.")).toBe("confused");
+  it("uses the hentAiService namespace from plugin config before runtime config", () => {
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://plugin.test", token: "plugin" } },
+      runtime: { config: { current: () => ({ hentAiService: { url: "https://runtime.test", token: "runtime" } }) } },
+    };
+    expect(resolveServiceConfig(api)?.url).toBe("https://plugin.test");
   });
 
-  it("returns 'focused' for investigation keywords", () => {
-    expect(detectEmotion("Currently debugging the code. Testing in progress")).toBe("focused");
+  it("validates token and HTTPS except localhost", () => {
+    expect(validateServiceConfig({ url: "https://hent.test", token: "t" }).ok).toBe(true);
+    expect(validateServiceConfig({ url: "http://localhost:8787", token: "t" }).ok).toBe(true);
+    expect(validateServiceConfig({ url: "http://hent.test", token: "t" })).toEqual({
+      ok: false,
+      reason: "hentAiService.url must be HTTPS unless it targets localhost",
+    });
+    expect(validateServiceConfig({ url: "https://hent.test" })).toEqual({ ok: false, reason: "missing hentAiService.token" });
   });
 
-  it("returns 'neutral' for greeting keywords (loyalty removed)", () => {
-    expect(detectEmotion("Got it, understood")).toBe("neutral");
+  it("logs disabled state and registers no hooks when config is missing or invalid", () => {
+    const { api, events, logger } = setup({ hentAiService: { url: "http://example.test", token: "secret" } });
+    expect(api.on).not.toHaveBeenCalled();
+    expect(events.size).toBe(0);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("hent-ai adapter disabled"));
+  });
+  it("respects enabled=false without validating service credentials", () => {
+    const { api, events, logger } = setup({ enabled: false });
+    expect(api.on).not.toHaveBeenCalled();
+    expect(events.size).toBe(0);
+    expect(logger.info).toHaveBeenCalledWith("hent-ai adapter disabled: enabled=false");
   });
 
-  it("returns 'neutral' when no keywords match (default fallback)", () => {
-    expect(detectEmotion("The weather is nice today")).toBe("neutral");
+  it("registers only the current final reply payload hook when supported", () => {
+    const { api, events } = setup();
+    expect([...events.keys()]).toEqual(["message_received", "message_sent", "reply_payload_sending"]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
+    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
-  it("returns custom fallback when passed", () => {
-    expect(detectEmotion("nothing special here", undefined, "happy")).toBe("happy");
-  });
-
-  it("respects custom rules passed as second argument", () => {
-    const customRules = [{ emotion: "sleepy", patterns: [/drowsy|sleepy/i] }];
-    expect(detectEmotion("feeling so drowsy", customRules)).toBe("sleepy");
-  });
-
-  it("matches case-insensitively", () => {
-    expect(detectEmotion("DONE SUCCEED")).toBe("happy");
-  });
-
-  it("prefers first matching emotion when multiple rules match", () => {
-    expect(detectEmotion("Sorry, still analyzing")).toBe("sorry");
-  });
-});
-
-describe("MEDIA_LINE_RE", () => {
-  it("strips MEDIA: lines with absolute paths", () => {
-    const input = "Here are the results.\nMEDIA:/Users/test/project/assets/happy.png";
-    expect(input.replace(MEDIA_LINE_RE, "").trimEnd()).toBe("Here are the results.");
-  });
-
-  it("strips MEDIA: lines with relative paths", () => {
-    const input = "Analysis done.\nMEDIA:./assets/happy.png";
-    expect(input.replace(MEDIA_LINE_RE, "").trimEnd()).toBe("Analysis done.");
-  });
-
-  it("preserves content when no MEDIA line exists", () => {
-    const input = "Just a normal message.";
-    expect(input.replace(MEDIA_LINE_RE, "").trimEnd()).toBe("Just a normal message.");
-  });
-
-  it("strips multiple MEDIA: lines", () => {
-    const input = "Results\nMEDIA:/path/a.png\nMore info\nMEDIA:/path/b.png";
-    expect(input.replace(MEDIA_LINE_RE, "").trimEnd()).toBe("Results\nMore info");
-  });
-
-  it("does not strip MEDIA: at start of string (no leading newline)", () => {
-    const input = "MEDIA:/path/file.png\ncontent";
-    expect(input.replace(MEDIA_LINE_RE, "").trimEnd()).toBe("MEDIA:/path/file.png\ncontent");
-  });
-});
-
-describe("cheer request helpers", () => {
-  it("parses positive binary intent responses", () => {
-    expect(extractBooleanIntent("yes")).toBe(true);
-    expect(extractBooleanIntent("TRUE")).toBe(true);
-    expect(extractBooleanIntent('"yes"')).toBe(true);
-    expect(extractBooleanIntent("Intent: yes")).toBe(true);
-  });
-
-  it("parses negative and invalid binary intent responses conservatively", () => {
-    expect(extractBooleanIntent("no")).toBe(false);
-    expect(extractBooleanIntent("FALSE")).toBe(false);
-    expect(extractBooleanIntent("maybe")).toBeNull();
-  });
-
-  it("builds a safe non-explicit cheer image prompt", () => {
-    const prompt = buildCheerPrompt("orange cat idol");
-    expect(prompt).toContain("orange cat idol");
-    expect(prompt).toContain("화이팅");
-    expect(prompt).toContain("more visible skin");
-    expect(prompt).toContain("adult character");
-    expect(prompt).toContain("no nudity");
-    expect(prompt).toContain("no nipples");
-  });
-
-  it("generates and sends a cheer image through the Discord surface", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ id: "msg-1" }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await handleCheerRequest({
-      token: "token",
-      channelId: "123456789",
-      imageDir: "/tmp/no-base-image",
-      config: { character: "orange cat idol", size: "512x512" },
+  it("defaults to the current final reply payload hook when the host omits the optional supportsHook probe", () => {
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-    });
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
 
-    expect(generateImage).toHaveBeenCalledWith({
-      prompt: buildCheerPrompt("orange cat idol"),
-      model: undefined,
-      size: "512x512",
-      referenceImages: undefined,
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchCallAt(fetchMock, 0)[1].body).toContain("응원 이미지를 만들고 있어요");
-    expect(Buffer.isBuffer(fetchCallAt(fetchMock, 1)[1].body)).toBe(true);
-    expect(fetchCallAt(fetchMock, 1)[1].body.toString()).toContain("cheer.png");
-    expect(fetchCallAt(fetchMock, 1)[1].body.toString()).toContain("화이팅! 오늘도 충분히 잘하고 있어요.");
+    plugin.register(api as any);
+
+    expect([...events.keys()]).toEqual(["message_received", "message_sent", "reply_payload_sending"]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
+    expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
-  it("detects indirect Korean cheer intent with the configured LLM", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: "yes" } }] }),
+  it("registers no hooks when the host explicitly rejects reply payload support", () => {
+    const { api, events, logger } = setup(undefined, { supportsReplyPayloadSending: false });
+    expect([...events.keys()]).toEqual([]);
+    expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), expect.anything());
+    expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
+    expect(logger.warn).toHaveBeenCalledWith("hent-ai adapter disabled: reply_payload_sending hook unsupported");
+  });
+
+  it("normalizes service url and base64 media into Stage-1 mediaUrl shape", () => {
+    expect(normalizeServiceMedia({ url: "https://cdn.test/a.png", caption: "cap", sensitiveMedia: true })).toMatchObject({
+      mediaUrl: "https://cdn.test/a.png",
+      caption: "cap",
+      sensitiveMedia: true,
+    });
+    expect(normalizeServiceMedia({ dataBase64: "AAAA", contentType: "image/webp" })?.mediaUrl).toBe("data:image/webp;base64,AAAA");
+    expect(normalizeServiceMedia({ caption: "no media" })).toBeNull();
+  });
+
+  it("ignores block payloads so media is attached only to the final answer", async () => {
+    const fetchMock = vi.fn(async () => okJson({
+      media: { url: "https://cdn.test/pre.png", caption: "thinking" },
+      diagnostics: [{ reason: "selected" }],
     }));
     vi.stubGlobal("fetch", fetchMock);
-
-    const result = await detectCheerIntentWithLLM(
-      "openai/gpt-5.4-mini",
-      "오늘 너무 지쳤는데 기운 좀 줄 수 있어?",
-      mockRuntime() as never,
-      { warn: vi.fn() },
-    );
-
-    expect(result).toBe(true);
-    const [, options] = fetchCallAt(fetchMock, 0);
-    const body = JSON.parse(options.body);
-    expect(body.messages[0].content).toContain("encourage, cheer up, comfort, support, motivate");
-    expect(body.messages[0].content).toContain("오늘 너무 지쳤는데 기운 좀 줄 수 있어?");
-  });
-
-  it("does not detect non-cheer intent when the configured LLM says no", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: "no" } }] }),
-    }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await detectCheerIntentWithLLM(
-      "openai/gpt-5.4-mini",
-      "응원 고마워, 그런데 설정 방법 알려줘",
-      mockRuntime() as never,
-      { warn: vi.fn() },
-    );
-
-    expect(result).toBe(false);
-  });
-});
-
-describe("emotion image variants", () => {
-  it("normalizes legacy single filename config", () => {
-    expect(normalizeEmotionImageConfig("happy.png")).toEqual([
-      { filename: "happy.png", weight: 1 },
-    ]);
-  });
-
-  it("normalizes labeled image pools", () => {
-    expect(normalizeEmotionImageConfig([
-      "happy.png",
-      { file: "happy-stage.png", label: "stage", weight: 3 },
-      { filename: "happy-soft.png", label: "soft" },
-    ])).toEqual([
-      { filename: "happy.png", weight: 1 },
-      { filename: "happy-stage.png", label: "stage", weight: 3 },
-      { filename: "happy-soft.png", label: "soft", weight: 1 },
-    ]);
-  });
-
-  it("infers labels from custom image filenames", () => {
-    expect(inferAutomaticImageLabel("happy-stage-light.png")).toBe("stage light");
-    expect(inferAutomaticImageLabel("neutral.png")).toBeUndefined();
-    expect(normalizeEmotionImageConfig({ file: "happy-date-night.png" })).toEqual([
-      { filename: "happy-date-night.png", label: "date night", weight: 1 },
-    ]);
-  });
-
-  it("matches labels against response context", () => {
-    expect(imageLabelMatchesContext("stage light", "The stage is ready now.")).toBe(true);
-    expect(imageLabelMatchesContext("date night", "오늘 데이트 준비 끝")).toBe(false);
-    expect(imageLabelMatchesContext(undefined, "stage")).toBe(false);
-  });
-
-  it("selects a weighted random variant", () => {
-    const variants = normalizeEmotionImageConfig([
-      { file: "first.png", weight: 1 },
-      { file: "second.png", weight: 3 },
-    ]);
-
-    expect(selectEmotionImageVariant(variants, () => 0.1)?.filename).toBe("first.png");
-    expect(selectEmotionImageVariant(variants, () => 0.9)?.filename).toBe("second.png");
-  });
-
-  it("prefers label-matching variants before weighted fallback", () => {
-    const variants = normalizeEmotionImageConfig([
-      { file: "happy-generic.png", weight: 100 },
-      { file: "happy-stage.png", label: "stage", weight: 1 },
-    ]);
-
-    expect(selectEmotionImageVariant(variants, () => 0, "Stage deployment complete")?.filename).toBe("happy-stage.png");
-    expect(selectEmotionImageVariant(variants, () => 0, "General update")?.filename).toBe("happy-generic.png");
-  });
-});
-
-describe("channel: prefix strip", () => {
-  it("strips channel: prefix from channel ID", () => {
-    const to = "channel:123456789";
-    expect(to.startsWith("channel:") ? to.slice(8) : to).toBe("123456789");
-  });
-
-  it("passes through plain channel ID", () => {
-    const to = "123456789";
-    expect(to.startsWith("channel:") ? to.slice(8) : to).toBe("123456789");
-  });
-});
-
-describe("isOnboardingActive", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = join(tmpdir(), `hent-onboarding-lock-${process.pid}-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("detects the root image directory onboarding lock", () => {
-    writeFileSync(join(tmpDir, ".onboarding-active"), "");
-
-    expect(isOnboardingActive(tmpDir)).toBe(true);
-  });
-
-  it("detects a profile/private image directory onboarding lock", () => {
-    const privateDir = join(tmpDir, "profiles", "private");
-    mkdirSync(privateDir, { recursive: true });
-    writeFileSync(join(privateDir, ".onboarding-active"), "");
-
-    expect(isOnboardingActive(tmpDir, privateDir)).toBe(true);
-  });
-
-  it("returns false when neither root nor active profile has a lock", () => {
-    const privateDir = join(tmpDir, "profiles", "private");
-    mkdirSync(privateDir, { recursive: true });
-
-    expect(isOnboardingActive(tmpDir, privateDir)).toBe(false);
-  });
-});
-
-describe("buildEmotionRules", () => {
-  it("returns default rules when no custom rules provided", () => {
-    const rules = buildEmotionRules();
-    expect(rules.length).toBeGreaterThan(0);
-    const emotions = rules.map((r) => r.emotion);
-    expect(emotions).toContain("happy");
-    expect(emotions).toContain("sorry");
-    expect(emotions).toContain("focused");
-  });
-
-  it("merges custom keywords into existing emotion", () => {
-    const custom = { happy: ["\\b(perfect|excellent)\\b"] };
-    const rules = buildEmotionRules(custom);
-    const happyRule = rules.find((r) => r.emotion === "happy");
-    expect(happyRule?.patterns.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("creates new emotion from custom rules", () => {
-    const custom = { sleepy: ["\\b(drowsy|sleepy)\\b"] };
-    const rules = buildEmotionRules(custom);
-    expect(rules.find((r) => r.emotion === "sleepy")).toBeDefined();
-  });
-
-  it("preserves all default emotions when adding custom rules", () => {
-    const custom = { happy: ["custom_pattern"] };
-    const rules = buildEmotionRules(custom);
-    expect(rules.find((r) => r.emotion === "sorry")).toBeDefined();
-    expect(rules.find((r) => r.emotion === "happy")).toBeDefined();
-  });
-});
-
-describe("editMessageWithImage", () => {
-  const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
-  });
-
-  it("sends PATCH request to Discord API with multipart form-data", async () => {
-    const mockFetch = vi.mocked(fetch);
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: vi.fn().mockResolvedValue(""),
-    } as unknown as Response);
-
-    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
-
-    await editMessageWithImage(
-      "bot-token-123",
-      "channel-456",
-      "msg-789",
-      "Hello!",
-      imagePath,
-      mockLogger,
-    );
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, options] = fetchCallAt(mockFetch, 0);
-    expect(url).toBe("https://discord.com/api/v10/channels/channel-456/messages/msg-789");
-    expect(options.method).toBe("PATCH");
-    expect(options.headers).toMatchObject({
-      Authorization: "Bot bot-token-123",
-    });
-    expect((options.headers as Record<string, string>)["Content-Type"]).toContain(
-      "multipart/form-data",
-    );
-    expect(mockLogger.info).toHaveBeenCalledWith(
-      expect.stringContaining("attached neutral.png to message msg-789"),
-    );
-  });
-
-  it("logs warning on Discord API error", async () => {
-    const mockFetch = vi.mocked(fetch);
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: vi.fn().mockResolvedValue('{"message": "Invalid Form Body"}'),
-    } as unknown as Response);
-
-    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
-
-    await editMessageWithImage(
-      "bot-token-123",
-      "channel-456",
-      "msg-789",
-      "Hello!",
-      imagePath,
-      mockLogger,
-    );
-
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("Discord edit failed 400"),
-    );
-  });
-
-  it("logs error on exception", async () => {
-    vi.mocked(fetch).mockRejectedValue(new Error("Network error"));
-
-    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
-
-    await editMessageWithImage(
-      "bot-token-123",
-      "channel-456",
-      "msg-789",
-      "Hello!",
-      imagePath,
-      mockLogger,
-    );
-
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.stringContaining("edit error"),
-    );
-  });
-
-  it("logs error when image file does not exist", async () => {
-    await editMessageWithImage(
-      "bot-token-123",
-      "channel-456",
-      "msg-789",
-      "Hello!",
-      "/nonexistent/path/image.png",
-      mockLogger,
-    );
-
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      expect.stringContaining("edit error"),
-    );
-  });
-
-  it("includes cleaned content and attachment metadata in PATCH body", async () => {
-    const mockFetch = vi.mocked(fetch);
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: vi.fn().mockResolvedValue(""),
-    } as unknown as Response);
-
-    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
-
-    await editMessageWithImage(
-      "bot-token",
-      "ch",
-      "msg",
-      "Hello world",
-      imagePath,
-      mockLogger,
-    );
-
-    const [, options] = fetchCallAt(mockFetch, 0);
-    const bodyStr = (options.body as Buffer).toString();
-    expect(bodyStr).toContain("Hello world");
-    expect(bodyStr).toContain("neutral.png");
-    expect(bodyStr).toContain("files[0]");
-  });
-});
-
-describe("editMessageText (watcher mode-B in-place steer)", () => {
-  const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn());
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
-  });
-
-  it("PATCHes content-only and returns the message id on success", async () => {
-    const mockFetch = vi.mocked(fetch);
-    mockFetch.mockResolvedValue({ ok: true, text: vi.fn().mockResolvedValue("") } as unknown as Response);
-
-    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
-
-    expect(id).toBe("msg-9");
-    const [url, options] = fetchCallAt(mockFetch, 0);
-    expect(url).toBe("https://discord.com/api/v10/channels/chan-1/messages/msg-9");
-    expect(options.method).toBe("PATCH");
-    expect((options.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
-    expect(JSON.parse(options.body as string)).toEqual({ content: "Let's pivot." });
-    expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining("steered message msg-9"));
-  });
-
-  it("returns null and warns on a non-ok response (steer stays retryable)", async () => {
-    vi.mocked(fetch).mockResolvedValue({
-      ok: false,
-      status: 403,
-      text: vi.fn().mockResolvedValue("forbidden"),
-    } as unknown as Response);
-
-    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
-
-    expect(id).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("steer edit failed 403"));
-  });
-
-  it("returns null and warns when fetch throws", async () => {
-    vi.mocked(fetch).mockRejectedValue(new Error("net down"));
-
-    const id = await editMessageText("tok", "chan-1", "msg-9", "Let's pivot.", mockLogger);
-
-    expect(id).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("steer edit error"));
-  });
-});
-
-describe("OpenClaw outbound sending", () => {
-  const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
-  });
-
-  it("creates a sender that delegates text and media to the Discord outbound adapter", async () => {
-    const sendText = vi.fn().mockResolvedValue({ messageId: "text-1" });
-    const sendMedia = vi.fn().mockResolvedValue({ messageId: "media-1" });
-    const loadAdapter = vi.fn().mockResolvedValue({ sendText, sendMedia });
-    const sender = createOpenClawMessageSender({
-      config: { channels: { discord: {} } },
-      runtime: { channel: { outbound: { loadAdapter } } },
-      logger: mockLogger,
-    });
-
-    expect(sender).toBeDefined();
-    await expect(sender?.sendText?.("123", "hello")).resolves.toBe("text-1");
-    await expect(sender?.sendImageBuffer?.("123", Buffer.from("PNG"), "focused.png", "caption")).resolves.toBe("media-1");
-
-    expect(loadAdapter).toHaveBeenCalledWith("discord");
-    expect(sendText).toHaveBeenCalledWith({ cfg: { channels: { discord: {} } }, to: "channel:123", text: "hello" });
-    expect(sendMedia).toHaveBeenCalledWith({
-      cfg: { channels: { discord: {} } },
-      to: "channel:123",
-      text: "caption",
-      mediaUrl: expect.stringMatching(/^data:image\/png;base64,/),
-    });
-  });
-
-  it("redacts data URLs from OpenClaw outbound failure logs", async () => {
-    const sender = createOpenClawMessageSender({
-      config: { channels: { discord: {} } },
-      runtime: {
-        channel: {
-          outbound: {
-            loadAdapter: vi.fn().mockResolvedValue({
-              sendMedia: vi.fn().mockRejectedValue(new Error("blocked data:image/png;base64," + "a".repeat(100))),
-            }),
-          },
-        },
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 2500 } });
+
+    const result = await events.get("reply_payload_sending")?.({
+      kind: "block",
+      payload: {
+        text: "thinking",
+        channelData: { channelPolicy: "service-owned" },
       },
-      logger: mockLogger,
-    });
+      sessionKey: "s",
+      runId: "r",
+    }, { channelId: "channel:123", replyToBody: "hello" });
 
-    await expect(sender?.sendImageBuffer?.("123", Buffer.from("PNG"), "focused.png", "caption")).resolves.toBeNull();
-
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      "emotion-image: OpenClaw image send failed for focused.png: Error: blocked data:image/png;base64,<redacted>",
-    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 
-  it("falls back to Discord REST when sendImageMessage OpenClaw delivery returns no id", async () => {
-    const sender = { sendImageBuffer: vi.fn().mockResolvedValue(null) };
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" });
+  it("uses hook context when OpenClaw final event omits a direct channel id", async () => {
+    const fetchMock = vi.fn(async () => okJson({ verdict: { media: { url: "https://cdn.test/final.png" } } }));
     vi.stubGlobal("fetch", fetchMock);
-    const imagePath = new URL("../assets/neutral.png", import.meta.url).pathname;
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 2500 } });
 
-    await sendImageMessage("bot-token", "channel-456", imagePath, mockLogger, sender);
+    await events.get("reply_payload_sending")?.(
+      { kind: "final", payload: { text: "done", to: "channel:from-to" }, sessionKey: "s", runId: "r" },
+      { conversationId: "channel:from-context", sessionKey: "s", runId: "r", messageId: "m1" },
+    );
 
-    expect(sender.sendImageBuffer).toHaveBeenCalled();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).context).toMatchObject({
+      to: "channel:from-to",
+      channelId: "from-context",
+      content: "done",
+      messageId: "m1",
+      sessionKey: "s",
+      runId: "r",
+    });
+  });
+
+
+  it("calls final-response verdict service for final payloads and attaches verdict media", async () => {
+    const fetchMock = vi.fn(async () => okJson({ verdict: { media: { dataBase64: "BBBB", contentType: "image/jpeg" } } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup();
+
+    const result = await events.get("reply_payload_sending")?.({
+      kind: "final",
+      payload: {
+        text: "done",
+        to: "channel:456",
+        channelData: { profile: "svc" },
+      },
+    }, { messageId: "m1" });
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, options] = fetchCallAt(fetchMock, 0);
-    expect(url).toBe("https://discord.com/api/v10/channels/channel-456/messages");
-    expect(options.method).toBe("POST");
-    expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining("OpenClaw image send unavailable"));
-  });
-});
-
-describe("detectApiType", () => {
-  it('returns "openai-completions" for undefined', () => {
-    expect(detectApiType(undefined)).toBe("openai-completions");
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://hent.test/v1/final-response/verdict");
+    expect(options.headers.authorization).toBe("Bearer secret");
+    expect(JSON.parse(options.body).context).toMatchObject({ channelId: "456", content: "done", messageId: "m1" });
+    expect(result).toEqual({ payload: { text: "done", to: "channel:456", channelData: { profile: "svc" }, mediaUrl: "data:image/jpeg;base64,BBBB" } });
   });
 
-  it('returns "openai-completions" for "openai-completions"', () => {
-    expect(detectApiType("openai-completions")).toBe("openai-completions");
-  });
-
-  it('returns "openai-completions" for unknown api value', () => {
-    expect(detectApiType("some-unknown-api")).toBe("openai-completions");
-  });
-
-  it('returns "anthropic-messages" for "anthropic-messages"', () => {
-    expect(detectApiType("anthropic-messages")).toBe("anthropic-messages");
-  });
-});
-
-describe("extractEmotion", () => {
-  const emotions = ["happy", "neutral", "sorry", "confused", "focused"];
-
-  it("returns null for null content", () => {
-    expect(extractEmotion(null, emotions)).toBeNull();
-  });
-
-  it("returns null for undefined content", () => {
-    expect(extractEmotion(undefined, emotions)).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(extractEmotion("", emotions)).toBeNull();
-  });
-
-  it("returns null for whitespace-only string", () => {
-    expect(extractEmotion("   ", emotions)).toBeNull();
-  });
-
-  it("returns exact match", () => {
-    expect(extractEmotion("happy", emotions)).toBe("happy");
-  });
-
-  it("handles case insensitivity", () => {
-    expect(extractEmotion("HAPPY", emotions)).toBe("happy");
-  });
-
-  it("trims surrounding whitespace", () => {
-    expect(extractEmotion("  happy  ", emotions)).toBe("happy");
-  });
-
-  it("strips surrounding double quotes", () => {
-    expect(extractEmotion('"happy"', emotions)).toBe("happy");
-  });
-
-  it("strips surrounding single quotes", () => {
-    expect(extractEmotion("'happy'", emotions)).toBe("happy");
-  });
-
-  it("strips surrounding curly/smart quotes", () => {
-    expect(extractEmotion("\u201Chappy\u201D", emotions)).toBe("happy");
-    expect(extractEmotion("\u2018happy\u2019", emotions)).toBe("happy");
-  });
-
-  it("handles multi-line response with exact match on one line", () => {
-    expect(extractEmotion("hello\nsorry\nworld", emotions)).toBe("sorry");
-  });
-
-  it("returns null when emotion not in valid list", () => {
-    expect(extractEmotion("angry", emotions)).toBeNull();
-  });
-
-  it("finds emotion via word-boundary in extra text", () => {
-    expect(extractEmotion("The emotion is: happy", emotions)).toBe("happy");
-    expect(extractEmotion("I would classify this as focused", emotions)).toBe("focused");
-  });
-
-  it("finds emotion when response has trailing punctuation", () => {
-    expect(extractEmotion("happy!", emotions)).toBe("happy");
-    expect(extractEmotion("neutral.", emotions)).toBe("neutral");
-    expect(extractEmotion("sorry?", emotions)).toBe("sorry");
-  });
-
-  it("prefers first matching emotion in text", () => {
-    expect(extractEmotion("happy focused neutral", emotions)).toBe("happy");
-  });
-});
-
-describe("detectEmotionWithLLM", () => {
-  const mockLogger = { warn: vi.fn() };
-  const validEmotions = ["happy", "neutral", "sorry"];
-
-  let mockFetch: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    mockFetch = vi.fn();
-    vi.stubGlobal("fetch", mockFetch);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
-  });
-
-  it("returns emotion when OpenAI classification succeeds", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: "happy" } }],
-      }),
-    } as unknown as Response);
-
-    const runtime = mockRuntime();
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "This is great!",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
-
-    expect(result).toBe("happy");
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [url, opts] = mockFetch.mock.calls[0];
-    expect(url).toContain("/chat/completions");
-    expect((opts as Record<string, unknown>).headers).toMatchObject({
-      Authorization: "Bearer sk-test-key",
+  it("hydrates service-relative media URLs into local media-cache files before OpenClaw delivery", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const href = url.toString();
+      if (href === "http://localhost:8787/v1/final-response/verdict") return okJson({ verdict: { media: { url: "/static/sets/gothic-v1/sorry.png", contentType: "image/png" } } });
+      if (href === "http://localhost:8787/static/sets/gothic-v1/sorry.png") return okBytes(new Uint8Array([1, 2, 3]), "image/png");
+      throw new Error(`unexpected url ${href}`);
     });
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({ hentAiService: { url: "http://localhost:8787", token: "secret", timeoutMs: 250 } });
+
+    const result = await events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "done", to: "channel:456" } }, { messageId: "m1" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ payload: { text: "done", to: "channel:456" } });
+    const mediaUrl = (result as { payload?: { mediaUrl?: string } }).payload?.mediaUrl;
+    expect(mediaUrl).toContain(".openclaw/media/hent-ai-service-adapter/");
+    expect(readFileSync(mediaUrl!)).toEqual(Buffer.from([1, 2, 3]));
   });
 
-  it("returns null when classifierModel has no '/' separator", async () => {
-    const runtime = mockRuntime();
-    const result = await detectEmotionWithLLM(
-      "openai",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
-
-    expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("missing \"/\" separator"),
-    );
-    expect(mockFetch).not.toHaveBeenCalled();
+  it.each([
+    ["null", null],
+    ["malformed", { verdict: { media: { caption: "missing url" } } }],
+  ])("skips final media on %s service response", async (_name, payload) => {
+    vi.stubGlobal("fetch", vi.fn(async () => okJson(payload)));
+    const { events, logger } = setup();
+    const result = await events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "y", to: "channel:1" } }, { messageId: "m" });
+    expect(result).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("skipping media"));
   });
 
-  it("returns null when provider config is not found", async () => {
-    const runtime = {
-      config: {
-        current: () => ({ models: { providers: {} } }),
-      },
-      modelAuth: {
-        resolveApiKeyForProvider: vi.fn(),
-      },
+  it("skips media on service HTTP error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) })));
+    const { events } = setup();
+    await expect(events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "x", to: "channel:1" } }, { messageId: "m" })).resolves.toBeUndefined();
+  });
+
+  it("skips media on service timeout", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url: string, options: RequestInit) => new Promise((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 10 } });
+
+    const pending = events.get("reply_payload_sending")?.({ kind: "final", payload: { text: "y", to: "channel:1" } }, { messageId: "m" });
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).resolves.toBeUndefined();
+  });
+
+
+  it("delegates inbound message media and watcher recording to the service", async () => {
+    const sent: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string, options: RequestInit) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/pre-reply/media") return okJson({ media: { url: "https://cdn.test/focused.png", caption: "" } });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-media" }; } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
     };
+    plugin.register(api as any);
 
-    const result = await detectEmotionWithLLM(
-      "unknown-provider/model",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
 
-    expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('provider "unknown-provider" not found'),
-    );
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user", "https://hent.test/v1/pre-reply/media"]);
+    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/pre-reply/media", expect.objectContaining({ method: "POST" }));
+    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", mediaUrl: "https://cdn.test/focused.png" })]);
   });
 
-  it("returns null when no apiKey resolved", async () => {
-    const runtime = {
-      config: {
-        current: () => ({
-          models: {
-            providers: {
-              "openai": { baseUrl: "https://api.openai.com/v1", api: "openai-completions" },
-            },
-          },
-        }),
-      },
-      modelAuth: {
-        resolveApiKeyForProvider: vi.fn().mockResolvedValue({ apiKey: undefined }),
-      },
+  it("delegates sent-message watcher evaluation, emits service nudge, and commits delivery", async () => {
+    const sent: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "nudge", nudgeText: "fresh angle", audit: { cooldownKey: "scope:stale_expression_repeated", internalSignalId: "sig-1" } });
+      if (url === "https://hent.test/v1/watcher/commit-delivery") return okJson({ ok: true });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-text" }; } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
     };
+    plugin.register(api as any);
 
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
+    await events.get("message_sent")?.({ to: "channel:123", content: "repeat repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
 
-    expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("no apiKey resolved"),
-    );
+    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", text: "fresh angle" })]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/evaluate", "https://hent.test/v1/watcher/commit-delivery"]);
   });
 
-  it("returns null when auth throws", async () => {
-    const runtime = mockRuntime({ resolveApiKeyError: true });
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
+  it("does not evaluate watcher-generated nudges as normal agent turns", async () => {
+    const fetchMock = vi.fn(async () => okJson({ decision: "nudge", nudgeText: "fresh angle" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup();
 
-    expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("failed to resolve apiKey"),
-    );
+    await events.get("message_sent")?.({
+      to: "channel:123",
+      content: "fresh angle",
+      success: true,
+      messageId: "nudge-1",
+      metadata: { hentAiWatcherNudge: true },
+    }, {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns null when LLM returns emotion not in validEmotions", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: "angry" } }],
-      }),
-    } as unknown as Response);
-
-    const runtime = mockRuntime();
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
-
-    expect(result).toBeNull();
-  });
-
-  it("returns null when LLM call fails (network error)", async () => {
-    mockFetch.mockRejectedValue(new Error("Network failure"));
-
-    const runtime = mockRuntime();
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
-
-    expect(result).toBeNull();
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("LLM call error"),
-    );
-  });
-
-  it("returns null when LLM response is not ok (non-200 status)", async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 429,
-      text: vi.fn().mockResolvedValue("rate limited"),
-    } as unknown as Response);
-
-    const runtime = mockRuntime();
-    const result = await detectEmotionWithLLM(
-      "openai/gpt-5.4-mini",
-      "test",
-      validEmotions,
-      runtime as never,
-      mockLogger,
-    );
-
-     expect(result).toBeNull();
-   });
- });
-
-describe("assertPathInside", () => {
-   it("returns normalized path when candidate is inside root", () => {
-     const root = "/home/user/assets";
-     const candidate = "happy.png";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBe("/home/user/assets/happy.png");
-});
-
-describe("resolveProfileWorkspaceDir", () => {
-  it("reads workspace from common OpenClaw profile config shapes", () => {
-    expect(resolveProfileWorkspaceDir({ workspace: "/profiles/alpha" })).toBe("/profiles/alpha");
-    expect(resolveProfileWorkspaceDir({ agent: { workspaceDir: "/profiles/beta" } })).toBe("/profiles/beta");
-    expect(resolveProfileWorkspaceDir({ profile: { agentDir: "/profiles/gamma" } })).toBe("/profiles/gamma");
-  });
-
-  it("returns undefined when no workspace field exists", () => {
-    expect(resolveProfileWorkspaceDir({ models: { providers: {} } })).toBeUndefined();
-  });
-});
-
-describe("resolveImageDir", () => {
-  it("uses explicit imageDir before profile workspace", () => {
-    const dir = resolveImageDir("/custom/assets", "/extension/dist", {
-      config: { current: () => ({ workspace: "/profiles/alpha" }) },
+  it("fail-opens watcher hook service and outbound failures", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") throw new Error("record down");
+      if (url === "https://hent.test/v1/pre-reply/media") return { ok: false, status: 503, json: async () => ({}) };
+      if (url === "https://hent.test/v1/watcher/evaluate") throw new Error("evaluate down");
+      throw new Error(`unexpected url ${url}`);
     });
-
-    expect(dir).toBe("/custom/assets");
-  });
-
-  it("isolates default assets under the active profile workspace", () => {
-    const dir = resolveImageDir(undefined, "/extension/dist", {
-      config: { current: () => ({ workspace: "/profiles/alpha" }) },
-    });
-
-    expect(dir).toBe("/profiles/alpha/.hent-ai/emotion-image-assets");
-  });
-
-  it("uses event metadata workspace id when no workspace directory is available", () => {
-    const dir = resolveImageDir(undefined, "/extension/dist", {
-      config: { current: () => ({ models: { providers: {} } }) },
-    }, {
-      metadata: { workspaceId: "team/alpha" },
-    });
-
-    expect(dir).toBe("/extension/assets/profiles/team_alpha");
-  });
-
-  it("uses sessionKey workspace prefix when metadata is absent", () => {
-    const dir = resolveImageDir(undefined, "/extension/dist", {
-      config: { current: () => ({ models: { providers: {} } }) },
-    }, {
-      sessionKey: "workspace-a:run-1",
-    });
-
-    expect(dir).toBe("/extension/assets/profiles/workspace-a");
-  });
-
-  it("falls back to bundled assets without a profile workspace", () => {
-    const dir = resolveImageDir(undefined, "/extension/dist", {
-      config: { current: () => ({ models: { providers: {} } }) },
-    });
-
-    expect(dir).toBe("/extension/assets");
-  });
-});
-
-   it("returns null when candidate escapes root via parent traversal", () => {
-     const root = "/home/user/assets";
-     const candidate = "../../etc/passwd";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBeNull();
-   });
-
-   it("returns null when candidate is absolute and outside root", () => {
-     const root = "/home/user/assets";
-     const candidate = "/etc/passwd";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBeNull();
-   });
-
-   it("returns path when candidate equals root", () => {
-     const root = "/home/user/assets";
-     const candidate = ".";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBe("/home/user/assets");
-   });
-
-   it("returns null when candidate prefix overlaps but escapes", () => {
-     const root = "/home/user/assets";
-     const candidate = "../assets-evil/file.png";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBeNull();
-   });
-
-   it("handles relative root paths", () => {
-     const root = "./assets";
-     const candidate = "happy.png";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBeTruthy();
-     expect(result).toContain("assets/happy.png");
-   });
-
-   it("returns null for deeply nested parent traversal", () => {
-     const root = "/home/user/assets";
-     const candidate = "../../../../../../../../etc/passwd";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBeNull();
-   });
-
-   it("returns path for nested subdirectories inside root", () => {
-     const root = "/home/user/assets";
-     const candidate = "emotions/happy.png";
-     const result = assertPathInside(root, candidate);
-     expect(result).toBe("/home/user/assets/emotions/happy.png");
-   });
- });
-
-describe("expandEnvPlaceholder", () => {
-   beforeEach(() => {
-     process.env.TEST_VAR = "test_value";
-     process.env.EMOTION_IMAGE_DISCORD_TOKEN = "bot_token_123";
-   });
-
-   afterEach(() => {
-     delete process.env.TEST_VAR;
-     delete process.env.EMOTION_IMAGE_DISCORD_TOKEN;
-   });
-
-   it("returns original string when no placeholder", () => {
-     const result = expandEnvPlaceholder("literal_token");
-     expect(result).toBe("literal_token");
-   });
-
-   it("expands ${ENV_VAR} placeholder to env value", () => {
-     const result = expandEnvPlaceholder("${TEST_VAR}");
-     expect(result).toBe("test_value");
-   });
-
-   it("expands ${EMOTION_IMAGE_DISCORD_TOKEN} placeholder", () => {
-     const result = expandEnvPlaceholder("${EMOTION_IMAGE_DISCORD_TOKEN}");
-     expect(result).toBe("bot_token_123");
-   });
-
-   it("returns undefined when env var is missing", () => {
-     const result = expandEnvPlaceholder("${NONEXISTENT_VAR}");
-     expect(result).toBeUndefined();
-   });
-
-   it("returns undefined when input is undefined", () => {
-     const result = expandEnvPlaceholder(undefined);
-     expect(result).toBeUndefined();
-   });
-
-   it("returns undefined when input is empty string", () => {
-     const result = expandEnvPlaceholder("");
-     expect(result).toBeUndefined();
-   });
-
-   it("does not expand placeholder in middle of string", () => {
-     const result = expandEnvPlaceholder("prefix_${TEST_VAR}_suffix");
-     expect(result).toBe("prefix_${TEST_VAR}_suffix");
-   });
-
-   it("matches env var names with exact case (case-sensitive on Linux)", () => {
-     process.env.MY_CUSTOM_VAR = "value";
-     const result = expandEnvPlaceholder("${MY_CUSTOM_VAR}");
-     expect(result).toBe("value");
-     delete process.env.MY_CUSTOM_VAR;
-   });
- });
-
-describe("appendImageToMessage attachment schema", () => {
-   it("uses newFileIndex=0 for new attachment placeholder ID", () => {
-     const newFileIndex = 0;
-     const filename = "emotion.png";
-     const attachment = { id: newFileIndex, filename };
-     expect(attachment.id).toBe(0);
-     expect(attachment.filename).toBe("emotion.png");
-   });
-
-   it("preserves existing attachment snowflake IDs as strings", () => {
-     const existingAttachments = [
-       { id: "1234567890123456789", filename: "old1.png" },
-       { id: "9876543210987654321", filename: "old2.png" },
-     ];
-     const preserved = existingAttachments.map((a) => ({ id: a.id }));
-     expect(preserved[0].id).toBe("1234567890123456789");
-     expect(preserved[1].id).toBe("9876543210987654321");
-   });
-
-   it("matches files[0] form key with id=0 for new upload", () => {
-     const newFileIndex = 0;
-     const formKey = `files[${newFileIndex}]`;
-     expect(formKey).toBe("files[0]");
-   });
-
-   it("correctly builds attachment array with existing + new", () => {
-     const existingAttachments = [{ id: "123456789" }];
-     const newFileIndex = 0;
-     const filename = "emotion.png";
-      const attachments: Array<{ id: string } | { id: number; filename: string }> = [
-       ...existingAttachments,
-       { id: newFileIndex, filename },
-     ];
-     expect(attachments).toHaveLength(2);
-     expect(attachments[0].id).toBe("123456789");
-     expect(attachments[1].id).toBe(0);
-     expect(attachments[1].filename).toBe("emotion.png");
-   });
- });
-
-describe("miracle mode", () => {
-  describe("getCachedOrGenerateImage", () => {
-    const mockLogger = {
-      info: vi.fn(),
-      warn: vi.fn(),
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async () => { throw new Error("send down"); }, sendText: async () => { throw new Error("send down"); } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
     };
+    plugin.register(api as any);
 
-    const mockRateLimiter = {
-      canGenerate: vi.fn(() => true),
-      recordGeneration: vi.fn(),
-      getRemainingCount: vi.fn(() => 5),
-      limit: 10,
-    };
-
-    beforeEach(() => {
-      vi.clearAllMocks();
-    });
-
-    it("returns cached variant buffer when available", async () => {
-      const cachedBuffer = Buffer.from("CACHED_IMAGE");
-      const variants = [{ filename: "happy.png", weight: 1, buffer: cachedBuffer }];
-
-      const result = await getCachedOrGenerateImage(
-        "happy",
-        variants,
-        false, // miracleMode disabled
-        mockRateLimiter as any,
-        {},
-        mockLogger,
-      );
-
-      expect(result).toBe(cachedBuffer);
-      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
-    });
-
-    it("returns null when no cached variant and miracle mode is disabled", async () => {
-      const result = await getCachedOrGenerateImage(
-        "excited",
-        [], // no variants
-        false, // miracleMode disabled
-        mockRateLimiter as any,
-        {},
-        mockLogger,
-      );
-
-      expect(result).toBeNull();
-      expect(mockRateLimiter.canGenerate).not.toHaveBeenCalled();
-    });
-
-    it("generates image when miracle mode is enabled and no cached variant", async () => {
-      const generatedBuffer = Buffer.from("FAKE_CHEER_PNG");
-      vi.mocked(generateImage).mockResolvedValueOnce(generatedBuffer);
-
-      const result = await getCachedOrGenerateImage(
-        "excited",
-        [], // no variants
-        true, // miracleMode enabled
-        mockRateLimiter as any,
-        { size: "1024x1024" },
-        mockLogger,
-      );
-
-      expect(result).toBe(generatedBuffer);
-      expect(mockRateLimiter.canGenerate).toHaveBeenCalled();
-      expect(mockRateLimiter.recordGeneration).toHaveBeenCalled();
-      expect(generateImage).toHaveBeenCalledWith({
-        prompt: expect.stringContaining("excited"),
-        size: "1024x1024",
-      });
-    });
-
-    it("returns null when rate limit is exceeded", async () => {
-      mockRateLimiter.canGenerate.mockReturnValueOnce(false);
-      mockRateLimiter.getRemainingCount.mockReturnValueOnce(0);
-
-      const result = await getCachedOrGenerateImage(
-        "excited",
-        [],
-        true, // miracleMode enabled
-        mockRateLimiter as any,
-        {},
-        mockLogger,
-      );
-
-      expect(result).toBeNull();
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining("rate limit reached"),
-      );
-      expect(generateImage).not.toHaveBeenCalled();
-    });
-
-    it("returns null when generation fails", async () => {
-      vi.mocked(generateImage).mockRejectedValueOnce(new Error("API error"));
-
-      const result = await getCachedOrGenerateImage(
-        "excited",
-        [],
-        true, // miracleMode enabled
-        mockRateLimiter as any,
-        {},
-        mockLogger,
-      );
-
-      expect(result).toBeNull();
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining("generation failed"),
-      );
-    });
+    await expect(events.get("message_received")?.({ content: "hello", to: "channel:123" }, {})).resolves.toBeUndefined();
+    await expect(events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1" }, {})).resolves.toBeUndefined();
   });
 
-  describe("selectEmotionImageVariant with miracleMode parameter", () => {
-    it("returns null when no variants and miracleMode is true", () => {
-      const result = selectEmotionImageVariant([], Math.random, "", true);
-      expect(result).toBeNull();
-    });
-
-    it("returns null when no variants and miracleMode is false", () => {
-      const result = selectEmotionImageVariant([], Math.random, "", false);
-      expect(result).toBeNull();
-    });
-
-    it("returns variant normally when variants exist regardless of miracleMode", () => {
-      const variants = [{ filename: "happy.png", weight: 1 }];
-      const result = selectEmotionImageVariant(variants, () => 0.5, "", true);
-      expect(result).toEqual({ filename: "happy.png", weight: 1 });
-    });
-  });
-});
-
-describe("sanitizeLogMessage", () => {
-  it("redacts inline base64 data URLs", () => {
-    expect(sanitizeLogMessage("prefix data:image/png;base64," + "a".repeat(20))).toBe(
-      "prefix data:image/png;base64,<redacted>",
-    );
-  });
-});
-
-describe("anti-fixation watcher wiring (register)", () => {
-  it("registers shadow-first hooks before the token guard and audits without sending", () => {
-    const dir = join(tmpdir(), `watcher-wiring-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    try {
-      const infos: string[] = [];
-      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
-      const api = {
-        pluginConfig: {
-          imageDir: dir,
-          watcher: { enabled: true, shadowMode: true },
-          channels: { defaultEnabled: true },
-        },
-        config: {},
-        runtime: { config: { current: () => ({}) } },
-        logger: {
-          info: (...a: unknown[]) => infos.push(a.join(" ")),
-          warn: () => {},
-          error: () => {},
-        },
-        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
-          handlers[opts?.name ?? event] = handler;
-        },
-      };
-
-      plugin.register(api);
-
-      // Watcher hooks must register even though no Discord token is configured
-      // (they sit before the bot-token early-return guard).
-      expect(infos.some((l) => l.includes("anti-fixation watcher enabled"))).toBe(true);
-      expect(typeof handlers["watcher-record"]).toBe("function");
-      expect(typeof handlers["watcher-evaluate"]).toBe("function");
-
-      const channel = "123456789012345678";
-      handlers["watcher-record"]({ content: "let's chat", metadata: { to: `channel:${channel}` } });
-      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a1" });
-      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a2" });
-
-      const audits = infos.filter((l) => l.includes("watcher: scope="));
-      expect(audits.length).toBe(1); // only the second agent turn produces a signal
-      expect(audits[0]).toContain("suppressed=shadow_mode");
-      expect(audits[0]).toContain("delivered=no");
-
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "thread isolated thread isolated",
-        success: true,
-        messageId: "thread-a1",
-        threadId: "thread-a",
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "thread isolated thread isolated",
-        success: true,
-        messageId: "thread-b1",
-        threadId: "thread-b",
-      });
-      const threadAudits = infos.filter((l) => l.includes(`channel:${channel}:thread:`));
-      expect(threadAudits.length).toBe(0);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it("contains no forbidden thick-plugin runtime imports or Discord REST paths", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    expect(source).not.toContain("discord.com");
+    expect(source).not.toContain("discordToken");
+    expect(source).not.toContain("@hent-ai/generate");
+    expect(source).not.toContain("shared/db");
+    expect(source).not.toContain("loadManifest");
+    expect(source).not.toContain("classifier");
   });
 
-
-  it("uses typed threadId for inbound thread conversations before legacy metadata", () => {
-    const dir = join(tmpdir(), `watcher-threadid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    try {
-      const infos: string[] = [];
-      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
-      const api = {
-        pluginConfig: {
-          imageDir: dir,
-          watcher: { enabled: true, shadowMode: true },
-          channels: { defaultEnabled: true },
-        },
-        config: {},
-        runtime: { config: { current: () => ({}) } },
-        logger: {
-          info: (...a: unknown[]) => infos.push(a.join(" ")),
-          warn: () => {},
-          error: () => {},
-        },
-        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
-          handlers[opts?.name ?? event] = handler;
-        },
-      };
-
-      plugin.register(api);
-
-      const channel = "123456789012345678";
-      handlers["watcher-record"]({
-        content: "아니 그 말고 단톡 맥락 보고 대화해",
-        threadId: "typed-thread",
-        metadata: { to: `channel:${channel}`, threadId: "legacy-thread" },
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "typed-a1",
-        threadId: "typed-thread",
-        metadata: { threadId: "legacy-thread" },
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "typed-a2",
-        threadId: "typed-thread",
-        metadata: { threadId: "legacy-thread" },
-      });
-
-      const audits = infos.filter((l) => l.includes("watcher: scope="));
-      expect(audits.length).toBe(1);
-      expect(audits[0]).toContain(`scope=channel:${channel}:thread:typed-thread`);
-      expect(audits[0]).not.toContain("legacy-thread");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("records inbound messages using hook context conversation id when metadata.to is absent", () => {
-    const dir = join(tmpdir(), `watcher-context-channel-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    try {
-      const infos: string[] = [];
-      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
-      const api = {
-        pluginConfig: {
-          imageDir: dir,
-          watcher: { enabled: true, shadowMode: true },
-          channels: { defaultEnabled: true },
-        },
-        config: {},
-        runtime: { config: { current: () => ({}) } },
-        logger: {
-          info: (...a: unknown[]) => infos.push(a.join(" ")),
-          warn: () => {},
-          error: () => {},
-        },
-        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
-          handlers[opts?.name ?? event] = handler;
-        },
-      };
-
-      plugin.register(api);
-
-      const channel = "123456789012345678";
-      handlers["watcher-record"]({ content: "단톡 보고 대화해", metadata: {} }, { conversationId: `channel:${channel}` });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "ctx-a1",
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "ctx-a2",
-      });
-
-      const audits = infos.filter((l) => l.includes("watcher: scope="));
-      expect(audits.length).toBe(1);
-      expect(audits[0]).toContain(`scope=channel:${channel}`);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps legacy thread metadata fallback and session scope when typed threadId is blank", () => {
-    const dir = join(tmpdir(), `watcher-thread-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    try {
-      const infos: string[] = [];
-      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
-      const api = {
-        pluginConfig: {
-          imageDir: dir,
-          watcher: { enabled: true, shadowMode: true },
-          channels: { defaultEnabled: true },
-        },
-        config: {},
-        runtime: { config: { current: () => ({}) } },
-        logger: {
-          info: (...a: unknown[]) => infos.push(a.join(" ")),
-          warn: () => {},
-          error: () => {},
-        },
-        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
-          handlers[opts?.name ?? event] = handler;
-        },
-      };
-
-      plugin.register(api);
-
-      const channel = "123456789012345678";
-      handlers["watcher-record"]({
-        content: "단톡 맥락 유지",
-        threadId: "   ",
-        sessionKey: "session-a",
-        metadata: { to: `channel:${channel}`, threadId: "legacy-thread" },
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "fallback-a1",
-        threadId: "   ",
-        sessionKey: "session-a",
-        metadata: { threadId: "legacy-thread" },
-      });
-      handlers["watcher-evaluate"]({
-        to: `channel:${channel}`,
-        content: "ship it now ship it now",
-        success: true,
-        messageId: "fallback-a2",
-        threadId: "   ",
-        sessionKey: "session-a",
-        metadata: { threadId: "legacy-thread" },
-      });
-
-      const audits = infos.filter((l) => l.includes("watcher: scope="));
-      expect(audits.length).toBe(1);
-      expect(audits[0]).toContain(`scope=channel:${channel}:thread:legacy-thread:session:session-a`);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("steers in place by editing the offending message when live with a token", async () => {
-    const dir = join(tmpdir(), `watcher-live-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(dir, { recursive: true });
-    try {
-      const fetchMock = vi.fn()
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: '{"fixated":true,"confidence":0.9}' } }] }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: "Let's switch topics." } }] }) })
-        .mockResolvedValueOnce({ ok: true, text: async () => "" });
-      vi.stubGlobal("fetch", fetchMock);
-
-      const handlers: Record<string, (e: unknown, ctx?: unknown) => unknown> = {};
-      const api = {
-        pluginConfig: {
-          imageDir: dir,
-          discordToken: "bot-tok",
-          classifierModel: "openai/gpt",
-          watcher: { enabled: true, shadowMode: false, confidenceThreshold: 0.7 },
-          channels: { defaultEnabled: true },
-        },
-        config: {},
-        runtime: {
-          config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x/v1/", api: "openai-completions" } } } }) },
-          modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: "sk-test" })) },
-        },
-        logger: { info: () => {}, warn: () => {}, error: () => {} },
-        on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown, opts?: { name?: string }) => {
-          handlers[opts?.name ?? event] = handler;
-        },
-      };
-
-      plugin.register(api);
-      const channel = "123456789012345678";
-      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a1" });
-      handlers["watcher-evaluate"]({ to: `channel:${channel}`, content: "ship it now ship it now", success: true, messageId: "a2" });
-
-      // Wait for the async live pipeline: critic -> generate -> PATCH edit (3 fetches).
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-      const patchCall = fetchMock.mock.calls[2] as [string, { method?: string; body: string }];
-      expect(patchCall[0]).toBe(`https://discord.com/api/v10/channels/${channel}/messages/a2`);
-      expect(patchCall[1].method).toBe("PATCH");
-      expect(JSON.parse(patchCall[1].body)).toEqual({ content: "Let's switch topics." });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      vi.unstubAllGlobals();
-    }
-  });
-});
-
-describe("createWatcherChat", () => {
-  const runtimeWith = (api: string, provider = "openai") => ({
-    config: {
-      current: () => ({ models: { providers: { [provider]: { baseUrl: "https://api.x/v1/", api } } } }),
-    },
-    modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: "sk-test" })) },
-  });
-  const logger = { warn: () => {} };
-
-  it("returns content from an OpenAI-style provider", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }] }) })));
-    const chat = createWatcherChat("openai/gpt", runtimeWith("openai-completions"), logger);
-    expect(await chat("prompt", "sys")).toBe("hi");
-  });
-
-  it("returns text from an Anthropic-style provider", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ content: [{ type: "text", text: "yo" }] }) })));
-    const chat = createWatcherChat("anthropic/claude", runtimeWith("anthropic-messages", "anthropic"), logger);
-    expect(await chat("prompt")).toBe("yo");
-  });
-
-  it("fail-closes on a malformed model, missing provider, missing key, !ok, and fetch error", async () => {
-    expect(await createWatcherChat("noslash", runtimeWith("openai-completions"), logger)("p")).toBeNull();
-    expect(await createWatcherChat("ghost/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
-    const noKey = {
-      config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x", api: "openai-completions" } } } }) },
-      modelAuth: { resolveApiKeyForProvider: vi.fn(async () => ({ apiKey: undefined })) },
-    };
-    expect(await createWatcherChat("openai/m", noKey, logger)("p")).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => ({}) })));
-    expect(await createWatcherChat("openai/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("net"); }));
-    expect(await createWatcherChat("openai/m", runtimeWith("openai-completions"), logger)("p")).toBeNull();
-  });
-
-  it("fail-closes when apiKey resolution throws", async () => {
-    const rt = {
-      config: { current: () => ({ models: { providers: { openai: { baseUrl: "https://api.x", api: "openai-completions" } } } }) },
-      modelAuth: { resolveApiKeyForProvider: vi.fn(async () => { throw new Error("auth"); }) },
-    };
-    expect(await createWatcherChat("openai/m", rt, logger)("p")).toBeNull();
+  it("ships only the thin service adapter package surface", () => {
+    const metadata = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+    expect(metadata.name).toBe("@hent-ai/openclaw-service-adapter");
+    expect(metadata.description).toContain("Thin OpenClaw adapter");
+    expect(metadata.files).toEqual(["index.ts", "openclaw.plugin.json", "README.md"]);
+    expect(metadata.dependencies).toEqual({});
   });
 });

@@ -1,9 +1,6 @@
 import { resolve } from "node:path";
 import { generateAllEmotions, EMOTIONS, type Emotion } from "./generator.js";
 
-const MAX_CHARACTER_LENGTH = 1000;
-const SIZE_PATTERN = /^\d+x\d+$/;
-
 interface CliArgs {
   character: string;
   outputDir: string;
@@ -14,7 +11,7 @@ interface CliArgs {
   only?: Emotion[];
 }
 
-export function parseArgs(args: string[]): CliArgs | null {
+function parseArgs(args: string[]): CliArgs | null {
   if (args.includes("--help") || args.includes("-h") || args.length === 0) {
     return null;
   }
@@ -73,18 +70,6 @@ export function parseArgs(args: string[]): CliArgs | null {
   }
 
   if (!character) return null;
-
-  if (character.length > MAX_CHARACTER_LENGTH) {
-    console.error(
-      `--character is too long (${character.length} chars; max ${MAX_CHARACTER_LENGTH}).`,
-    );
-    return null;
-  }
-
-  if (size !== undefined && !SIZE_PATTERN.test(size)) {
-    console.error(`Invalid --size "${size}". Expected WxH, e.g. 1024x1024.`);
-    return null;
-  }
 
   if (only?.length) {
     const invalid = only.filter((e) => !(EMOTIONS as readonly string[]).includes(e));

@@ -1,60 +1,45 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
 import plugin from "../index.js";
 
-describe("focused thinking image pools", () => {
+type Handler = (event: unknown) => Promise<unknown>;
+
+function setup() {
+  const events = new Map<string, Handler>();
+  const api = {
+    pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret" } },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+    on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+  };
+  plugin.register(api as any);
+  return { events, api };
+}
+
+describe("final-only media service delegation", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    vi.restoreAllMocks();
   });
 
-  it("selects a fresh focused variant for each message_received event", async () => {
-    const imageDir = mkdtempSync(join(tmpdir(), "hent-openclaw-focused-"));
-    writeFileSync(join(imageDir, "focused-a.png"), "a");
-    writeFileSync(join(imageDir, "focused-b.png"), "b");
-
-    const events = new Map<string, (event: unknown) => Promise<void>>();
-    const fetchMock = vi.fn(async (_url: string, options: { body: { toString(): string } }) => ({
+  it("does not delegate thinking block media; final-only attachment prevents duplicates", async () => {
+    const fetchMock = vi.fn(async (_url: string, options: RequestInit) => ({
       ok: true,
-      text: async () => "",
-      body: options.body,
+      status: 200,
+      json: async () => ({ media: { url: `https://cdn.test/${JSON.parse(String(options.body)).context.runId}.png` } }),
     }));
     vi.stubGlobal("fetch", fetchMock);
-    vi.spyOn(Math, "random")
-      .mockReturnValueOnce(0.1)
-      .mockReturnValueOnce(0.9);
+    const { events } = setup();
+    const handler = events.get("reply_payload_sending");
 
-    plugin.register({
-      pluginConfig: {
-        imageDir,
-        discordToken: "token",
-        cheer: { enabled: false },
-        emotionMap: {
-          focused: ["focused-a.png", "focused-b.png"],
-        },
-      },
-      runtime: { config: { current: () => ({}) } },
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      on(name: string, handler: (event: unknown) => Promise<void>) {
-        events.set(name, handler);
-      },
-    });
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "first" }, { channelId: "111", replyToBody: "first" })).resolves.toBeUndefined();
+    await expect(handler?.({ kind: "block", payload: { text: "thinking" }, runId: "second" }, { channelId: "111", replyToBody: "second" })).resolves.toBeUndefined();
 
-    const handler = events.get("message_received");
-    expect(handler).toBeDefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    const event = {
-      content: "debugging this issue",
-      metadata: { to: "channel:123456789012345678" },
-    };
-    await handler?.(event);
-    await handler?.(event);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][1].body.toString()).toContain("focused-a.png");
-    expect(fetchMock.mock.calls[1][1].body.toString()).toContain("focused-b.png");
+  it("registers only service-owned message_received handler, not legacy focused-image sender", () => {
+    const { api } = setup();
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).not.toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-message-received-media" });
+    expect(api.on).not.toHaveBeenCalledWith("message_received", expect.any(Function), { name: "emotion-image-message-received" });
   });
 });
