@@ -4,10 +4,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
+export type FeatureToggleConfig = boolean | { enabled?: boolean };
+
 export type HentAiServiceConfig = {
   url?: string;
   token?: string;
   timeoutMs?: number;
+  /** Sends media as a separate inbound/pre-reply message when explicitly enabled. */
+  preReplyMedia?: FeatureToggleConfig;
+  /** Enables watcher record/evaluate hooks. Intended for the separate group-chat watcher module. */
+  watcher?: FeatureToggleConfig;
 };
 
 export type ServiceDiagnostics = Array<Record<string, unknown>>;
@@ -152,6 +158,13 @@ function stringValue(value: unknown): string | undefined {
 function numberOrDefault(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
   return value;
+}
+
+function featureEnabled(value: FeatureToggleConfig | undefined, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  const record = asRecord(value);
+  if (typeof record?.enabled === "boolean") return record.enabled;
+  return fallback;
 }
 
 function isLocalhostUrl(url: URL): boolean {
@@ -422,6 +435,7 @@ function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { sco
   return { scopeId: parts.join(":"), threadId, sessionId };
 }
 
+
 async function serviceMediaForPreReply(params: {
   event: unknown;
   ctx: unknown;
@@ -529,6 +543,9 @@ export default definePluginEntry({
     }
 
     const sender = createOpenClawMessageSender(api);
+    const serviceFeatureConfig = resolveServiceConfig(api);
+    const preReplyMediaEnabled = featureEnabled(serviceFeatureConfig?.preReplyMedia, false);
+    const watcherEnabled = featureEnabled(serviceFeatureConfig?.watcher, false);
 
     api.on("message_received", async (event: unknown, ctx: unknown) => {
       const channelId = channelIdFromEvent(event, ctx);
@@ -536,19 +553,24 @@ export default definePluginEntry({
       const content = stringValue(record.content);
       if (!channelId || !content) return;
       const scope = watcherScopeId(channelId, event, ctx);
-      await callJsonService({
-        baseUrl: config.baseUrl,
-        token: config.token,
-        timeoutMs: config.timeoutMs,
-        endpoint: "/v1/watcher/record-user",
-        body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId) },
-        logger: api.logger,
-      });
-      const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
-      if (media?.mediaUrl) await sender?.sendMedia?.(channelId, media.mediaUrl, media.caption ?? "");
+      if (watcherEnabled) {
+        await callJsonService({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          timeoutMs: config.timeoutMs,
+          endpoint: "/v1/watcher/record-user",
+          body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId) },
+          logger: api.logger,
+        });
+      }
+      if (preReplyMediaEnabled) {
+        const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
+        if (media?.mediaUrl) await sender?.sendMedia?.(channelId, media.mediaUrl, media.caption ?? "");
+      }
     }, { name: "hent-ai-service-message-received" });
 
     api.on("message_sent", async (event: unknown, ctx: unknown) => {
+      if (!watcherEnabled) return;
       const record = asRecord(event) ?? {};
       if (record.success === false) return;
       const content = stringValue(record.content);
