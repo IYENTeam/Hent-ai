@@ -36,8 +36,10 @@ describe("final-only media service delegation", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not register legacy message_received focused-image sender", () => {
+  it("registers only service-owned message_received handler, not legacy focused-image sender", () => {
     const { api } = setup();
-    expect(api.on).not.toHaveBeenCalledWith("message_received", expect.any(Function), expect.anything());
+    expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
+    expect(api.on).not.toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-message-received-media" });
+    expect(api.on).not.toHaveBeenCalledWith("message_received", expect.any(Function), { name: "emotion-image-message-received" });
   });
 });
