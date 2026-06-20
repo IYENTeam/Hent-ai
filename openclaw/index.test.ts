@@ -244,11 +244,10 @@ describe("Hent-ai service adapter configuration", () => {
   });
 
 
-  it("delegates inbound message media and watcher recording to the service", async () => {
+  it("records inbound messages without sending pre-reply media", async () => {
     const sent: unknown[] = [];
-    const fetchMock = vi.fn(async (url: string, options: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string) => {
       if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
-      if (url === "https://hent.test/v1/pre-reply/media") return okJson({ media: { url: "https://cdn.test/focused.png", caption: "" } });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -265,10 +264,9 @@ describe("Hent-ai service adapter configuration", () => {
 
     await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user", "https://hent.test/v1/pre-reply/media"]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user"]);
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
-    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/pre-reply/media", expect.objectContaining({ method: "POST" }));
-    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", mediaUrl: "https://cdn.test/focused.png" })]);
+    expect(sent).toEqual([]);
   });
 
   it("delegates sent-message watcher evaluation, emits service nudge, and commits delivery", async () => {
@@ -315,7 +313,6 @@ describe("Hent-ai service adapter configuration", () => {
   it("fail-opens watcher hook service and outbound failures", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === "https://hent.test/v1/watcher/record-user") throw new Error("record down");
-      if (url === "https://hent.test/v1/pre-reply/media") return { ok: false, status: 503, json: async () => ({}) };
       if (url === "https://hent.test/v1/watcher/evaluate") throw new Error("evaluate down");
       throw new Error(`unexpected url ${url}`);
     });
