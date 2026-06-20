@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -55,6 +55,21 @@ describe("manifest", () => {
       const loaded = await loadManifest(tempDir);
       expect(loaded).toEqual(m);
     });
+
+    it("throws on corrupt manifest instead of treating it as missing", async () => {
+      await writeFile(join(tempDir, "manifest.json"), "{ truncated", "utf-8");
+      await expect(loadManifest(tempDir)).rejects.toThrow(SyntaxError);
+    });
+
+    it("writes manifest atomically without leaving temp files", async () => {
+      const m = createEmptyManifest();
+      m.activeSet = "atomic-test";
+      await saveManifest(tempDir, m);
+      expect(await loadManifest(tempDir)).toEqual(m);
+      const files = await readdir(tempDir);
+      expect(files).toContain("manifest.json");
+      expect(files.filter((file) => file.startsWith("manifest.json.tmp-"))).toEqual([]);
+    });
   });
 
   describe("loadManifestSync", () => {
@@ -73,6 +88,11 @@ describe("manifest", () => {
       await saveManifest(tempDir, m);
       const loaded = loadManifestSync(tempDir);
       expect(loaded).toEqual(m);
+    });
+
+    it("throws on corrupt manifest instead of treating it as missing", async () => {
+      await writeFile(join(tempDir, "manifest.json"), "{ truncated", "utf-8");
+      expect(() => loadManifestSync(tempDir)).toThrow(SyntaxError);
     });
   });
 

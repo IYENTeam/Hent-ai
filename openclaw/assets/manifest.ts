@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir, copyFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, copyFile, rename } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 
@@ -40,16 +40,26 @@ export const DEFAULT_EMOTIONS = [
   "focused",
 ] as const;
 
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
 /**
- * Load manifest from the given imageDir (async). Returns null if not found.
+ * Load manifest from the given imageDir (async). Returns null only if not found.
  */
 export async function loadManifest(imageDir: string): Promise<AssetManifest | null> {
   const manifestPath = resolve(imageDir, MANIFEST_FILENAME);
   try {
     const raw = await readFile(manifestPath, "utf-8");
     return JSON.parse(raw) as AssetManifest;
-  } catch {
-    return null;
+  } catch (error) {
+    if (isFileNotFoundError(error)) return null;
+    throw error;
   }
 }
 
@@ -61,17 +71,24 @@ export function loadManifestSync(imageDir: string): AssetManifest | null {
   try {
     const raw = readFileSync(manifestPath, "utf-8");
     return JSON.parse(raw) as AssetManifest;
-  } catch {
-    return null;
+  } catch (error) {
+    if (isFileNotFoundError(error)) return null;
+    throw error;
   }
 }
 
 /**
- * Save manifest to disk.
+ * Save manifest to disk atomically.
  */
 export async function saveManifest(imageDir: string, manifest: AssetManifest): Promise<void> {
+  await mkdir(imageDir, { recursive: true });
   const manifestPath = resolve(imageDir, MANIFEST_FILENAME);
-  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  const tempPath = resolve(
+    imageDir,
+    `${MANIFEST_FILENAME}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  await writeFile(tempPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  await rename(tempPath, manifestPath);
 }
 
 /**
