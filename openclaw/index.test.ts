@@ -244,12 +244,9 @@ describe("Hent-ai service adapter configuration", () => {
   });
 
 
-  it("records inbound messages without sending pre-reply media", async () => {
+  it("does not send pre-reply media or watcher events by default", async () => {
     const sent: unknown[] = [];
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
-      throw new Error(`unexpected url ${url}`);
-    });
+    const fetchMock = vi.fn(async () => okJson({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     const events = new Map<string, Handler>();
     const api = {
@@ -264,9 +261,46 @@ describe("Hent-ai service adapter configuration", () => {
 
     await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
 
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  it("records inbound messages when watcher is enabled", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, watcher: true } });
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user"]);
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
-    expect(sent).toEqual([]);
+  });
+
+  it("sends pre-reply media only when preReplyMedia is enabled", async () => {
+    const sent: unknown[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/pre-reply/media") return okJson({ media: { url: "https://cdn.test/focused.png", caption: "" } });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const events = new Map<string, Handler>();
+    const api = {
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, preReplyMedia: { enabled: true } } },
+      config: { discord: {} },
+      runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-media" }; } }) } } },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      supportsHook: vi.fn((name: string) => name === "reply_payload_sending"),
+      on: vi.fn((name: string, handler: Handler) => events.set(name, handler)),
+    };
+    plugin.register(api as any);
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/pre-reply/media"]);
+    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", mediaUrl: "https://cdn.test/focused.png" })]);
   });
 
   it("delegates sent-message watcher evaluation, emits service nudge, and commits delivery", async () => {
@@ -279,7 +313,7 @@ describe("Hent-ai service adapter configuration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const events = new Map<string, Handler>();
     const api = {
-      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, watcher: { enabled: true } } },
       config: { discord: {} },
       runtime: { channel: { outbound: { loadAdapter: async () => ({ sendText: async (ctx: unknown) => { sent.push(ctx); return { messageId: "sent-text" }; } }) } } },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -319,7 +353,7 @@ describe("Hent-ai service adapter configuration", () => {
     vi.stubGlobal("fetch", fetchMock);
     const events = new Map<string, Handler>();
     const api = {
-      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, watcher: true, preReplyMedia: true } },
       config: { discord: {} },
       runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async () => { throw new Error("send down"); }, sendText: async () => { throw new Error("send down"); } }) } } },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
