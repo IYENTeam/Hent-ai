@@ -64,6 +64,7 @@ The tool first generates a base character image, then uses it as a reference to 
 | `-o, --output` | Output directory | `./assets` |
 | `-m, --model` | Codex model | `gpt-5.4` |
 | `-s, --size` | Image size (e.g. `1024x1024`) | `1024x1024` |
+| `-j, --concurrency` | `auto` adaptive mode, or fixed parallel emotion generations 1-8 | `auto` |
 | `--no-keep-base` | Don't save base.png to output | — |
 | `--only` | Regenerate only specific emotions (comma-separated, e.g. `--only sorry,confused`) | all |
 
@@ -71,6 +72,7 @@ The tool first generates a base character image, then uses it as a reference to 
 
 - Maximum **3 reference images** per generation request
 - Images larger than 768px are automatically resized (preserving aspect ratio) to reduce payload size and prevent timeouts
+- `--concurrency auto` starts emotion generation at 8 parallel requests, adds small start-time jitter, and backs off with jitter on 429/timeout/5xx responses
 - If a prompt triggers a content-policy rejection and a `classifierModel` is configured, the prompt is automatically rephrased and retried (up to 3 attempts)
 - **CLI limitation**: `hent-ai generate` does not support automatic safety rephrase — it uses Codex auth only, with no separate LLM provider for prompt rewriting. Use the agent-driven setup skill when you need an agent to rewrite rejected prompts interactively.
 

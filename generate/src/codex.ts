@@ -8,6 +8,23 @@ import {
   parseSseText,
 } from "god-tibo-imagen";
 
+export class CodexHttpError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "CodexHttpError";
+  }
+}
+
+export class CodexTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexTimeoutError";
+  }
+}
+
 const MAX_REFERENCE_IMAGES = 3;
 const MAX_IMAGE_DIMENSION = 768;
 const FETCH_TIMEOUT_MS = 90_000;
@@ -160,7 +177,7 @@ async function attempt(
   } catch (err) {
     clearTimeout(timer);
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(
+      throw new CodexTimeoutError(
         `Codex backend request timed out after ${FETCH_TIMEOUT_MS / 1000}s. ` +
         `Try reducing reference image count or size.`,
       );
@@ -171,7 +188,8 @@ async function attempt(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(
+    throw new CodexHttpError(
+      response.status,
       `Codex backend returned HTTP ${response.status}: ${text.slice(0, 500)}`,
     );
   }
