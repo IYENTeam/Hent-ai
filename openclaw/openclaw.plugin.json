@@ -33,6 +33,30 @@
             "description": "Service request timeout in milliseconds.",
             "default": 15000,
             "minimum": 1
+          },
+          "preReplyMedia": {
+            "description": "Opt-in. When enabled, send service-selected media as a separate message on inbound message_received. Defaults to off.",
+            "default": false,
+            "oneOf": [
+              { "type": "boolean" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "enabled": { "type": "boolean" } }
+              }
+            ]
+          },
+          "watcher": {
+            "description": "Opt-in. When enabled, register the group-chat anti-fixation watcher hooks (record/evaluate/commit). Defaults to off.",
+            "default": false,
+            "oneOf": [
+              { "type": "boolean" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "enabled": { "type": "boolean" } }
+              }
+            ]
           }
         }
       }

@@ -42,7 +42,9 @@ Any new emotion requires an explicit roadmap decision, asset expectations, class
 
 ## Architecture model
 
-Hent-ai has a **server model**, a **client model**, and a **shared contract**.
+Hent-ai has a **server model** (the canonical Hent-ai service + thin OpenClaw adapter), a **compatibility server surface** (Hermes), and a **shared contract**.
+
+> Note: a Cursor client surface previously existed but was removed (see commit `a3b4248`). There is no `cursor/` package in this repository. Do not document Cursor as a current runtime; if a client surface is revived, it must get an explicit roadmap decision.
 
 ### Server model — Hent-ai service is canonical for OpenClaw delivery
 
@@ -60,9 +62,10 @@ Service-owned responsibilities:
    - Treat SQLite-backed service state as the accepted runtime profile architecture unless a later owner-approved decision replaces it.
 
 3. **OpenClaw adapter boundary**
-   - Register OpenClaw hooks and forward final assistant reply context to `/v1/final-response/verdict`.
+   - Always register `reply_payload_sending` and forward final assistant reply context to `/v1/final-response/verdict`.
    - Attach service-returned media to the outgoing payload.
-   - Keep text delivery owned by OpenClaw.
+   - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
+   - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**
@@ -80,34 +83,6 @@ Current server code references:
 - `docs/service-owned-gates.md` — current PR/release gate policy for this boundary.
 
 Historical OpenClaw-local implementations that performed local classifier fallback, direct Discord REST fallback, manifest scanning, profile DB lookup, or image generation are superseded and non-normative. They are not a precedent for new PRs.
-
-### Client model — Cursor is a lightweight client surface
-
-Cursor is not the identity/profile source of truth. It is a local client integration.
-
-Cursor responsibilities:
-
-- install a Cursor rule;
-- install/copy static optimized emotion assets;
-- instruct the agent to classify the response and append a markdown image as the last line;
-- use the shared six-emotion vocabulary/rule classifier where applicable.
-
-Cursor does **not** own:
-
-- SQLite profile CRUD;
-- channel-to-profile mapping;
-- channel enable policy;
-- `soulSnippet` prompt injection;
-- server-side message hooks;
-- Discord send/edit behavior;
-- image generation orchestration.
-
-Cursor code references:
-
-- `cursor/bin/install.ts` — writes `.cursor/rules/hent-ai.mdc` and installs static assets.
-- `cursor/src/classifier/ruleClassifier.ts` — rule classifier for client-side emotion choice.
-- `cursor/src/types.ts` — client emotion/rule types.
-- `cursor/README.md` — client install and local rule behavior.
 
 ### Compatibility server surface — Hermes
 
@@ -237,12 +212,11 @@ If filesystem import/export is needed later, treat it as an interchange format a
 
 ### Symmetric platform wording
 
-Do not describe OpenClaw, Cursor, and Hermes as equal identity/profile runtimes.
+Do not describe OpenClaw and Hermes as equal identity/profile runtimes.
 
 Correct wording:
 
 - Hent-ai service + thin OpenClaw adapter: canonical server runtime path for OpenClaw delivery.
-- Cursor: lightweight client surface.
 - Hermes: compatibility server adapter.
 - Shared: contract layer.
 - Generate: asset generation helper.
@@ -278,7 +252,7 @@ Required direction:
 
 - Define a shared classifier fixture/corpus covering the six canonical emotions.
 - Include Korean, English, mixed-language, task-progress, apology, uncertainty, greeting, and noisy media-tag cases.
-- Use the same fixture expectations across OpenClaw, Cursor, and Hermes where practical.
+- Use the same fixture expectations across the service/shared path and Hermes where practical.
 - Document accepted server/client differences.
 - Treat silent classifier drift as a roadmap risk.
 - Do not reintroduce OpenClaw-local classifier rules. OpenClaw is service-owned; final-response emotion/verdict selection belongs in the Hent-ai service and shared contract layer.
@@ -296,15 +270,15 @@ Implementation gates:
 - `soulSnippet` injection remains bounded by host prompt policy;
 - The service-owned OpenClaw path is canonical; client/compat surfaces mirror only the parts they can honestly support.
 
-### P3 — Client and compatibility UX
+### P3 — Compatibility UX
 
-Client and compatibility surfaces should be honest about their scope.
+Compatibility surfaces should be honest about their scope.
 
 Direction:
 
-- Cursor should stay a lightweight local rule/assets installer unless a separate client state model is explicitly approved.
 - Hermes should remain compatibility-focused unless it adopts shared profile DB state intentionally.
-- Docs must not imply Cursor/Hermes have OpenClaw profile orchestration.
+- Docs must not imply Hermes has OpenClaw profile orchestration.
+- If a client surface (e.g. a future Cursor revival) is reintroduced, it needs an explicit roadmap decision and must stay a lightweight local rule/assets installer unless a separate client state model is approved.
 
 ### P4 — Better creation/onboarding UX
 
@@ -333,7 +307,7 @@ Recommended cancellation/pause triggers:
 
 - runtime profile architecture that bypasses SQLite `profiles` / `channel_profiles`;
 - filesystem `characters/<id>/character.json` revived as a second runtime SSOT;
-- docs that present OpenClaw, Cursor, and Hermes as symmetric profile runtimes;
+- docs that present OpenClaw and Hermes as symmetric profile runtimes;
 - dynamic personality injection without host prompt-policy boundaries;
 - platform-specific classifier rewrites without parity evidence;
 - OpenClaw-local classifier or asset-selection fallback after the service-owned adapter migration;
@@ -349,7 +323,6 @@ Before merging or accepting identity/profile work, verify:
 - [ ] The change cites this roadmap if it affects profile/personality identity.
 - [ ] The change keeps service-owned final-response verdict/profile/channel policy as the canonical OpenClaw delivery path.
 - [ ] The change uses SQLite `profiles` / `channel_profiles` unless a new owner-approved decision replaces that architecture.
-- [ ] The change describes Cursor as a client surface, not a server/profile SSOT.
 - [ ] The change describes Hermes as a compatibility adapter unless it intentionally adopts shared DB state.
 - [ ] The change does not revive filesystem `characters/<id>/character.json` as a second runtime SSOT.
 - [ ] Classifier behavior changes include parity fixtures or documented server/client differences.

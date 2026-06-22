@@ -8,7 +8,7 @@ Hent-ai's live OpenClaw integration is service-owned. After the full service ada
 - `openclaw/` is a thin OpenClaw adapter. It validates config, forwards final assistant reply context to the service, and attaches service-returned Stage-1 media to the outgoing payload.
 - `shared/` is the contract layer for definitions and fixtures that must be reused across surfaces.
 - `hermes/` is a compatibility adapter. It may keep lightweight rules only where Hermes cannot call the service yet, but those rules must be treated as compatibility mirrors, not a new source of truth.
-- Cursor/client surfaces are lightweight clients. They must not be documented as canonical server/profile runtimes.
+- There is no current client surface. The former Cursor client was removed (commit `a3b4248`); if any client surface is revived it must not be documented as a canonical server/profile runtime.
 
 ## Hard rejects
 
@@ -16,7 +16,7 @@ Reject, close, or request redesign for changes that do any of the following with
 
 - reintroduce OpenClaw-local emotion classifiers, local asset selection, manifest scanning, profile DB reads, `@hent-ai/generate` calls, direct Discord REST calls, or delivery orchestration;
 - add platform-specific classifier rewrites without shared fixtures or documented server/client differences;
-- duplicate service-owned channel/profile policy in OpenClaw, Cursor, Hermes, cron, or scripts;
+- duplicate service-owned channel/profile policy in OpenClaw, Hermes, cron, or scripts;
 - revive filesystem `characters/<id>/character.json` as runtime SSOT;
 - treat successful stub tests as enough for runtime delivery, attachment, verifier, or watcher behavior;
 - merge config/schema/plugin entry changes while Changeset Validation requires owner review and no owner approval/`owner-reviewed` label exists.
@@ -48,7 +48,7 @@ CI green does not override this gate. Contract changes can pass tests while stil
 
 Before accepting a PR touching Hent-ai runtime behavior:
 
-- [ ] State which layer owns the behavior: `service`, `openclaw`, `shared`, `hermes`, Cursor/client, or generate.
+- [ ] State which layer owns the behavior: `service`, `openclaw`, `shared`, `hermes`, or generate.
 - [ ] Confirm the PR does not create a second source of truth for classifier, profile, channel policy, assets, or delivery.
 - [ ] Confirm OpenClaw remains service-thin if `openclaw/` changed.
 - [ ] Confirm Hermes changes are compatibility-only and tied to `shared/` parity evidence.
