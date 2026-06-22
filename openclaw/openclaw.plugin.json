@@ -71,6 +71,23 @@
                 }
               }
             ]
+          },
+          "conversation": {
+            "type": "object",
+            "description": "Opt-in service-owned group-chat conversation forwarding.",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Forward group-chat conversation events to the Hent-ai service.",
+                "default": false
+              },
+              "watcherCompatibility": {
+                "type": "boolean",
+                "description": "Also enable legacy watcher-compatible record/evaluate forwarding while the service owns policy.",
+                "default": true
+              }
+            }
           }
         }
       }

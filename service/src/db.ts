@@ -1,6 +1,10 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { initializeServiceSchema } from "./db-schema.js";
+import { rowToJob, rowToProfile } from "./db-rows.js";
+
+export { SCHEMA_VERSION } from "./db-schema.js";
 
 export type Profile = {
   id: string;
@@ -54,162 +58,10 @@ export type GenerationJob = {
   updatedAt: string;
 };
 
-export const SCHEMA_VERSION = 1;
-
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY,
-  applied_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS profiles (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  character TEXT,
-  soul_snippet TEXT,
-  model TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS channel_mappings (
-  channel_id TEXT PRIMARY KEY,
-  profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL,
-  mode TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS channel_settings (
-  channel_id TEXT PRIMARY KEY,
-  enabled INTEGER CHECK (enabled IN (0, 1)),
-  cron_enabled INTEGER CHECK (cron_enabled IN (0, 1)),
-  asset_set_id TEXT,
-  settings_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS asset_sets (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  character TEXT,
-  model TEXT,
-  manifest_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS storage_objects (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  storage_key TEXT NOT NULL UNIQUE,
-  object_url TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
-  content_type TEXT NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  provenance TEXT NOT NULL,
-  local_path TEXT,
-  metadata_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS assets (
-  id TEXT PRIMARY KEY,
-  asset_set_id TEXT NOT NULL REFERENCES asset_sets(id) ON DELETE CASCADE,
-  emotion TEXT NOT NULL,
-  filename TEXT NOT NULL,
-  storage_object_id INTEGER NOT NULL REFERENCES storage_objects(id) ON DELETE CASCADE,
-  content_hash TEXT NOT NULL,
-  metadata_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(asset_set_id, emotion, filename)
-);
-
-CREATE TABLE IF NOT EXISTS emotion_mappings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
-  asset_set_id TEXT REFERENCES asset_sets(id) ON DELETE CASCADE,
-  emotion TEXT NOT NULL,
-  asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(profile_id, asset_set_id, emotion)
-);
-
-CREATE TABLE IF NOT EXISTS generation_jobs (
-  id TEXT PRIMARY KEY,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
-  request_json TEXT NOT NULL,
-  result_json TEXT,
-  error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS verifier_cache (
-  cache_key TEXT PRIMARY KEY,
-  verdict_json TEXT NOT NULL,
-  expires_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS rate_limits (
-  bucket_key TEXT PRIMARY KEY,
-  count INTEGER NOT NULL,
-  reset_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS import_runs (
-  id TEXT PRIMARY KEY,
-  checksum TEXT NOT NULL,
-  dry_run INTEGER NOT NULL CHECK (dry_run IN (0, 1)),
-  report_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-`;
-
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 function now(): string {
   return new Date().toISOString();
-}
-
-function parseJson<T>(value: string | null | undefined, fallback: T): T {
-  if (!value) return fallback;
-  return JSON.parse(value) as T;
-}
-
-function columnExists(db: Database.Database, table: string, column: string): boolean {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => (row as { name: string }).name === column);
-}
-
-function rowToProfile(row: Record<string, unknown>): Profile {
-  return {
-    id: String(row.id),
-    name: String(row.name),
-    character: (row.character as string | null) ?? null,
-    soulSnippet: (row.soul_snippet as string | null) ?? null,
-    model: (row.model as string | null) ?? null,
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  };
-}
-
-function rowToJob(row: Record<string, unknown>): GenerationJob {
-  return {
-    id: String(row.id),
-    status: row.status as GenerationJob["status"],
-    request: parseJson(String(row.request_json), {}),
-    result: parseJson(row.result_json as string | null, null),
-    error: (row.error as string | null) ?? null,
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-  };
 }
 
 export class ServiceDatabase {
@@ -228,13 +80,7 @@ export class ServiceDatabase {
   }
 
   initialize(): void {
-    this.db.exec(SCHEMA_SQL);
-    if (!columnExists(this.db, "channel_settings", "cron_enabled")) {
-      this.db.exec("ALTER TABLE channel_settings ADD COLUMN cron_enabled INTEGER CHECK (cron_enabled IN (0, 1))");
-    }
-    this.db.prepare(
-      "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-    ).run(SCHEMA_VERSION, now());
+    initializeServiceSchema(this.db, now());
   }
 
   tableNames(): string[] {

@@ -4,3 +4,6 @@ export * from "./importer.js";
 export * from "./server.js";
 export * from "./verifier.js";
 export * from "./generation-worker.js";
+export * from "./conversation-config.js";
+export * from "./conversation-contracts.js";
+export * from "./conversation-speech-policy.js";

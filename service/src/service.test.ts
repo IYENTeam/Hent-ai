@@ -1,70 +1,12 @@
 import Database from "better-sqlite3";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ServiceDatabase } from "./db.js";
 import { importAssets } from "./importer.js";
-import { createHentAiServer, listen, loadServiceConfig, redactBearerToken } from "./server.js";
-import type { FinalResponseVerifier } from "./verifier.js";
+import { loadServiceConfig, redactBearerToken } from "./server.js";
 import { runNextGenerationJob } from "./generation-worker.js";
-
-const token = "test-token";
-const tempRoots: string[] = [];
-const nullVerifier: FinalResponseVerifier = { verify: async () => null };
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "hent-service-"));
-  tempRoots.push(dir);
-  return dir;
-}
-
-afterEach(() => {
-  for (const dir of tempRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-async function withServer<T>(
-  db: ServiceDatabase,
-  fn: (baseUrl: string) => Promise<T>,
-  assetRoot?: string,
-  verifier: FinalResponseVerifier = nullVerifier,
-): Promise<T> {
-  const binding = await listen(createHentAiServer({ db, token, assetRoot, verifier }));
-  try {
-    return await fn(binding.url);
-  } finally {
-    await binding.close();
-    db.close();
-  }
-}
-
-async function request(baseUrl: string, path: string, options: RequestInit = {}): Promise<Response> {
-  return fetch(`${baseUrl}${path}`, {
-    ...options,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      ...(options.headers ?? {}),
-    },
-  });
-}
-
-function writeFixtureAssets(root: string): void {
-  mkdirSync(join(root, "sets", "gothic-v1"), { recursive: true });
-  writeFileSync(join(root, "sets", "gothic-v1", "neutral.png"), Buffer.from("fake png"));
-  writeFileSync(join(root, "manifest.json"), JSON.stringify({
-    activeSet: "gothic-v1",
-    sets: {
-      "gothic-v1": {
-        name: "Dark Gothic Girl v1",
-        character: "character",
-        model: "test-model",
-        emotions: { neutral: ["neutral.png"] },
-      },
-    },
-  }));
-  writeFileSync(join(root, "channel-overrides.json"), JSON.stringify({ c1: { enabled: true } }));
-}
+import { request, tempDir, token, withServer, writeFixtureAssets } from "./service-test-helpers.js";
 
 describe("service auth, health, and config", () => {
   it("returns health without auth and protects v1 APIs with bearer auth", async () => {
@@ -255,7 +197,7 @@ describe("runtime and job APIs", () => {
       expect(verdict.status).toBe(200);
       expect(await verdict.json()).toMatchObject({ verdict: { emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict", media: { filename: "neutral.png", contentType: "image/png", url: "/static/sets/gothic-v1/neutral.png" } } });
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
-    }, root, { verify: async () => ({ emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict" }) });
+    }, { assetRoot: root, verifier: { verify: async () => ({ emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict" }) } });
   });
 
   it("persists async generation jobs and exposes runner-processed status", async () => {
@@ -272,110 +214,6 @@ describe("runtime and job APIs", () => {
       const status = await request(baseUrl, `/v1/jobs/${jobId}`);
       expect(status.status).toBe(200);
       expect(await status.json()).toEqual({ jobId, id: jobId, status: "succeeded", result: { provider: "mock", request: { communitySelector: { conversationWindow: [{ authorId: "u1", content: "hello", createdAt: expect.any(String) }], draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } } }, createdAt: expect.any(String), updatedAt: expect.any(String) });
-    });
-  });
-});
-
-
-describe("service-owned watcher API", () => {
-  it("records user turns and evaluates repeated agent fixation through service endpoints", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      const record = await request(baseUrl, "/v1/watcher/record-user", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "channel:c1:session:s1", text: "Please switch to deploy risk", id: "u1" }),
-      });
-      expect(record.status).toBe(200);
-      expect(await record.json()).toEqual({ ok: true });
-
-      const first = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "channel:c1:session:s1", channelId: "c1", text: "We should keep doing the same plan now", messageId: "a1", sessionId: "s1" }),
-      });
-      expect(first.status).toBe(200);
-      expect(await first.json()).toMatchObject({ decision: "no_reply" });
-
-      const second = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "channel:c1:session:s1", channelId: "c1", text: "We should keep doing the same plan now", messageId: "a2", sessionId: "s1" }),
-      });
-      expect(second.status).toBe(200);
-      const body = await second.json();
-      expect(body).toMatchObject({ decision: "nudge", audit: { schema: "conversation_watcher.host_policy_gate_audit.v1", allowed: true } });
-      expect(body.nudgeText).toContain("같은 프레임");
-    });
-  });
-
-
-  it("suppresses duplicate/cooldown after committed watcher nudge delivery", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-cool", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a1" }),
-      });
-      const first = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-cool", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a2" }),
-      });
-      const firstBody = await first.json();
-      expect(firstBody).toMatchObject({ decision: "nudge", audit: { allowed: true, cooldownKey: "scope-cool:stale_expression_repeated", internalSignalId: "sig-stale-a2" } });
-
-      const commit = await request(baseUrl, "/v1/watcher/commit-delivery", {
-        method: "POST",
-        body: JSON.stringify({ cooldownKey: firstBody.audit.cooldownKey, scopeId: "scope-cool", signalId: firstBody.audit.internalSignalId, deliveryMessageId: "nudge-1" }),
-      });
-      expect(commit.status).toBe(200);
-      expect(await commit.json()).toEqual({ ok: true });
-
-      const second = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-cool", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a3" }),
-      });
-      expect(await second.json()).toMatchObject({ decision: "no_reply", audit: { allowed: false, suppressedReason: "cooldown" } });
-    });
-  });
-
-  it("honors cross-thread and privacy host policy suppression", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-policy", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a1" }),
-      });
-      const crossThread = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-policy", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a2", sourceThreadId: "t1", targetThreadId: "t2" }),
-      });
-      expect(await crossThread.json()).toMatchObject({ decision: "no_reply", audit: { allowed: false, suppressedReason: "thread_mismatch" } });
-
-      const privacy = await request(baseUrl, "/v1/watcher/evaluate", {
-        method: "POST",
-        body: JSON.stringify({ scopeId: "scope-policy", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a3", privacyRisk: true }),
-      });
-      expect(await privacy.json()).toMatchObject({ decision: "no_reply", audit: { allowed: false, suppressedReason: "privacy" } });
-    });
-  });
-
-  it("rejects malformed watcher delivery commits", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      const badCommit = await request(baseUrl, "/v1/watcher/commit-delivery", { method: "POST", body: JSON.stringify({ cooldownKey: "k" }) });
-      expect(badCommit.status).toBe(400);
-      expect(await badCommit.json()).toMatchObject({ error: "bad_request", message: "cooldownKey, scopeId, signalId, and deliveryMessageId are required" });
-    });
-  });
-
-  it("rejects malformed watcher requests without mutating normal APIs", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      const badRecord = await request(baseUrl, "/v1/watcher/record-user", { method: "POST", body: JSON.stringify({ scopeId: "s" }) });
-      expect(badRecord.status).toBe(400);
-      expect(await badRecord.json()).toMatchObject({ error: "bad_request", message: "scopeId and text are required" });
-
-      const badEval = await request(baseUrl, "/v1/watcher/evaluate", { method: "POST", body: JSON.stringify({ scopeId: "s", text: "x" }) });
-      expect(badEval.status).toBe(400);
-      expect(await badEval.json()).toMatchObject({ error: "bad_request", message: "scopeId, channelId, text, and messageId are required" });
     });
   });
 });
