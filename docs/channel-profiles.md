@@ -45,7 +45,7 @@ OpenClaw 플러그인 config에는 서비스 접속 정보만 필요합니다.
 
 ## Hook 흐름
 
-핵심 경로인 final-response media는 항상 동작하고, pre-reply / watcher hook은 config로 켜야만 등록됩니다.
+핵심 경로인 final-response media는 항상 동작합니다. adapter가 pre-reply / watcher handler를 등록하더라도, 관련 service call과 outbound 전송은 config로 켰을 때만 실행됩니다.
 
 ```text
 Final assistant reply payload (항상)
@@ -64,7 +64,7 @@ message_received / message_sent (watcher 켤 때)
        └─ decision=nudge면 nudge text 전송 후 POST /v1/watcher/commit-delivery
 ```
 
-Block payload과 final이 아닌 `reply_payload_sending` kind는 무시됩니다. pre-reply / watcher 전송은 직접 Discord REST가 아니라 OpenClaw outbound channel adapter(`runtime.channel.outbound`)를 사용합니다.
+Block payload과 final이 아닌 `reply_payload_sending` kind는 무시됩니다. pre-reply / watcher 전송은 직접 Discord REST가 아니라 OpenClaw outbound channel adapter abstraction을 사용합니다.
 
 Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media leaves the original payload unchanged so OpenClaw text continues.
 

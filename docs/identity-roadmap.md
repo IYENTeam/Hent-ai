@@ -148,11 +148,11 @@ It must not define independent profile DB semantics.
 
 ## Current accepted profile architecture
 
-The accepted runtime profile architecture is SQLite-backed profile state plus profile image directories.
+The accepted runtime profile architecture is SQLite-backed service state plus profile image directories. OpenClaw does not read a local profile DB or `defaultProfile`; it receives the selected media from the Hent-ai service verdict/pre-reply APIs.
 
 ### Profile storage
 
-Profiles are stored in SQLite at `<imageDir>/hentai.db` through `ProfileDatabase`.
+Profiles are stored in SQLite through `ProfileDatabase` in the service runtime.
 
 A profile may include:
 
@@ -165,29 +165,17 @@ A profile may include:
 
 ### Profile image directories
 
-Profile-specific images live under:
+Profile-specific images live under the configured service image directory:
 
 ```text
 <imageDir>/profiles/<profileId>/
 ```
 
-OpenClaw resolves profile image directories as:
-
-1. active channel profile directory, if mapped and present;
-2. `defaultProfile` directory, if configured and present;
-3. root `imageDir` fallback.
-
-### Active profile resolution
-
-For OpenClaw channels, the active profile is resolved in this order:
-
-1. `channel_profiles[channelId]` from SQLite;
-2. plugin config `defaultProfile`;
-3. no profile, falling back to the base image directory.
+The service resolves active profile/media state from its SQLite-backed `channel_profiles` mapping and asset set records. The OpenClaw adapter must not duplicate that resolution logic or fall back to plugin-local profile configuration.
 
 ### Dynamic persona injection
 
-Profiles may define `soulSnippet`. OpenClaw can append it to the base prompt under:
+Profiles may define `soulSnippet`. The service-owned prompt/persona layer can append it to the base prompt under:
 
 ```text
 --- Hent-ai Character ---

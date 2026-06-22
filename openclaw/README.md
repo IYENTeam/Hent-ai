@@ -41,7 +41,7 @@ Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adap
 
 ## Runtime Hooks
 
-The final-response media path is always active. The pre-reply and watcher hooks register only when explicitly enabled.
+The final-response media path is always active. The pre-reply and watcher handlers may be registered by the adapter, but service calls and outbound delivery for pre-reply/watcher behavior run only when the corresponding feature is explicitly enabled.
 
 | Hook | When | Condition | Service call |
 | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ The final-response media path is always active. The pre-reply and watcher hooks 
 | `message_received` | Inbound user message | `watcher` enabled | `POST /v1/watcher/record-user` (records conversation window) |
 | `message_sent` | Outbound assistant message | `watcher` enabled | `POST /v1/watcher/evaluate`; on a `nudge` verdict, sends the nudge text and `POST /v1/watcher/commit-delivery` |
 
-Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter (`runtime.channel.outbound`), never a direct Discord REST call.
+Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call.
 
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
