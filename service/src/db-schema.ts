@@ -195,7 +195,10 @@ export function initializeServiceSchema(db: Database.Database, appliedAt: string
   if (!columnExists(db, "channel_settings", "cron_enabled")) {
     db.exec("ALTER TABLE channel_settings ADD COLUMN cron_enabled INTEGER CHECK (cron_enabled IN (0, 1))");
   }
-  db.prepare(
-    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-  ).run(SCHEMA_VERSION, appliedAt);
+  const existingVersion = db.prepare<[], { readonly version: number }>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version ?? 0;
+  if (existingVersion < SCHEMA_VERSION) {
+    db.prepare(
+      "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+    ).run(SCHEMA_VERSION, appliedAt);
+  }
 }

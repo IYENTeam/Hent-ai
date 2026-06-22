@@ -467,6 +467,14 @@ function safeSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function addToSuppressSet(set: Set<string>, value: string, maxSize: number): void {
+  if (set.size >= maxSize) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+  set.add(value);
+}
+
 function isConversationDeliveryPlan(value: unknown): value is ConversationDeliveryPlan {
   const record = asRecord(value);
   if (!record) return false;
@@ -546,6 +554,7 @@ async function sendConversationDeliveryPlan(
   scopeId: string,
   baseConfig: { baseUrl: URL; token: string; timeoutMs: number },
   suppressMessageIds: Set<string>,
+  suppressMaxSize: number,
 ): Promise<void> {
   const deliveryMessageIds: Record<string, string> = {};
   const requiredChunkIds = new Set(response.commit.requiredChunkIds);
@@ -554,7 +563,7 @@ async function sendConversationDeliveryPlan(
     const sentMessageId = await sender?.sendText?.(response.channelId, chunk.text);
     if (sentMessageId && requiredChunkIds.has(chunk.chunkId)) {
       deliveryMessageIds[chunk.chunkId] = sentMessageId;
-      suppressMessageIds.add(sentMessageId);
+      addToSuppressSet(suppressMessageIds, sentMessageId, suppressMaxSize);
     }
   }
 
@@ -701,6 +710,7 @@ export default definePluginEntry({
     const serviceFeatureConfig = resolveServiceConfig(api);
     const preReplyMediaEnabled = featureEnabled(serviceFeatureConfig?.preReplyMedia, false);
     const selfLoopMessageIds = new Set<string>();
+    const SELF_LOOP_MAX_SIZE = 100;
     const serviceConversation = serviceFeatureConfig?.conversation;
     const watcherEnabled = serviceConversation?.enabled === false
       ? false
@@ -769,14 +779,14 @@ export default definePluginEntry({
         logger: api.logger,
       })) ?? null;
       if (result?.deliveryPlan) {
-        await sendConversationDeliveryPlan(sender, result.deliveryPlan, scope.scopeId, config, selfLoopMessageIds);
+        await sendConversationDeliveryPlan(sender, result.deliveryPlan, scope.scopeId, config, selfLoopMessageIds, SELF_LOOP_MAX_SIZE);
         return;
       }
       const nudge = stringValue(result?.nudgeText);
       if (nudge) {
         const deliveryMessageId = await sender?.sendText?.(channelId, nudge);
         if (deliveryMessageId) {
-          selfLoopMessageIds.add(deliveryMessageId);
+          addToSuppressSet(selfLoopMessageIds, deliveryMessageId, SELF_LOOP_MAX_SIZE);
         }
         const audit = asRecord(result?.audit);
         const cooldownKey = stringValue(audit?.cooldownKey);
