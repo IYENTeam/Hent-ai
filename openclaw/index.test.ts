@@ -265,9 +265,10 @@ describe("Hent-ai service adapter configuration", () => {
     expect(sent).toEqual([]);
   });
 
-  it("records inbound messages when watcher is enabled", async () => {
+  it("records inbound messages and evaluates on intake when watcher is enabled", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "no_reply", audit: null });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -275,8 +276,12 @@ describe("Hent-ai service adapter configuration", () => {
 
     await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["https://hent.test/v1/watcher/record-user"]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://hent.test/v1/watcher/record-user",
+      "https://hent.test/v1/watcher/evaluate",
+    ]);
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/evaluate", expect.objectContaining({ method: "POST" }));
   });
 
   it("forwards conversation config forwarding options to watcher service requests", async () => {
@@ -300,15 +305,25 @@ describe("Hent-ai service adapter configuration", () => {
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "https://hent.test/v1/watcher/record-user",
-      "https://hent.test/v1/watcher/evaluate",
+      "https://hent.test/v1/watcher/evaluate",  // intake evaluate (on message_received)
+      "https://hent.test/v1/watcher/evaluate",  // post-reply evaluate (on message_sent)
     ]);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
       text: "hello",
       id: "u1",
+      channelId: "123",
       conversation: { enabled: true, watcherCompatibility: true },
     });
+    // intake evaluate body
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      scopeId: "channel:123:session:s1",
+      channelId: "123",
+      text: "hello",
+      conversation: { enabled: true, watcherCompatibility: true },
+    });
+    // post-reply evaluate body
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
       channelId: "123",
       text: "repeat",

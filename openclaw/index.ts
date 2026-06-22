@@ -727,14 +727,51 @@ export default definePluginEntry({
       if (!channelId || !content) return;
       const scope = watcherScopeId(channelId, event, ctx);
       if (watcherEnabled) {
-        await callJsonService({
+        const recordResult = await callJsonService({
           baseUrl: config.baseUrl,
           token: config.token,
           timeoutMs: config.timeoutMs,
           endpoint: "/v1/watcher/record-user",
-          body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId), ...(conversation ? { conversation } : {}) },
+          body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId), channelId, ...(conversation ? { conversation } : {}) },
           logger: api.logger,
         });
+        // Evaluate immediately on user message intake
+        const messageId = stringValue(record.messageId) ?? `intake-${Date.now()}`;
+        const evalResult = parseMessageSentResponse(await callJsonService({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          timeoutMs: config.timeoutMs,
+          endpoint: "/v1/watcher/evaluate",
+          body: {
+            scopeId: scope.scopeId,
+            channelId,
+            text: content,
+            messageId,
+            sourceThreadId: scope.threadId,
+            sessionId: scope.sessionId,
+            ...(conversation ? { conversation } : {}),
+          },
+          logger: api.logger,
+        })) ?? null;
+        if (evalResult?.deliveryPlan) {
+          await sendConversationDeliveryPlan(sender, evalResult.deliveryPlan, scope.scopeId, config, selfLoopMessageIds, SELF_LOOP_MAX_SIZE);
+        } else if (evalResult?.nudgeText) {
+          const nudgeId = await sender?.sendText?.(channelId, evalResult.nudgeText);
+          if (nudgeId) addToSuppressSet(selfLoopMessageIds, nudgeId, SELF_LOOP_MAX_SIZE);
+          const audit = asRecord(evalResult?.audit);
+          const cooldownKey = stringValue(audit?.cooldownKey);
+          const signalId = stringValue(audit?.internalSignalId);
+          if (nudgeId && cooldownKey && signalId) {
+            await callJsonService({
+              baseUrl: config.baseUrl,
+              token: config.token,
+              timeoutMs: config.timeoutMs,
+              endpoint: "/v1/watcher/commit-delivery",
+              body: { cooldownKey, scopeId: scope.scopeId, signalId, deliveryMessageId: nudgeId },
+              logger: api.logger,
+            });
+          }
+        }
       }
       if (preReplyMediaEnabled) {
         const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
