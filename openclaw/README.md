@@ -1,8 +1,8 @@
 # Hent-ai OpenClaw Adapter
 
-Minimal Hent-ai service adapter for OpenClaw final assistant reply media.
+Minimal Hent-ai service adapter for OpenClaw.
 
-The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context to the Hent-ai HTTP service, validates the service response, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). Text delivery remains owned by OpenClaw.
+The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). Text delivery remains owned by OpenClaw and uses host send APIs.
 
 ## Configuration
 
@@ -18,7 +18,11 @@ Configure the `hentAiService` namespace in the plugin config:
           "hentAiService": {
             "url": "https://hent-ai.example.com",
             "token": "${HENT_AI_SERVICE_TOKEN}",
-            "timeoutMs": 15000
+            "timeoutMs": 15000,
+            "conversation": {
+              "enabled": false,
+              "watcherCompatibility": true
+            }
           }
         }
       }
@@ -34,6 +38,8 @@ Configure the `hentAiService` namespace in the plugin config:
 | `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `15000`. |
 | `hentAiService.preReplyMedia` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, sends service-selected media as a separate message on inbound `message_received`. Defaults to **off**. |
 | `hentAiService.watcher` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, registers the group-chat anti-fixation watcher (record/evaluate/commit). Defaults to **off**. |
+| `hentAiService.conversation.enabled` | `boolean` | no | Forwards group-chat turns to the service when `true`. Defaults to `false`. |
+| `hentAiService.conversation.watcherCompatibility` | `boolean` | no | Preserves compatibility payload fields with legacy watcher clients while using service-owned runtime behavior. Defaults to `true`. |
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
@@ -50,7 +56,12 @@ The final-response media path is always active. The pre-reply and watcher handle
 | `message_received` | Inbound user message | `watcher` enabled | `POST /v1/watcher/record-user` (records conversation window) |
 | `message_sent` | Outbound assistant message | `watcher` enabled | `POST /v1/watcher/evaluate`; on a `nudge` verdict, sends the nudge text and `POST /v1/watcher/commit-delivery` |
 
-Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call.
+When conversation forwarding is enabled:
+
+- `message_received` → `POST /v1/watcher/record-user`
+- `message_sent` → `POST /v1/watcher/evaluate`, optional `POST /v1/watcher/commit-delivery`
+
+Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
 
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
@@ -73,6 +84,46 @@ Expected service response:
 
 If the service returns `dataBase64` instead of `url`, the adapter converts it to a data URL using `contentType` or `image/png`.
 
+### Group-chat delivery
+
+`conversation.enabled: true` allows service-owned conversation context to flow:
+
+- user messages are sent from `message_received` as room turns (`scopeId`, `text`, `id`).
+- bot messages are sent from `message_sent` for policy/gating and delivery decisions.
+- if the service returns a `deliveryPlan`, the adapter sends each chunk through host `sendText` with the provided delays and commits delivery only after all required message IDs return.
+
+Expected decision payload (partial):
+
+```json
+{
+  "decision": "nudge",
+  "deliveryPlan": {
+    "planId": "watcher:scope-1",
+    "scopeId": "channel:123:session:s1",
+    "channelId": "123",
+    "chunks": [
+      {
+        "chunkId": "watcher:scope-1:0",
+        "text": "짧게 먼저 반응해도 좋고",
+        "delayMs": 1200,
+        "metadata": {
+          "hentAiConversationChunk": true,
+          "planId": "watcher:scope-1",
+          "chunkIndex": 0,
+          "chunkCount": 1
+        }
+      }
+    ],
+    "commit": {
+      "planId": "watcher:scope-1",
+      "cooldownKey": "channel:123:topic:repeat",
+      "signalId": "signal-7",
+      "requiredChunkIds": ["watcher:scope-1:0"]
+    }
+  }
+}
+```
+
 ## Service-owned Decisions
 
 The Hent-ai service owns:
@@ -83,8 +134,20 @@ The Hent-ai service owns:
 - emotion/verdict selection
 - onboarding/generation jobs
 - verifier/cache/rate-limit state
+- short-term memory, long-term summary memory, and speech delivery policy for conversation rooms.
+
+Service-side conversation knobs (defaults are conservative) can be controlled by environment variables:
+
+- `HENT_AI_CONVERSATION_ENABLED` (default `false`)
+- `HENT_AI_CONVERSATION_RAW_RETENTION_DAYS` (default `14`)
+- `HENT_AI_CONVERSATION_MIN_DELAY_MS` (default `650`)
+- `HENT_AI_CONVERSATION_MAX_DELAY_MS` (default `6500`)
+
+Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
 
 The OpenClaw adapter intentionally contains no fallback classifier, no local asset selection, no manifest scanning, no `shared/db` access, no `@hent-ai/generate` calls, no Discord token, and no direct `discord.com` REST calls.
+
+Real image generation and LLM image/media calls are not invoked from OpenClaw tests; they are mocked or not reached in adapter contracts.
 
 PR/release gate: any proposal that adds those responsibilities back into `openclaw/` is misaligned with the service-owned architecture unless an owner-approved architecture decision explicitly changes this boundary. CI success alone is not enough. See `../docs/service-owned-gates.md`.
 
