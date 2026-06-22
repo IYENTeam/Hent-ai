@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. It supports **OpenClaw** and **Cursor** platforms.
+Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. The canonical runtime is the **Hent-ai service** with a thin **OpenClaw** adapter; **Hermes** is supported through a lightweight compatibility adapter.
 
 ### Supported Emotions
 
@@ -26,8 +26,8 @@ Hent-ai automatically classifies the emotion of every bot response and attaches 
 
 Choose your platform:
 
-- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md)
-- **Cursor** → see [`cursor/README.md`](./cursor/README.md)
+- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md) (canonical service-backed adapter)
+- **Hermes** → see [`hermes/README.md`](./hermes/README.md) (compatibility adapter)
 
 ## Creating Emotion Images
 
@@ -65,6 +65,7 @@ The tool first generates a base character image, then uses it as a reference to 
 | `-m, --model` | Codex model | `gpt-5.4` |
 | `-s, --size` | Image size (e.g. `1024x1024`) | `1024x1024` |
 | `--no-keep-base` | Don't save base.png to output | — |
+| `--only` | Regenerate only specific emotions (comma-separated, e.g. `--only sorry,confused`) | all |
 
 **Reference Image Limits:**
 
@@ -202,31 +203,22 @@ Then place emotion images at `assets/profiles/gothic/` (happy.png, neutral.png, 
 
 ### Switching Profiles Per Channel
 
-Use the agent skill (say "프로필 바꿔줘" in Discord) or run directly:
+For the **OpenClaw** runtime, channel → profile/asset mapping is owned by the Hent-ai service. Set it through the service API rather than a local file:
 
 ```bash
-npx tsx openclaw/scripts/switch_profile.ts --channel <DISCORD_CHANNEL_ID> --profile gothic
+curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
+  -H "Authorization: Bearer $HENT_AI_SERVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "profileId": "gothic", "assetSetId": "gothic", "enabled": true }'
 ```
 
-### Configuration
+See [`docs/channel-profiles.md`](docs/channel-profiles.md) for the full service-owned channel/profile model.
 
-Add `defaultProfile` to your OpenClaw plugin config:
+> The legacy `openclaw/scripts/switch_profile.ts` script and the plugin `defaultProfile` config write to a local profile DB that the service-backed adapter no longer reads. They remain only for the older standalone profile workflow.
 
-```jsonc
-{
-  "plugins": {
-    "entries": {
-      "emotion-image": {
-        "config": {
-          "defaultProfile": "gothic"
-        }
-      }
-    }
-  }
-}
-```
+### Configuration (Hermes)
 
-For Hermes, set the environment variable:
+For Hermes, select a profile asset subdirectory with an environment variable:
 
 ```bash
 export HENT_AI_DEFAULT_PROFILE=gothic
@@ -251,5 +243,7 @@ Special thanks to [MoerAI](https://github.com/MoerAI) for helping name Hent-ai.
 
 ## Docs
 
-- [Identity roadmap](docs/identity-roadmap.md)
-- [Classifier customization](docs/classifier-customization.md)
+- [Identity roadmap](docs/identity-roadmap.md) — canonical architecture/ownership decisions
+- [Channel profiles](docs/channel-profiles.md) — service-owned channel/profile/policy model
+- [Agent runbook](docs/agent-runbook.md) — build, test, deploy, and operations
+- [Service-owned gates](docs/service-owned-gates.md) — PR/release gate policy

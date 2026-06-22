@@ -32,16 +32,25 @@ Configure the `hentAiService` namespace in the plugin config:
 | `hentAiService.url` | `string` | yes | Base URL for the Hent-ai service. Non-localhost URLs must use HTTPS. `http://localhost` is allowed for local development. |
 | `hentAiService.token` | `string` | yes | Bearer token for service requests. Literal values and `${ENV_VAR}` placeholders are supported. |
 | `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `15000`. |
+| `hentAiService.preReplyMedia` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, sends service-selected media as a separate message on inbound `message_received`. Defaults to **off**. |
+| `hentAiService.watcher` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, registers the group-chat anti-fixation watcher (record/evaluate/commit). Defaults to **off**. |
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
-## Runtime Hook
+> Note: `preReplyMedia` and `watcher` are read from the resolved `hentAiService` config by `openclaw/index.ts` and declared in `openclaw.plugin.json`'s `hentAiService` schema. Keep code and schema in sync when adding new `hentAiService` keys.
 
-The adapter registers OpenClaw's current `reply_payload_sending` hook for final assistant replies only:
+## Runtime Hooks
 
-- `kind: "final"` → `POST /v1/final-response/verdict`
+The final-response media path is always active. The pre-reply and watcher handlers may be registered by the adapter, but service calls and outbound delivery for pre-reply/watcher behavior run only when the corresponding feature is explicitly enabled.
 
-Block/pre-reply payloads are intentionally ignored. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
+| Hook | When | Condition | Service call |
+| --- | --- | --- | --- |
+| `reply_payload_sending` | Final assistant reply (`kind: "final"`) | always | `POST /v1/final-response/verdict` → attaches `verdict.media` to the payload |
+| `message_received` | Inbound user message | `preReplyMedia` enabled | `POST /v1/pre-reply/media` → sends returned media as a separate message |
+| `message_received` | Inbound user message | `watcher` enabled | `POST /v1/watcher/record-user` (records conversation window) |
+| `message_sent` | Outbound assistant message | `watcher` enabled | `POST /v1/watcher/evaluate`; on a `nudge` verdict, sends the nudge text and `POST /v1/watcher/commit-delivery` |
+
+Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call.
 
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
