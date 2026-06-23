@@ -14,7 +14,7 @@ import {
 import type { ConversationRuntime } from "./conversation-runtime.js";
 
 export type DiscordPollerIntegrationConfig = DiscordRestPollerConfig & {
-  /** If true, poller starts automatically. Default: false. */
+  /** If true, poller starts automatically. Default: true when configured via env. */
   readonly autoStart?: boolean;
 };
 

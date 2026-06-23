@@ -56,6 +56,32 @@ export type DiscordRestPollerDeps = {
 const DISCORD_API_BASE = "https://discord.com/api/v10";
 const DEFAULT_INTERVAL_MS = 15_000;
 const DEFAULT_LIMIT = 50;
+const DISCORD_MAX_MESSAGE_LENGTH = 2000;
+
+export class RateLimitError extends Error {
+  constructor(public readonly retryAfterMs: number) {
+    super(`Rate limited, retry after ${retryAfterMs}ms`);
+    this.name = "RateLimitError";
+  }
+}
+
+/** Split text into ≤2000-char chunks at newline boundaries. */
+export function chunkMessage(text: string, maxLen = DISCORD_MAX_MESSAGE_LENGTH): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+    let cutAt = remaining.lastIndexOf("\n", maxLen);
+    if (cutAt <= 0) cutAt = maxLen;
+    chunks.push(remaining.slice(0, cutAt));
+    remaining = remaining.slice(cutAt).replace(/^\n/, "");
+  }
+  return chunks;
+}
 
 export async function fetchChannelMessages(
   token: string,
@@ -71,6 +97,10 @@ export async function fetchChannelMessages(
     headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
   });
 
+  if (res.status === 429) {
+    const retryAfter = parseFloat(res.headers.get("Retry-After") ?? "5");
+    throw new RateLimitError(Math.ceil(retryAfter * 1000));
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Discord API ${res.status}: ${body.slice(0, 200)}`);
@@ -107,6 +137,10 @@ export async function sendChannelMessage(
     body: JSON.stringify({ content }),
   });
 
+  if (res.status === 429) {
+    const retryAfter = parseFloat(res.headers.get("Retry-After") ?? "5");
+    throw new RateLimitError(Math.ceil(retryAfter * 1000));
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Discord send ${res.status}: ${body.slice(0, 200)}`);
@@ -124,9 +158,13 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
 
   // Track last seen message ID per channel
   const lastSeenIds = new Map<string, string>();
+  // Channels that haven't been polled yet — first poll is catch-up only (set marker, don't process)
+  const unseeded = new Set<string>(config.channels);
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
-  let polling = false;
+  let activePoll: Promise<void> | null = null;
+  // Rate-limit backoff: next allowed poll time (ms)
+  let rateLimitUntilMs = 0;
 
   async function pollChannel(channelId: string): Promise<void> {
     const after = lastSeenIds.get(channelId);
@@ -135,10 +173,17 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
 
       if (messages.length === 0) return;
 
-      // Update last seen ID to the newest message
+      // Update last seen ID to the newest user message (not bot-sent IDs)
       const newest = messages[messages.length - 1];
       if (newest) {
         lastSeenIds.set(channelId, newest.id);
+      }
+
+      // First poll for an unseeded channel: set marker only, don't process
+      if (unseeded.has(channelId)) {
+        unseeded.delete(channelId);
+        log("info", `poller: catch-up channel=${channelId}, seeded lastSeen=${newest?.id}, skipped ${messages.length} historical messages`);
+        return;
       }
 
       // Filter out bot messages and empty messages
@@ -156,11 +201,12 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
           const result = await deps.handleMessage(channelId, msg);
           if (result.speak) {
             log("info", `poller: speaking in channel=${channelId}: ${result.text.slice(0, 100)}`);
-            const sentId = await sendChannelMessage(config.token, channelId, result.text);
-            if (sentId) {
-              // Track our own message ID so we don't process it on next poll
-              lastSeenIds.set(channelId, sentId);
-              callbacks.onSpeak?.(channelId, result.text, sentId);
+            const chunks = chunkMessage(result.text);
+            for (const chunk of chunks) {
+              const sentId = await sendChannelMessage(config.token, channelId, chunk);
+              if (sentId) {
+                callbacks.onSpeak?.(channelId, chunk, sentId);
+              }
             }
           }
         } catch (err) {
@@ -168,17 +214,36 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
         }
       }
     } catch (err) {
+      if (handleRateLimitError(err)) return;
       log("error", `poller: fetch error channel=${channelId}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  function handleRateLimitError(err: unknown): boolean {
+    if (err instanceof RateLimitError) {
+      rateLimitUntilMs = Date.now() + err.retryAfterMs;
+      log("warn", `poller: rate-limited, backing off ${err.retryAfterMs}ms`);
+      return true;
+    }
+    return false;
+  }
+
   async function pollAll(): Promise<void> {
-    if (polling || stopped) return;
-    polling = true;
+    if (activePoll || stopped) return;
+    if (Date.now() < rateLimitUntilMs) return; // Back off during rate-limit
+    const promise = (async () => {
+      // Serialize channel polls to avoid concurrent rate-limit hits
+      for (const ch of config.channels) {
+        if (stopped) break;
+        if (Date.now() < rateLimitUntilMs) break;
+        await pollChannel(ch);
+      }
+    })();
+    activePoll = promise;
     try {
-      await Promise.all(config.channels.map((ch) => pollChannel(ch)));
+      await promise;
     } finally {
-      polling = false;
+      activePoll = null;
     }
   }
 
@@ -200,12 +265,15 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
       }, intervalMs);
     },
 
-    /** Stop polling. */
-    stop() {
+    /** Stop polling. Returns a promise that resolves when any in-flight poll completes. */
+    async stop() {
       stopped = true;
       if (timer) {
         clearInterval(timer);
         timer = null;
+      }
+      if (activePoll) {
+        await activePoll.catch(() => {});
       }
       log("info", "discord-rest-poller: stopped");
     },
@@ -213,6 +281,7 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps) {
     /** Seed a channel's last-seen marker to avoid processing history on first poll. */
     seedLastSeen(channelId: string, messageId: string) {
       lastSeenIds.set(channelId, messageId);
+      unseeded.delete(channelId);
     },
 
     /** Get current last-seen IDs for persistence. */

@@ -25,6 +25,8 @@ export type HentAiServerOptions = {
   verifier: FinalResponseVerifier;
   conversationConfig?: ConversationServiceConfig;
   conversationContextProvider?: ConversationContextProvider;
+  /** Injected conversation runtime. If omitted, one is created internally. */
+  conversationRuntime?: ReturnType<typeof createConversationRuntime>;
 };
 
 export function redactBearerToken(value: string): string {
@@ -94,7 +96,7 @@ function serveStatic(assetRoot: string | undefined, pathname: string, res: Serve
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const conversationRuntime = createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
+  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
     ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
   });
   return async (req, res) => {
@@ -192,32 +194,34 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
   };
 }
 
-export type HentAiServerResult = {
-  server: Server;
-  /** Stop the Discord poller if running. */
-  stopPoller?: () => void;
-};
-
 export function createHentAiServer(options: HentAiServerOptions): Server {
   const handler = createHentAiHandler(options);
   return createServer((req, res) => { void handler(req, res); });
 }
 
+export type HentAiServerResult = {
+  server: Server;
+  /** Stop the Discord poller if running. */
+  stopPoller?: () => Promise<void>;
+};
+
 /**
  * Creates the HTTP server and optionally starts the Discord REST poller.
  * The poller is started if HENT_AI_DISCORD_POLLER_CHANNELS is configured.
+ * A single ConversationRuntime is shared between the HTTP handler and the poller.
  */
 export function createHentAiServerWithPoller(options: HentAiServerOptions): HentAiServerResult {
-  const conversationRuntime = createConversationRuntime(
+  // Single shared runtime for both HTTP handler and poller
+  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(
     options.db,
     options.conversationConfig ?? loadConversationConfigFromEnv(),
     options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {},
   );
-  const handler = createHentAiHandler(options);
+  const handler = createHentAiHandler({ ...options, conversationRuntime });
   const server = createServer((req, res) => { void handler(req, res); });
 
   const pollerConfig = loadDiscordPollerConfigFromEnv();
-  let stopPoller: (() => void) | undefined;
+  let stopPoller: (() => Promise<void>) | undefined;
 
   if (pollerConfig) {
     const log = (level: "info" | "warn" | "error", msg: string) => {
