@@ -9,6 +9,7 @@ import { loadConversationConfigFromEnv, type ConversationServiceConfig } from ".
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalVerdictForBody, mediaResponseForChannel } from "./final-response-routes.js";
 import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
+import { createDiscordPollerIntegration, loadDiscordPollerConfigFromEnv } from "./discord-poller-integration.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -191,9 +192,49 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
   };
 }
 
+export type HentAiServerResult = {
+  server: Server;
+  /** Stop the Discord poller if running. */
+  stopPoller?: () => void;
+};
+
 export function createHentAiServer(options: HentAiServerOptions): Server {
   const handler = createHentAiHandler(options);
   return createServer((req, res) => { void handler(req, res); });
+}
+
+/**
+ * Creates the HTTP server and optionally starts the Discord REST poller.
+ * The poller is started if HENT_AI_DISCORD_POLLER_CHANNELS is configured.
+ */
+export function createHentAiServerWithPoller(options: HentAiServerOptions): HentAiServerResult {
+  const conversationRuntime = createConversationRuntime(
+    options.db,
+    options.conversationConfig ?? loadConversationConfigFromEnv(),
+    options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {},
+  );
+  const handler = createHentAiHandler(options);
+  const server = createServer((req, res) => { void handler(req, res); });
+
+  const pollerConfig = loadDiscordPollerConfigFromEnv();
+  let stopPoller: (() => void) | undefined;
+
+  if (pollerConfig) {
+    const log = (level: "info" | "warn" | "error", msg: string) => {
+      if (level === "error") console.error(`[hent-ai-poller] ${msg}`);
+      else console.log(`[hent-ai-poller] ${msg}`);
+    };
+    const integration = createDiscordPollerIntegration({
+      config: pollerConfig,
+      runtime: conversationRuntime,
+      log,
+    });
+    integration.start();
+    stopPoller = () => integration.stop();
+    log("info", `Discord poller started: channels=${pollerConfig.channels.join(",")}, interval=${pollerConfig.intervalMs ?? 15000}ms`);
+  }
+
+  return { server, stopPoller };
 }
 
 export async function listen(server: Server, port = 0, hostname = "127.0.0.1"): Promise<{ url: string; close: () => Promise<void> }> {
