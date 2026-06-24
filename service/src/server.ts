@@ -4,7 +4,7 @@ import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier } from "./verifier.js";
 import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
-import { createConversationRuntime } from "./conversation-runtime.js";
+import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
 import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalVerdictForBody, mediaResponseForChannel } from "./final-response-routes.js";
@@ -24,6 +24,7 @@ export type HentAiServerOptions = {
   verifier: FinalResponseVerifier;
   conversationConfig?: ConversationServiceConfig;
   conversationContextProvider?: ConversationContextProvider;
+  conversationRuntime?: ConversationRuntime;
 };
 
 export function redactBearerToken(value: string): string {
@@ -93,7 +94,7 @@ function serveStatic(assetRoot: string | undefined, pathname: string, res: Serve
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const conversationRuntime = createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
+  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
     ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
   });
   return async (req, res) => {
