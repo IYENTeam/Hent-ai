@@ -351,6 +351,72 @@ describe("Hent-ai service adapter configuration", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("forwards conversation config forwarding options to watcher service requests", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "no_reply", audit: null });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({
+      hentAiService: {
+        url: "https://hent.test",
+        token: "secret",
+        timeoutMs: 250,
+        conversation: { enabled: true, watcherCompatibility: true },
+      },
+    });
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+    await events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://hent.test/v1/watcher/record-user",
+      "https://hent.test/v1/watcher/evaluate",  // intake evaluate on message_received
+      "https://hent.test/v1/watcher/evaluate",  // evaluate on message_sent
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      scopeId: "channel:123:session:s1",
+      text: "hello",
+      id: "u1",
+      conversation: { enabled: true, watcherCompatibility: true },
+    });
+    // intake evaluate (message_received)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      scopeId: "channel:123:session:s1",
+      channelId: "123",
+      text: "hello",
+      conversation: { enabled: true, watcherCompatibility: true },
+    });
+    // evaluate on message_sent
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
+      scopeId: "channel:123:session:s1",
+      channelId: "123",
+      text: "repeat",
+      messageId: "a1",
+      sessionId: "s1",
+      conversation: { enabled: true, watcherCompatibility: true },
+    });
+  });
+
+  it("sends no watcher calls when conversation config forwarding is disabled", async () => {
+    const fetchMock = vi.fn(async () => okJson({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({
+      hentAiService: {
+        url: "https://hent.test",
+        token: "secret",
+        timeoutMs: 250,
+        conversation: { enabled: false, watcherCompatibility: true },
+      },
+    });
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+    await events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends pre-reply media only when preReplyMedia is enabled", async () => {
     const sent: unknown[] = [];
     const fetchMock = vi.fn(async (url: string) => {

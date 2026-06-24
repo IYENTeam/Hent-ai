@@ -4,7 +4,7 @@ Hent-ai's live OpenClaw integration is service-owned. After the full service ada
 
 ## Canonical ownership
 
-- `service/` owns final-response verdict selection, verifier/cache state, channel policy, profile/channel mappings, asset lookup, and watcher state.
+- `service/` owns final-response verdict selection, verifier/cache state, channel policy, profile/channel mappings, asset lookup, watcher state, and standalone Discord readback/delivery when local polling is enabled.
 - `openclaw/` is a thin OpenClaw adapter. It validates config, forwards final assistant reply context to the service, and attaches service-returned Stage-1 media to the outgoing payload.
 - `shared/` is the contract layer for definitions and fixtures that must be reused across surfaces.
 - `hermes/` is a compatibility adapter. It may keep lightweight rules only where Hermes cannot call the service yet, but those rules must be treated as compatibility mirrors, not a new source of truth.

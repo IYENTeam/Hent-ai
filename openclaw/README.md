@@ -2,7 +2,7 @@
 
 Minimal Hent-ai service adapter for OpenClaw.
 
-The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). Text delivery remains owned by OpenClaw and uses host send APIs.
+The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). In OpenClaw-hosted mode, text delivery remains owned by OpenClaw and uses host send APIs; in standalone local mode, the Hent-ai service can own Discord REST polling and conversation delivery.
 
 ## Configuration
 
@@ -144,6 +144,15 @@ Service-side conversation knobs (defaults are conservative) can be controlled by
 - `HENT_AI_CONVERSATION_MAX_DELAY_MS` (default `6500`)
 
 Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
+
+Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(...)` or deployment wiring that calls it, then configure:
+
+- `HENT_AI_DISCORD_POLLER_TOKEN` (falls back to `DISCORD_BOT_TOKEN`)
+- `HENT_AI_DISCORD_POLLER_CHANNELS` (comma-separated Discord channel IDs)
+- `HENT_AI_DISCORD_POLLER_BOT_USER_ID` (the bot user id; required for self-message evaluation)
+- `HENT_AI_DISCORD_POLLER_INTERVAL_MS` (default `15000`)
+- `HENT_AI_DISCORD_POLLER_LIMIT` (default `50`, capped at Discord's `100`)
+- `HENT_AI_DISCORD_POLLER_AUTO_START` (`false` disables automatic start)
 
 The OpenClaw adapter intentionally contains no fallback classifier, no local asset selection, no manifest scanning, no `shared/db` access, no `@hent-ai/generate` calls, no Discord token, and no direct `discord.com` REST calls.
 

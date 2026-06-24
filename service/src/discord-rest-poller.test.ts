@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_CONVERSATION_CONFIG } from "./conversation-config.js";
+import { createConversationRuntime } from "./conversation-runtime.js";
+import { createDiscordPollerIntegration } from "./discord-poller-integration.js";
 import {
   RateLimitError,
   chunkMessage,
@@ -8,6 +11,9 @@ import {
   type DiscordRestClient,
   type DiscordRestMessage,
 } from "./discord-rest-poller.js";
+import { ServiceDatabase } from "./db.js";
+import { createHentAiServerWithPoller } from "./server-with-poller.js";
+import { nullVerifier } from "./service-test-helpers.js";
 
 function apiMessage(input: {
   readonly id: string;
@@ -147,5 +153,65 @@ describe("Discord REST poller", () => {
     await poller.pollOnce();
 
     expect(fetchMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Discord poller integration", () => {
+  it("records user messages and commits service-owned delivery for self bot turns", async () => {
+    const db = new ServiceDatabase();
+    const runtime = createConversationRuntime(db, {
+      ...DEFAULT_CONVERSATION_CONFIG,
+      enabled: true,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      maxChunkChars: 1_800,
+    });
+    const fetchMessages = vi.fn<DiscordRestClient["fetchMessages"]>().mockResolvedValueOnce([
+      restMessage({ id: "u1", content: "Please watch for repeated deployment framing", authorId: "human-1" }),
+      restMessage({ id: "b1", content: "Repeat the same stale deployment plan", authorId: "bot-1", bot: true }),
+      restMessage({ id: "b2", content: "Repeat the same stale deployment plan", authorId: "bot-1", bot: true }),
+    ]);
+    const sendMessage = vi.fn<DiscordRestClient["sendMessage"]>().mockResolvedValue("discord-nudge-1");
+    const integration = createDiscordPollerIntegration({
+      config: { token: "bot-token", channels: ["c1"], botUserId: "bot-1", autoStart: false },
+      runtime,
+      client: { fetchMessages, sendMessage },
+      wait: async () => {},
+    });
+    integration.poller.seedLastSeen("c1", "0");
+
+    await integration.poller.pollOnce();
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([
+      { message_id: "u1", author_role: "user" },
+      { message_id: "b1", author_role: "assistant" },
+      { message_id: "b2", author_role: "assistant" },
+    ]);
+    expect(db.db.prepare("SELECT status, delivery_message_ids_json FROM conversation_delivery_ledger").get()).toEqual({
+      status: "committed",
+      delivery_message_ids_json: expect.stringContaining("discord-nudge-1"),
+    });
+    db.close();
+  });
+
+  it("exposes service server wiring with an optional Discord poller", async () => {
+    const db = new ServiceDatabase();
+    const result = createHentAiServerWithPoller({
+      db,
+      token: "service-token",
+      verifier: nullVerifier,
+      conversationConfig: { ...DEFAULT_CONVERSATION_CONFIG, enabled: true },
+      discordPollerConfig: { token: "bot-token", channels: ["c1"], autoStart: false },
+      discordPollerClient: {
+        fetchMessages: vi.fn<DiscordRestClient["fetchMessages"]>(),
+        sendMessage: vi.fn<DiscordRestClient["sendMessage"]>(),
+      },
+    });
+
+    expect(result.startPoller).toBeDefined();
+    expect(result.stopPoller).toBeDefined();
+    await result.stopPoller?.();
+    db.close();
   });
 });
