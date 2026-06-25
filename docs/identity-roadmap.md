@@ -66,6 +66,7 @@ Service-owned responsibilities:
    - Attach service-returned media to the outgoing payload.
    - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
    - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
+   - In standalone local service mode, Discord readback and watcher delivery may be owned by the Hent-ai service poller instead; this does not move Discord REST logic into the OpenClaw adapter.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { loadDiscordPollerConfigFromEnv } from "./discord-poller-integration.js";
 import { fetchChannelMessages, sendChannelMessage } from "./discord-rest-poller.js";
 
 type LiveDiscordConfig = {
@@ -30,11 +31,11 @@ describeLive("Discord REST live verification", () => {
 });
 
 function readLiveDiscordConfig(env: NodeJS.ProcessEnv): LiveDiscordConfig | null {
-  const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN) ?? stringEnv(env.DISCORD_BOT_TOKEN);
-  const [channelId] = stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS)?.split(",").map((channel) => channel.trim()).filter(Boolean) ?? [];
-  if (!token || !channelId) return null;
+  const config = loadDiscordPollerConfigFromEnv(env);
+  const [channelId] = config?.channels ?? [];
+  if (!config || !channelId) return null;
   return {
-    token,
+    token: config.token,
     channelId,
     sendContent: stringEnv(env.HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT),
   };

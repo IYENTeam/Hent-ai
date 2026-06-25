@@ -154,6 +154,8 @@ Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(.
 - `HENT_AI_DISCORD_POLLER_LIMIT` (default `50`, capped at Discord's `100`)
 - `HENT_AI_DISCORD_POLLER_AUTO_START` (`false` disables automatic start)
 
+Existing service deployments that already expose `HENT_AI_DISCORD_TOKEN` and `HENT_AI_WATCH_CHANNELS` continue to work as fallback names. The explicit `HENT_AI_DISCORD_POLLER_*` names win when both are set.
+
 Live Discord REST verification is opt-in because it needs a real bot token and channel:
 
 ```bash
