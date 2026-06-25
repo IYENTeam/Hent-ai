@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONVERSATION_CONFIG } from "./conversation-config.js";
 import { createConversationRuntime } from "./conversation-runtime.js";
-import { createDiscordPollerIntegration } from "./discord-poller-integration.js";
+import { createDiscordPollerIntegration, loadDiscordPollerConfigFromEnv } from "./discord-poller-integration.js";
 import {
   RateLimitError,
   chunkMessage,
@@ -157,6 +157,35 @@ describe("Discord REST poller", () => {
 });
 
 describe("Discord poller integration", () => {
+  it("loads poller config from the service deployment Discord env names", () => {
+    const config = loadDiscordPollerConfigFromEnv({
+      HENT_AI_DISCORD_TOKEN: "service-discord-token",
+      HENT_AI_WATCH_CHANNELS: " c1, c2 ",
+      HENT_AI_DISCORD_POLLER_BOT_USER_ID: "bot-1",
+    });
+
+    expect(config).toEqual({
+      token: "service-discord-token",
+      channels: ["c1", "c2"],
+      botUserId: "bot-1",
+      autoStart: true,
+    });
+  });
+
+  it("prefers explicit poller env names over service deployment fallback names", () => {
+    const config = loadDiscordPollerConfigFromEnv({
+      HENT_AI_DISCORD_POLLER_TOKEN: "poller-token",
+      HENT_AI_DISCORD_POLLER_CHANNELS: "poller-channel",
+      HENT_AI_DISCORD_TOKEN: "service-discord-token",
+      HENT_AI_WATCH_CHANNELS: "service-channel",
+    });
+
+    expect(config).toMatchObject({
+      token: "poller-token",
+      channels: ["poller-channel"],
+    });
+  });
+
   it("records user messages and commits service-owned delivery for self bot turns", async () => {
     const db = new ServiceDatabase();
     const runtime = createConversationRuntime(db, {

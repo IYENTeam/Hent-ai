@@ -59,8 +59,10 @@ export function createDiscordPollerIntegration(options: DiscordPollerIntegration
 export function loadDiscordPollerConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DiscordPollerIntegrationConfig | null {
-  const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN) ?? stringEnv(env.DISCORD_BOT_TOKEN);
-  const channels = stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS)?.split(",").map((channel) => channel.trim()).filter(Boolean) ?? [];
+  const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN)
+    ?? stringEnv(env.DISCORD_BOT_TOKEN)
+    ?? stringEnv(env.HENT_AI_DISCORD_TOKEN);
+  const channels = channelListEnv(stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS) ?? stringEnv(env.HENT_AI_WATCH_CHANNELS));
   if (!token || channels.length === 0) return null;
 
   return {
@@ -159,6 +161,10 @@ function isSelfBotMessage(message: DiscordRestMessage, botUserId: string | undef
 function stringEnv(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function channelListEnv(value: string | undefined): readonly string[] {
+  return stringEnv(value)?.split(",").map((channel) => channel.trim()).filter(Boolean) ?? [];
 }
 
 function positiveIntegerEnv(value: string | undefined): number | undefined {
