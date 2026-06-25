@@ -162,12 +162,14 @@ describe("Discord poller integration", () => {
       HENT_AI_DISCORD_TOKEN: "service-discord-token",
       HENT_AI_WATCH_CHANNELS: " c1, c2 ",
       HENT_AI_DISCORD_POLLER_BOT_USER_ID: "bot-1",
+      HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS: "30000",
     });
 
     expect(config).toEqual({
       token: "service-discord-token",
       channels: ["c1", "c2"],
       botUserId: "bot-1",
+      evaluationIntervalMs: 30_000,
       autoStart: true,
     });
   });
@@ -186,7 +188,7 @@ describe("Discord poller integration", () => {
     });
   });
 
-  it("records user messages and commits service-owned delivery for self bot turns", async () => {
+  it("records incoming messages immediately and commits delivery on the evaluation tick", async () => {
     const db = new ServiceDatabase();
     const runtime = createConversationRuntime(db, {
       ...DEFAULT_CONVERSATION_CONFIG,
@@ -210,6 +212,9 @@ describe("Discord poller integration", () => {
     integration.poller.seedLastSeen("c1", "0");
 
     await integration.poller.pollOnce();
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    await integration.evaluateOnce();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([

@@ -67,6 +67,15 @@ export type WatcherEvaluateInput = {
   readonly deliveryMessageId?: string;
 };
 
+export type WatcherRecordAssistantInput = {
+  readonly scopeId: string;
+  readonly channelId: string;
+  readonly text: string;
+  readonly messageId: string;
+  readonly sourceThreadId?: string;
+  readonly sessionId?: string;
+};
+
 export type WatcherEvaluateResult = {
   readonly decision: "nudge" | "no_reply";
   readonly nudgeText?: string;
@@ -115,24 +124,17 @@ export class ConversationRuntime {
     return { ok: true, context };
   }
 
+  recordAssistant(input: WatcherRecordAssistantInput): void {
+    if (!this.config.enabled) return;
+    this.recordAssistantEvent(input, new Date());
+  }
+
   async evaluate(input: WatcherEvaluateInput): Promise<WatcherEvaluateResult> {
     if (!this.config.enabled) return { decision: "no_reply", audit: null };
     const now = new Date();
-    const nowIso = now.toISOString();
-    this.store.recordRawEvent({
-      scopeId: input.scopeId,
-      channelId: input.channelId,
-      threadId: input.sourceThreadId,
-      sessionId: input.sessionId,
-      messageId: input.messageId,
-      authorRole: "assistant",
-      authorSource: "openclaw",
-      text: input.text,
-      eventTs: nowIso,
-      observedAt: nowIso,
-      botSelfLoop: false,
-    });
+    this.recordAssistantEvent(input, now);
 
+    const nowIso = now.toISOString();
     const messages = this.recentMessages(input.scopeId);
     const contextProviderResult = this.options.contextProvider
       ? await evaluateConversationContextProvider({
@@ -220,6 +222,23 @@ export class ConversationRuntime {
       config: this.config,
       now: new Date(),
       ...input,
+    });
+  }
+
+  private recordAssistantEvent(input: WatcherRecordAssistantInput, now: Date): void {
+    const nowIso = now.toISOString();
+    this.store.recordRawEvent({
+      scopeId: input.scopeId,
+      channelId: input.channelId,
+      threadId: input.sourceThreadId,
+      sessionId: input.sessionId,
+      messageId: input.messageId,
+      authorRole: "assistant",
+      authorSource: "openclaw",
+      text: input.text,
+      eventTs: nowIso,
+      observedAt: nowIso,
+      botSelfLoop: false,
     });
   }
 
