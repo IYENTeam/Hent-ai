@@ -151,10 +151,17 @@ Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(.
 - `HENT_AI_DISCORD_POLLER_CHANNELS` (comma-separated Discord channel IDs)
 - `HENT_AI_DISCORD_POLLER_BOT_USER_ID` (the bot user id; required for self-message evaluation)
 - `HENT_AI_DISCORD_POLLER_INTERVAL_MS` (default `15000`)
+- `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS` (default `60000`)
 - `HENT_AI_DISCORD_POLLER_LIMIT` (default `50`, capped at Discord's `100`)
 - `HENT_AI_DISCORD_POLLER_AUTO_START` (`false` disables automatic start)
 
 Existing service deployments that already expose `HENT_AI_DISCORD_TOKEN` and `HENT_AI_WATCH_CHANNELS` continue to work as fallback names. The explicit `HENT_AI_DISCORD_POLLER_*` names win when both are set.
+
+The standalone service poller separates intake from evaluation:
+
+- every new human Discord message is recorded immediately through the conversation intake path;
+- every new self-bot Discord message is recorded immediately as an assistant turn and queued as the latest evaluation candidate for that channel;
+- evaluation runs on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message, and delivers/commits a nudge only when the periodic evaluation allows it.
 
 Live Discord REST verification is opt-in because it needs a real bot token and channel:
 
