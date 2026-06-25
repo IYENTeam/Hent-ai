@@ -8,8 +8,8 @@ export type ConversationSuppressedReason =
   | "channel_disabled"
   | "privacy_blocked"
   | "thread_blocked"
-  | "duplicate_signal"
-  | "self_nudge"
+  | "duplicate_turn"
+  | "self_echo"
   | "cooldown"
   | "hourly_budget_exhausted"
   | "no_recent_human_activity"
@@ -55,8 +55,8 @@ export type ConversationPolicyProviderDecision = {
 export type ConversationPolicySafeguards = {
   readonly privacyAllowed: boolean;
   readonly threadAllowed: boolean;
-  readonly duplicateSignal: boolean;
-  readonly selfNudge: boolean;
+  readonly duplicateTurn: boolean;
+  readonly selfEcho: boolean;
 };
 
 export type ConversationSpeechPolicyInput = {
@@ -107,8 +107,8 @@ function suppressedReasonFor(input: ConversationSpeechPolicyInput): Conversation
   if (input.channel.enabled !== true) return "channel_disabled";
   if (!input.safeguards.privacyAllowed) return "privacy_blocked";
   if (!input.safeguards.threadAllowed) return "thread_blocked";
-  if (input.safeguards.duplicateSignal) return "duplicate_signal";
-  if (input.safeguards.selfNudge) return "self_nudge";
+  if (input.safeguards.duplicateTurn) return "duplicate_turn";
+  if (input.safeguards.selfEcho) return "self_echo";
   if (isCoolingDown(input)) return "cooldown";
   if (input.state.speechCountThisHour >= input.config.budgetPerHour) return "hourly_budget_exhausted";
   if (input.state.lastHumanMessageAtMs === null) return "no_recent_human_activity";

@@ -1,4 +1,5 @@
 import type {
+  ConversationDecisionProvider,
   ConversationProviderDiagnostic,
   ConversationScope,
   ConversationServiceConfig,
@@ -20,6 +21,7 @@ export interface ConversationContextProvider {
 
 export type ConversationRuntimeOptions = {
   readonly contextProvider?: ConversationContextProvider;
+  readonly decisionProvider?: ConversationDecisionProvider;
 };
 
 export type ConversationEvaluateDiagnostics = {

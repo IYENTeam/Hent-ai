@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONVERSATION_CONFIG } from "./conversation-config.js";
+import { DEFAULT_CONVERSATION_CONFIG, type ConversationDecisionProvider } from "./conversation-config.js";
 import { createConversationRuntime } from "./conversation-runtime.js";
 import { createDiscordPollerIntegration, loadDiscordPollerConfigFromEnv } from "./discord-poller-integration.js";
 import {
@@ -188,7 +188,7 @@ describe("Discord poller integration", () => {
     });
   });
 
-  it("records incoming messages immediately and commits delivery on the evaluation tick", async () => {
+  it("records human messages immediately and replies on the periodic chat tick", async () => {
     const db = new ServiceDatabase();
     const runtime = createConversationRuntime(db, {
       ...DEFAULT_CONVERSATION_CONFIG,
@@ -196,13 +196,21 @@ describe("Discord poller integration", () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       maxChunkChars: 1_800,
+      minHumanIdleMs: 0,
+      cooldownMs: 0,
+    }, {
+      decisionProvider: {
+        decide: vi.fn<ConversationDecisionProvider["decide"]>().mockResolvedValue({
+          kind: "speak",
+          confidence: 0.95,
+          chunks: ["ㅇㅇ 지금 얘기한 방향이면 서비스가 방을 읽고 있다가 필요할 때 답하는 구조가 맞아."],
+        }),
+      },
     });
     const fetchMessages = vi.fn<DiscordRestClient["fetchMessages"]>().mockResolvedValueOnce([
-      restMessage({ id: "u1", content: "Please watch for repeated deployment framing", authorId: "human-1" }),
-      restMessage({ id: "b1", content: "Repeat the same stale deployment plan", authorId: "bot-1", bot: true }),
-      restMessage({ id: "b2", content: "Repeat the same stale deployment plan", authorId: "bot-1", bot: true }),
+      restMessage({ id: "u1", content: "그냥 사람처럼 단톡방에서 보고 있다가 필요한 때 답하면 돼", authorId: "human-1" }),
     ]);
-    const sendMessage = vi.fn<DiscordRestClient["sendMessage"]>().mockResolvedValue("discord-nudge-1");
+    const sendMessage = vi.fn<DiscordRestClient["sendMessage"]>().mockResolvedValue("discord-reply-1");
     const integration = createDiscordPollerIntegration({
       config: { token: "bot-token", channels: ["c1"], botUserId: "bot-1", autoStart: false },
       runtime,
@@ -217,15 +225,82 @@ describe("Discord poller integration", () => {
     await integration.evaluateOnce();
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith("c1", "ㅇㅇ 지금 얘기한 방향이면 서비스가 방을 읽고 있다가 필요할 때 답하는 구조가 맞아.");
     expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([
       { message_id: "u1", author_role: "user" },
-      { message_id: "b1", author_role: "assistant" },
-      { message_id: "b2", author_role: "assistant" },
+      { message_id: "discord-reply-1", author_role: "assistant" },
     ]);
-    expect(db.db.prepare("SELECT status, delivery_message_ids_json FROM conversation_delivery_ledger").get()).toEqual({
-      status: "committed",
-      delivery_message_ids_json: expect.stringContaining("discord-nudge-1"),
+    db.close();
+  });
+
+  it("records self bot messages without queuing a new chat reply", async () => {
+    const db = new ServiceDatabase();
+    const decide = vi.fn<ConversationDecisionProvider["decide"]>().mockResolvedValue({
+      kind: "speak",
+      confidence: 0.95,
+      chunks: ["이 메시지는 보내지면 안 됩니다."],
     });
+    const runtime = createConversationRuntime(db, {
+      ...DEFAULT_CONVERSATION_CONFIG,
+      enabled: true,
+      minHumanIdleMs: 0,
+    }, { decisionProvider: { decide } });
+    const fetchMessages = vi.fn<DiscordRestClient["fetchMessages"]>().mockResolvedValueOnce([
+      restMessage({ id: "b1", content: "self bot content", authorId: "bot-1", bot: true }),
+    ]);
+    const sendMessage = vi.fn<DiscordRestClient["sendMessage"]>().mockResolvedValue("discord-reply-1");
+    const integration = createDiscordPollerIntegration({
+      config: { token: "bot-token", channels: ["c1"], botUserId: "bot-1", autoStart: false },
+      runtime,
+      client: { fetchMessages, sendMessage },
+      wait: async () => {},
+    });
+    integration.poller.seedLastSeen("c1", "0");
+
+    await integration.poller.pollOnce();
+    await integration.evaluateOnce();
+
+    expect(decide).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([
+      { message_id: "b1", author_role: "assistant" },
+    ]);
+    db.close();
+  });
+
+  it("keeps a human-triggered chat reply candidate across no-reply ticks", async () => {
+    const db = new ServiceDatabase();
+    const decide = vi.fn<ConversationDecisionProvider["decide"]>()
+      .mockResolvedValueOnce({ kind: "no_reply", reason: "wait_for_context" })
+      .mockResolvedValueOnce({
+        kind: "speak",
+        confidence: 0.95,
+        chunks: ["이제 답해도 되는 타이밍이야."],
+      });
+    const runtime = createConversationRuntime(db, {
+      ...DEFAULT_CONVERSATION_CONFIG,
+      enabled: true,
+      minHumanIdleMs: 0,
+      cooldownMs: 0,
+    }, { decisionProvider: { decide } });
+    const fetchMessages = vi.fn<DiscordRestClient["fetchMessages"]>().mockResolvedValueOnce([
+      restMessage({ id: "u1", content: "이거 어떻게 볼까?", authorId: "human-1" }),
+    ]);
+    const sendMessage = vi.fn<DiscordRestClient["sendMessage"]>().mockResolvedValue("discord-reply-1");
+    const integration = createDiscordPollerIntegration({
+      config: { token: "bot-token", channels: ["c1"], botUserId: "bot-1", autoStart: false },
+      runtime,
+      client: { fetchMessages, sendMessage },
+      wait: async () => {},
+    });
+    integration.poller.seedLastSeen("c1", "0");
+
+    await integration.poller.pollOnce();
+    await integration.evaluateOnce();
+    await integration.evaluateOnce();
+
+    expect(decide).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledWith("c1", "이제 답해도 되는 타이밍이야.");
     db.close();
   });
 

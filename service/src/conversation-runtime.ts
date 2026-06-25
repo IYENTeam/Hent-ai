@@ -1,10 +1,13 @@
 import type { ServiceDatabase } from "./db.js";
 import type { ConversationServiceConfig } from "./conversation-config.js";
-import { recordConversationUserIntake, type ConversationIntakeContext } from "./conversation-context.js";
-import type { ConversationDeliveryPlanResponse } from "./conversation-delivery-plan.js";
+import {
+  evaluateConversationChatReply,
+  type ConversationChatReplyInput,
+  type ConversationChatReplyResult,
+} from "./conversation-chat-reply.js";
+import { recordConversationUserIntake } from "./conversation-context.js";
 import {
   evaluateConversationContextProvider,
-  type ConversationEvaluateDiagnostics,
   type ConversationRuntimeOptions,
 } from "./conversation-evaluate-context.js";
 import { createConversationStore, type ConversationStore } from "./conversation-store.js";
@@ -23,74 +26,31 @@ import {
   senderRoleForAuthor,
   validCooldownMs,
 } from "./conversation-runtime-support.js";
+import type {
+  WatcherCommitDeliveryInput,
+  WatcherEvaluateInput,
+  WatcherEvaluateResult,
+  WatcherRecordAssistantInput,
+  WatcherRecordUserInput,
+  WatcherRecordUserResult,
+} from "./conversation-watcher-types.js";
 import {
   createNeutralConversationContext,
   evaluateFixation,
   evaluateHostPolicyGate,
-  type HostPolicyGateAudit,
-  type NeutralConversationContext,
   type RawConversationMessage,
 } from "./watcher-core.js";
 
 const WATCHER_WINDOW_N = 8;
 
-export type WatcherRecordUserInput = {
-  readonly scopeId: string;
-  readonly text: string;
-  readonly id?: string;
-  readonly channelId?: string;
-  readonly sourceThreadId?: string;
-  readonly sessionId?: string;
-};
-
-export type WatcherRecordUserResult = {
-  readonly ok: true;
-  readonly context:
-    | {
-      readonly status: "disabled";
-      readonly diagnostics: readonly string[];
-    }
-    | ConversationIntakeContext;
-};
-
-export type WatcherEvaluateInput = {
-  readonly scopeId: string;
-  readonly channelId: string;
-  readonly text: string;
-  readonly messageId: string;
-  readonly sourceThreadId?: string;
-  readonly targetThreadId?: string;
-  readonly sessionId?: string;
-  readonly cooldownMs?: number;
-  readonly privacyRisk?: boolean;
-  readonly crossThreadRisk?: boolean;
-  readonly deliveryMessageId?: string;
-};
-
-export type WatcherRecordAssistantInput = {
-  readonly scopeId: string;
-  readonly channelId: string;
-  readonly text: string;
-  readonly messageId: string;
-  readonly sourceThreadId?: string;
-  readonly sessionId?: string;
-};
-
-export type WatcherEvaluateResult = {
-  readonly decision: "nudge" | "no_reply";
-  readonly nudgeText?: string;
-  readonly deliveryPlan?: ConversationDeliveryPlanResponse;
-  readonly audit: HostPolicyGateAudit | null;
-  readonly context?: NeutralConversationContext;
-  readonly diagnostics?: ConversationEvaluateDiagnostics;
-};
-
-export type WatcherCommitDeliveryInput = {
-  readonly cooldownKey: string;
-  readonly scopeId: string;
-  readonly signalId: string;
-  readonly deliveryMessageId: string;
-};
+export type {
+  WatcherCommitDeliveryInput,
+  WatcherEvaluateInput,
+  WatcherEvaluateResult,
+  WatcherRecordAssistantInput,
+  WatcherRecordUserInput,
+  WatcherRecordUserResult,
+} from "./conversation-watcher-types.js";
 
 export class ConversationRuntime {
   private readonly store: ConversationStore;
@@ -200,6 +160,17 @@ export class ConversationRuntime {
       context,
       ...(contextProviderResult ? { diagnostics: { context: contextProviderResult.diagnostics } } : {}),
     };
+  }
+
+  async evaluateChatReply(input: ConversationChatReplyInput): Promise<ConversationChatReplyResult> {
+    return evaluateConversationChatReply({
+      config: this.config,
+      store: this.store,
+      decisionProvider: this.options.decisionProvider,
+      scope: input,
+      maxRecentTurns: WATCHER_WINDOW_N,
+      nowMs: Date.now(),
+    });
   }
 
   commitDelivery(input: WatcherCommitDeliveryInput): void {

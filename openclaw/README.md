@@ -134,7 +134,7 @@ The Hent-ai service owns:
 - emotion/verdict selection
 - onboarding/generation jobs
 - verifier/cache/rate-limit state
-- short-term memory, long-term summary memory, and speech delivery policy for conversation rooms.
+- short-term memory, long-term summary memory, and chat-reply policy for conversation rooms.
 
 Service-side conversation knobs (defaults are conservative) can be controlled by environment variables:
 
@@ -157,11 +157,13 @@ Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(.
 
 Existing service deployments that already expose `HENT_AI_DISCORD_TOKEN` and `HENT_AI_WATCH_CHANNELS` continue to work as fallback names. The explicit `HENT_AI_DISCORD_POLLER_*` names win when both are set.
 
-The standalone service poller separates intake from evaluation:
+The standalone service poller separates intake from chat reply checks:
 
 - every new human Discord message is recorded immediately through the conversation intake path;
-- every new self-bot Discord message is recorded immediately as an assistant turn and queued as the latest evaluation candidate for that channel;
-- evaluation runs on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message, and delivers/commits a nudge only when the periodic evaluation allows it.
+- every new self-bot Discord message is recorded immediately as an assistant turn, but it does not trigger a new reply by itself;
+- reply checks run on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message;
+- each reply check asks the service conversation decision provider whether the bot should answer naturally in the room;
+- when the provider returns `speak` and policy gates allow it, the service sends the returned chunks to Discord and records those sent chunks as assistant turns.
 
 Live Discord REST verification is opt-in because it needs a real bot token and channel:
 
