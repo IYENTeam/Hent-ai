@@ -157,16 +157,16 @@ describe("Discord REST poller", () => {
 });
 
 describe("Discord poller integration", () => {
-  it("loads poller config from the service deployment Discord env names", () => {
+  it("loads poller config from the canonical poller env names", () => {
     const config = loadDiscordPollerConfigFromEnv({
-      HENT_AI_DISCORD_TOKEN: "service-discord-token",
-      HENT_AI_WATCH_CHANNELS: " c1, c2 ",
+      HENT_AI_DISCORD_POLLER_TOKEN: "poller-token",
+      HENT_AI_DISCORD_POLLER_CHANNELS: " c1, c2 ",
       HENT_AI_DISCORD_POLLER_BOT_USER_ID: "bot-1",
       HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS: "30000",
     });
 
     expect(config).toEqual({
-      token: "service-discord-token",
+      token: "poller-token",
       channels: ["c1", "c2"],
       botUserId: "bot-1",
       evaluationIntervalMs: 30_000,
@@ -174,18 +174,22 @@ describe("Discord poller integration", () => {
     });
   });
 
-  it("prefers explicit poller env names over service deployment fallback names", () => {
+  it("does not enable the poller from removed watcher compatibility env names", () => {
     const config = loadDiscordPollerConfigFromEnv({
-      HENT_AI_DISCORD_POLLER_TOKEN: "poller-token",
-      HENT_AI_DISCORD_POLLER_CHANNELS: "poller-channel",
       HENT_AI_DISCORD_TOKEN: "service-discord-token",
       HENT_AI_WATCH_CHANNELS: "service-channel",
     });
 
-    expect(config).toMatchObject({
-      token: "poller-token",
-      channels: ["poller-channel"],
+    expect(config).toBeNull();
+  });
+
+  it("allows the generic Discord bot token only when canonical poller channels are configured", () => {
+    const config = loadDiscordPollerConfigFromEnv({
+      DISCORD_BOT_TOKEN: "bot-token",
+      HENT_AI_DISCORD_POLLER_CHANNELS: "poller-channel",
     });
+
+    expect(config).toMatchObject({ token: "bot-token", channels: ["poller-channel"] });
   });
 
   it("records human messages immediately and replies on the periodic chat tick", async () => {

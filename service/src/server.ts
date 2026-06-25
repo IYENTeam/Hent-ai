@@ -3,12 +3,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier } from "./verifier.js";
-import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
-import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
-import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalVerdictForBody, mediaResponseForChannel } from "./final-response-routes.js";
-import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -22,9 +18,6 @@ export type HentAiServerOptions = {
   token: string;
   assetRoot?: string;
   verifier: FinalResponseVerifier;
-  conversationConfig?: ConversationServiceConfig;
-  conversationContextProvider?: ConversationContextProvider;
-  conversationRuntime?: ConversationRuntime;
 };
 
 export function redactBearerToken(value: string): string {
@@ -94,9 +87,6 @@ function serveStatic(assetRoot: string | undefined, pathname: string, res: Serve
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
-    ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
-  });
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -119,17 +109,6 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         const body = await readJsonBody(req);
         const result = await finalVerdictForBody(options.db, options.verifier, body);
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
-        return;
-      }
-      if (isWatcherRoute(req.method, url.pathname)) {
-        const result = await handleWatcherRoute({
-          method: req.method,
-          pathname: url.pathname,
-          body: await readJsonBody(req),
-          runtime: conversationRuntime,
-        });
-        if (!result) return notFound(res);
-        sendJson(res, result.status, result.body);
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {

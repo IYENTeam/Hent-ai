@@ -1,10 +1,8 @@
 import type {
   ConversationAuthorRole,
   ConversationCheckpoint,
-  ConversationGateState,
   ConversationRawEvent,
   ConversationSummary,
-  DeliveryPlan,
 } from "./conversation-store-types.js";
 
 function parseJsonValue(value: string): unknown {
@@ -45,38 +43,10 @@ function parseAuthorRole(value: unknown): ConversationAuthorRole {
   throw new TypeError("Expected conversation author role");
 }
 
-function parseDeliveryStatus(value: unknown): DeliveryPlan["status"] {
-  if (value === "planned" || value === "committed") return value;
-  throw new TypeError("Expected delivery plan status");
-}
-
-function parseStringArray(value: string): readonly string[] {
-  const parsed = parseJsonValue(value);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter((item): item is string => typeof item === "string");
-}
-
 function parseNumberArray(value: string): readonly number[] {
   const parsed = parseJsonValue(value);
   if (!Array.isArray(parsed)) return [];
   return parsed.filter((item): item is number => typeof item === "number");
-}
-
-function parseStringRecord(value: string): Readonly<Record<string, string>> {
-  const parsed = parseJsonValue(value);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const record: Record<string, string> = {};
-  for (const [key, item] of Object.entries(parsed)) {
-    if (typeof item === "string") record[key] = item;
-  }
-  return record;
-}
-
-export function sameStringRecord(left: Readonly<Record<string, string>>, right: Readonly<Record<string, string>>): boolean {
-  const leftKeys = Object.keys(left).sort();
-  const rightKeys = Object.keys(right).sort();
-  if (leftKeys.length !== rightKeys.length) return false;
-  return leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key]);
 }
 
 export function rawEventFromRow(row: Readonly<Record<string, unknown>>): ConversationRawEvent {
@@ -117,32 +87,5 @@ export function summaryFromRow(row: Readonly<Record<string, unknown>>): Conversa
     sourceEventStartId: requireNumber(row, "source_event_start_id"),
     sourceEventEndId: requireNumber(row, "source_event_end_id"),
     createdAt: requireString(row, "created_at"),
-  };
-}
-
-export function deliveryPlanFromRow(row: Readonly<Record<string, unknown>>): DeliveryPlan {
-  return {
-    planId: requireString(row, "plan_id"),
-    scopeId: requireString(row, "scope_id"),
-    channelId: requireString(row, "channel_id"),
-    signalId: requireString(row, "signal_id"),
-    cooldownKey: requireString(row, "cooldown_key"),
-    requiredChunkIds: parseStringArray(requireString(row, "required_chunk_ids_json")),
-    status: parseDeliveryStatus(row.status),
-    deliveryMessageIds: parseStringRecord(requireString(row, "delivery_message_ids_json")),
-    createdAt: requireString(row, "created_at"),
-    committedAt: optionalString(row, "committed_at"),
-  };
-}
-
-export function gateStateFromRow(row: Readonly<Record<string, unknown>>): ConversationGateState {
-  return {
-    scopeId: requireString(row, "scope_id"),
-    stateKey: requireString(row, "state_key"),
-    cooldownUntil: optionalString(row, "cooldown_until"),
-    budgetWindowStart: optionalString(row, "budget_window_start"),
-    budgetCount: requireNumber(row, "budget_count"),
-    lastSignalId: optionalString(row, "last_signal_id"),
-    updatedAt: requireString(row, "updated_at"),
   };
 }

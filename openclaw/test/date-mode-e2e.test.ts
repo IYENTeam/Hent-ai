@@ -63,9 +63,9 @@ describe("date-mode media adapter behavior", () => {
     expect(result).toMatchObject({ payload: { mediaUrl: "https://cdn.test/service-choice.png" } });
   });
 
-  it("registers only service-owned message_sent watcher, not legacy local patching", () => {
-    const { api } = setup();
-    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
+  it("does not register sent-message watcher or legacy local patching", () => {
+    const { api, events } = setup();
+    expect(events.get("message_sent")).toBeUndefined();
     expect(api.on).not.toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-message-sent-media" });
     expect(api.on).not.toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "emotion-image-message-sent" });
   });

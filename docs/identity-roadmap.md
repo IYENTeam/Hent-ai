@@ -58,15 +58,15 @@ Service-owned responsibilities:
    - Return Stage-1 media metadata for the host to attach.
 
 2. **Profile, channel, and asset state**
-   - Own profile/channel mappings, date-mode policy, asset manifests/storage, verifier cache, rate limits, and watcher state.
+   - Own profile/channel mappings, date-mode policy, asset manifests/storage, verifier cache, rate limits, and conversation memory state.
    - Treat SQLite-backed service state as the accepted runtime profile architecture unless a later owner-approved decision replaces it.
 
 3. **OpenClaw adapter boundary**
    - Always register `reply_payload_sending` and forward final assistant reply context to `/v1/final-response/verdict`.
    - Attach service-returned media to the outgoing payload.
-   - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
-   - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
-   - In standalone local service mode, Discord readback and watcher delivery may be owned by the Hent-ai service poller instead; this does not move Discord REST logic into the OpenClaw adapter.
+   - Optionally (opt-in via `hentAiService.preReplyMedia`) register `message_received` to drive `/v1/pre-reply/media`.
+   - Keep text delivery owned by OpenClaw. Pre-reply media goes through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
+   - In standalone local service mode, Discord readback and chat participation may be owned by the Hent-ai service poller instead; this does not move Discord REST logic into the OpenClaw adapter.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**
@@ -78,7 +78,8 @@ Current server code references:
 - `service/src/server.ts` — service HTTP endpoints, final-response verdict route, channel/profile policy integration.
 - `service/src/verifier.ts` — final-response verifier provider contract.
 - `service/src/db.ts` — service profile/channel/verifier state.
-- `service/src/watcher-core.ts` and `service/src/watcher-adapter.ts` — watcher state and delivery gating.
+- `service/src/discord-poller-integration.ts` — standalone Discord readback and chat participation wiring.
+- `service/src/conversation-runtime.ts` — service-owned conversation intake, memory, and chat-reply evaluation.
 - `openclaw/index.ts` — thin OpenClaw adapter registration and service delegation.
 - `openclaw/README.md` — adapter setup and E2E verification contract.
 - `docs/service-owned-gates.md` — current PR/release gate policy for this boundary.

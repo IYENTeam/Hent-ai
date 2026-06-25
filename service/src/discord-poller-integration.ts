@@ -109,9 +109,8 @@ export function loadDiscordPollerConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DiscordPollerIntegrationConfig | null {
   const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN)
-    ?? stringEnv(env.DISCORD_BOT_TOKEN)
-    ?? stringEnv(env.HENT_AI_DISCORD_TOKEN);
-  const channels = channelListEnv(stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS) ?? stringEnv(env.HENT_AI_WATCH_CHANNELS));
+    ?? stringEnv(env.DISCORD_BOT_TOKEN);
+  const channels = channelListEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS);
   if (!token || channels.length === 0) return null;
 
   return {
