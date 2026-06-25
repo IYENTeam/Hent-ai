@@ -8,7 +8,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify:discord-rest": "vitest run src/discord-rest-poller.live.test.ts"
   },
   "license": "MIT",
   "dependencies": {
