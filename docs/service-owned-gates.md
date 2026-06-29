@@ -28,10 +28,10 @@ PR #99 is the reference case: it started as a useful audit repro, but after the 
 | Change type | Required evidence |
 | --- | --- |
 | OpenClaw adapter code | OpenClaw tests plus proof that `openclaw/` remains service-thin: no local classifier, no local asset/profile lookup, no direct Discord REST. |
-| Service verdict/verifier changes | Service verifier/service tests and a request/response fixture for `/v1/final-response/verdict`. |
+| Service verdict/verifier changes | Service verifier/service tests, finite verifier-cache expiry evidence, and a request/response fixture or contract version for `/v1/final-response/verdict`. |
 | Watcher behavior | Watcher core/service tests covering state lifetime, dedup/cooldown, self-nudge prevention, and scope/thread handling. |
 | Hermes compatibility rules | Hermes tests plus parity evidence against `shared/` fixtures or an explicit documented difference. |
-| Shared classifier/fixture changes | Cross-surface fixture updates where practical, including Korean, English, mixed-language, progress, apology, uncertainty, greeting, and noisy media-tag cases. |
+| Shared classifier/fixture changes | Cross-surface fixture updates where practical, including Korean, English, mixed-language, progress, apology, uncertainty, greeting, and noisy media-tag cases. `tests/fixtures/emotion-contract-v1.json` is the current fixture. |
 | Asset/manifest/profile DB mutations | Diff/readback evidence; DB migrations require backup or reversible plan. |
 | Live config/restart/deployment | Owner approval, active-work inventory, config diff/validation, one restart/reload attempt, health check, E2E/readback, and error-log grep. |
 
@@ -43,6 +43,10 @@ Changeset Validation is an owner gate, not a nuisance check. If it fails because
 2. the `owner-reviewed` label is added by the owner-approved process.
 
 CI green does not override this gate. Contract changes can pass tests while still pulling the architecture toward the wrong ownership boundary.
+
+`node scripts/service-owned-boundary-check.mjs` is part of the local release gate. It blocks an OpenClaw adapter package that grows beyond the thin runtime surface, an OpenClaw `tsconfig` that re-includes legacy local runtime modules, or a generate package that imports OpenClaw asset-manifest internals.
+
+The repository PR template includes architecture-boundary checkboxes. Do not mark them complete unless the release gate and any needed owner-approved architecture decision are present.
 
 ## Reviewer checklist
 

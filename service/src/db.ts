@@ -219,6 +219,16 @@ export class ServiceDatabase {
     return row ? { filename: String(row.filename), contentType: String(row.content_type), objectUrl: String(row.object_url), storageKey: String(row.storage_key) } : null;
   }
 
+  firstAssetForChannelEmotion(channelId: string, emotion: string): { filename: string; contentType: string; objectUrl: string; storageKey: string } | null {
+    const mapping = this.getChannelMapping(channelId);
+    if (!mapping || mapping.enabled === false || !mapping.assetSetId) return null;
+    const row = this.db.prepare(`SELECT a.filename, o.content_type, o.object_url, o.storage_key
+      FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
+      WHERE a.asset_set_id = ? AND lower(a.emotion) = ? ORDER BY a.filename LIMIT 1`)
+      .get(mapping.assetSetId, emotion.toLowerCase()) as Record<string, unknown> | undefined;
+    return row ? { filename: String(row.filename), contentType: String(row.content_type), objectUrl: String(row.object_url), storageKey: String(row.storage_key) } : null;
+  }
+
   createGenerationJob(request: unknown): GenerationJob {
     const id = `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
     const stamp = now();

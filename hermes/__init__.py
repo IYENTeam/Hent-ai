@@ -9,21 +9,52 @@ response directive.
 
 from __future__ import annotations
 
-import datetime
+import importlib.util as importlib_util
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+
+def _load_watcher_runtime():
+    try:
+        from . import watcher_runtime
+    except ImportError:
+        spec = importlib_util.spec_from_file_location(
+            "hent_ai_watcher_runtime", Path(__file__).resolve().parent / "watcher_runtime.py"
+        )
+        assert spec is not None and spec.loader is not None
+        watcher_runtime = importlib_util.module_from_spec(spec)
+        spec.loader.exec_module(watcher_runtime)
+    return watcher_runtime
+
+
+def _load_watcher_adapter():
+    return _load_watcher_runtime().load_watcher_adapter()
+
+
+def _build_watcher_llm():
+    return _load_watcher_runtime().build_watcher_llm()
+
+
+def _watcher_config_from_env() -> dict | None:
+    return _load_watcher_runtime().watcher_config_from_env()
+
+
+def _derive_scope(platform: str, kwargs: dict) -> str:
+    return _load_watcher_runtime().derive_scope(platform, kwargs)
+
 DEFAULT_EMOTION_MAP: dict[str, str] = {
-    "happy": "happy.png",
-    "neutral": "neutral.png",
-    "loyalty": "loyalty.png",
     "sorry": "sorry.png",
+    "happy": "happy.png",
     "confused": "confused.png",
     "focused": "focused.png",
+    "loyalty": "loyalty.png",
+    "neutral": "neutral.png",
 }
 
+EMOTION_CONTRACT_VERSION = "EmotionContractV1"
 DEFAULT_EMOTION = "neutral"
 DEFAULT_SUPPORTED_PLATFORMS = {
     "discord",
@@ -36,7 +67,10 @@ DEFAULT_SUPPORTED_PLATFORMS = {
 EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
     (
         "sorry",
-        (re.compile(r"sorry|apolog|my bad|mistake|messed up|regret|oops", re.I),),
+        (
+            re.compile(r"sorry|apolog|my bad|mistake|messed up|regret|oops", re.I),
+            re.compile(r"죄송|미안|실수|잘못|에러가? 발생|오류가? 발생|버그.*발견|실패", re.I),
+        ),
     ),
     (
         "happy",
@@ -48,6 +82,7 @@ EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
             re.compile(
                 r"proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay", re.I
             ),
+            re.compile(r"완료|성공|통과|해결|고쳤|수정.*완료|빌드.*성공|테스트.*통과|잘 ?됐|문제.*없", re.I),
         ),
     ),
     (
@@ -57,7 +92,8 @@ EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
                 r"confused|unclear|not sure|strange|unknown cause|weird|unexpected",
                 re.I,
             ),
-            re.compile(r"question|how do we|what should|any idea", re.I),
+            re.compile(r"question|how do we|how should|what should|any idea|could you clarify", re.I),
+            re.compile(r"확인.*필요|불확실|잘 ?모르|애매|이해가 안|의미가|어떤.*의미|모호|추가.*정보", re.I),
         ),
     ),
     (
@@ -70,15 +106,17 @@ EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
             re.compile(
                 r"in progress|checking|processing|deploying|testing|verifying", re.I
             ),
+            re.compile(r"분석|조사|확인|살펴|디버깅|검토|읽[어고]|찾[아고]|작업 ?중|처리 ?중|검사", re.I),
         ),
     ),
     (
         "loyalty",
         (
             re.compile(
-                r"got it|understood|on it|yes sir|will do|right away|hello|hi there",
+                r"got it|understood|on it|yes sir|will do|right away|hello|hi there|sure thing",
                 re.I,
             ),
+            re.compile(r"네[,.]?|알겠|이해했|시작하겠|바로|확인했|말씀대로|지시.*따[르라]|접수", re.I),
         ),
     ),
 ]
@@ -160,11 +198,12 @@ def build_transformed_response(
     unchanged.
     """
 
-    if not response_text or not should_attach_for_platform(platform):
+    sanitized_text = strip_media_directives(response_text)
+    if not sanitized_text or not should_attach_for_platform(platform):
         return None
 
     active_map = emotion_map or DEFAULT_EMOTION_MAP
-    emotion = detect_emotion(response_text)
+    emotion = detect_emotion(sanitized_text)
     filename = active_map.get(emotion) or active_map.get(DEFAULT_EMOTION)
     if not filename:
         return None
@@ -173,91 +212,14 @@ def build_transformed_response(
     if not image_path.exists():
         return None
 
-    return f"{response_text.rstrip()}\n\nMEDIA:{image_path.resolve()}"
+    return f"{sanitized_text.rstrip()}\n\nMEDIA:{image_path.resolve()}"
 
 
-def _load_watcher_adapter():
-    """Import the watcher adapter, working both as a package and standalone."""
-    try:
-        from . import watcher_adapter as wa  # package import
-    except ImportError:  # standalone load via spec_from_file_location
-        import importlib.util as ilu
-
-        spec = ilu.spec_from_file_location(
-            "hent_ai_watcher_adapter", Path(__file__).resolve().parent / "watcher_adapter.py"
-        )
-        assert spec is not None and spec.loader is not None
-        wa = ilu.module_from_spec(spec)
-        spec.loader.exec_module(wa)
-    return wa
-
-def _build_watcher_llm():
-    """Build the live LLM critic/generator/moderator, or None when unconfigured."""
-    if not (os.getenv("HENT_AI_LLM_API_KEY") and os.getenv("HENT_AI_LLM_MODEL")):
-        return None
-
-    def _load(mod_name: str, file_name: str):
-        try:
-            import importlib
-
-            return importlib.import_module(f".{mod_name}", __package__)
-        except Exception:
-            import importlib.util as ilu
-
-            spec = ilu.spec_from_file_location(
-                f"hent_ai_{mod_name}", Path(__file__).resolve().parent / file_name
-            )
-            assert spec is not None and spec.loader is not None
-            module = ilu.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-
-    watcher_llm = _load("watcher_llm", "watcher_llm.py")
-    llm_client = _load("llm_client", "llm_client.py")
-    return watcher_llm.create_watcher_llm(llm_client.call_chat, os.getenv("HENT_AI_WATCHER_PERSONA"))
-
-
-class _WatcherLogger:
-    """Adapter logger shim (info/warn) over the stdlib logger."""
-
-    def __init__(self) -> None:
-        import logging
-
-        self._log = logging.getLogger("hent_ai.watcher")
-
-    def info(self, *args: object) -> None:
-        self._log.info(" ".join(str(a) for a in args))
-
-    def warn(self, *args: object) -> None:
-        self._log.warning(" ".join(str(a) for a in args))
-
-
-def _watcher_config_from_env() -> dict | None:
-    """Read watcher config from env; return None when disabled."""
-    if os.getenv("HENT_AI_WATCHER_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
-        return None
-    cfg: dict = {"enabled": True}
-    shadow = os.getenv("HENT_AI_WATCHER_SHADOW")
-    cfg["shadowMode"] = True if shadow is None else shadow.strip().lower() in {"1", "true", "yes", "on"}
-    for env_name, key in (
-        ("HENT_AI_WATCHER_COOLDOWN_MS", "cooldownMs"),
-        ("HENT_AI_WATCHER_BUDGET_PER_HOUR", "budgetPerHour"),
-    ):
-        raw = os.getenv(env_name)
-        if raw and raw.strip().lstrip("-").isdigit():
-            cfg[key] = int(raw.strip())
-    confidence = os.getenv("HENT_AI_WATCHER_CONFIDENCE")
-    if confidence:
-        try:
-            cfg["confidenceThreshold"] = float(confidence.strip())
-        except ValueError:
-            pass
-    return cfg
-
-
-def _derive_scope(platform: str, kwargs: dict) -> str:
-    """Prefer host session/thread ids; degrade to per-platform scope (MF4)."""
-    return str(kwargs.get("session_id") or kwargs.get("thread_id") or f"platform:{platform}")
+def strip_media_directives(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().upper().startswith("MEDIA:")
+    ).strip()
 
 
 def register(ctx) -> None:
@@ -270,14 +232,16 @@ def register(ctx) -> None:
     behaves exactly like the original emotion-image plugin.
     """
 
+    watcher_runtime = _load_watcher_runtime()
     watcher_cfg = _watcher_config_from_env()
     watcher = None
+    compose_nudge = None
     if watcher_cfg is not None:
         wa = _load_watcher_adapter()
         watcher_deps = {
             "config": watcher_cfg,
-            "logger": _WatcherLogger(),
-            "isoNow": lambda: datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "logger": watcher_runtime.WatcherLogger(),
+            "isoNow": lambda: datetime.now(timezone.utc).isoformat(),
         }
         watcher_llm = _build_watcher_llm()
         if watcher_llm is not None:
@@ -285,16 +249,16 @@ def register(ctx) -> None:
             watcher_deps["generate"] = watcher_llm["generate"]
             watcher_deps["moderate"] = watcher_llm["moderate"]
         watcher = wa.create_hermes_watcher_adapter(watcher_deps)
-        _compose_nudge = wa.compose_nudge
+        compose_nudge = wa.compose_nudge
 
     def transform_llm_output(response_text: str, platform: str = "", **kwargs) -> str | None:
         base = response_text
         if watcher is not None and response_text and should_attach_for_platform(platform):
             try:
-                scope = _derive_scope(platform, kwargs)
+                scope = watcher_runtime.derive_scope(platform, kwargs)
                 nudge = watcher["on_agent_turn"](scope, response_text)
-                if nudge:
-                    base = _compose_nudge(response_text, nudge)
+                if nudge and compose_nudge is not None:
+                    base = compose_nudge(response_text, nudge)
             except Exception:  # never let the watcher break the primary response
                 base = response_text
         media = build_transformed_response(base, platform=platform)

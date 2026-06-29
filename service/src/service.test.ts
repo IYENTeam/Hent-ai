@@ -107,6 +107,39 @@ describe("schema and importer", () => {
     db.close();
   });
 
+  it("selects channel media by requested emotion through the service database helper", () => {
+    const db = new ServiceDatabase();
+    db.upsertAssetSet({ id: "set", name: "Set" });
+    const neutralObjectId = db.upsertStorageObject({
+      storageKey: "sets/set/neutral.png",
+      objectUrl: "/static/sets/set/neutral.png",
+      contentHash: "neutral-hash",
+      contentType: "image/png",
+      sizeBytes: 1,
+      provenance: "test",
+    });
+    const happyObjectId = db.upsertStorageObject({
+      storageKey: "sets/set/happy.png",
+      objectUrl: "/static/sets/set/happy.png",
+      contentHash: "happy-hash",
+      contentType: "image/png",
+      sizeBytes: 1,
+      provenance: "test",
+    });
+    db.upsertAsset({ id: "asset-neutral", assetSetId: "set", emotion: "neutral", filename: "neutral.png", storageObjectId: neutralObjectId, contentHash: "neutral-hash" });
+    db.upsertAsset({ id: "asset-happy", assetSetId: "set", emotion: "happy", filename: "happy.png", storageObjectId: happyObjectId, contentHash: "happy-hash" });
+    db.setChannelMapping("c1", { enabled: true, assetSetId: "set" });
+
+    expect(db.firstAssetForChannelEmotion("c1", "happy")).toEqual({
+      filename: "happy.png",
+      contentType: "image/png",
+      objectUrl: "/static/sets/set/happy.png",
+      storageKey: "sets/set/happy.png",
+    });
+    expect(db.firstAssetForChannelEmotion("c1", "sorry")).toBeNull();
+    db.close();
+  });
+
   it("imports profile directories and legacy SQLite state in dry-run and apply reports", () => {
     const root = tempDir();
     mkdirSync(join(root, "profiles", "private"), { recursive: true });
@@ -198,6 +231,28 @@ describe("runtime and job APIs", () => {
       expect(await verdict.json()).toMatchObject({ verdict: { emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict", media: { filename: "neutral.png", contentType: "image/png", url: "/static/sets/gothic-v1/neutral.png" } } });
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
     }, { assetRoot: root, verifier: { verify: async () => ({ emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict" }) } });
+  });
+
+  it("serves only DB-registered static image objects from the asset root", async () => {
+    const root = tempDir();
+    writeFixtureAssets(root);
+    writeFileSync(join(root, "hentai.db"), Buffer.from("sqlite"));
+    const db = new ServiceDatabase();
+    importAssets({ db, assetRoot: root });
+    writeFileSync(join(root, "manifest.json"), Buffer.from("{}"));
+
+    await withServer(db, async (baseUrl) => {
+      const image = await fetch(`${baseUrl}/static/sets/gothic-v1/neutral.png`);
+      expect(image.status).toBe(200);
+      expect(image.headers.get("content-type")).toBe("image/png");
+
+      const manifest = await fetch(`${baseUrl}/static/manifest.json`);
+      expect(manifest.status).toBe(404);
+      const overrides = await fetch(`${baseUrl}/static/channel-overrides.json`);
+      expect(overrides.status).toBe(404);
+      const legacyDb = await fetch(`${baseUrl}/static/hentai.db`);
+      expect(legacyDb.status).toBe(404);
+    }, { assetRoot: root });
   });
 
   it("persists async generation jobs and exposes runner-processed status", async () => {

@@ -30,11 +30,18 @@ Equivalent package script:
 npm run release:check
 ```
 
-The gate runs the focused service verifier/worker regression tests and the full OpenClaw suite:
+The gate runs the service-owned boundary check, focused service verifier/poller/worker regression tests, shared emotion contract tests, generate manifest tests, Hermes compatibility tests, and the full OpenClaw suite:
 
 ```bash
-cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/generation-worker.test.ts
+node scripts/service-owned-boundary-check.mjs
+cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts
+cd shared && npx vitest run
+cd generate && npx vitest run src/sets.test.ts
+python3 -m unittest discover -s tests/hermes
 cd openclaw && npx vitest run
+cd openclaw && npx tsc --noEmit
+cd service && npx tsc --noEmit
+cd generate && npx tsc --noEmit
 ```
 
 Any failing command blocks the release. CI required-check enforcement is intentionally deferred; this gate is the local/manual release checklist for this slice.
@@ -79,6 +86,10 @@ Provider result shape for generated image persistence:
 ```
 
 When `assetRoot` is supplied, the worker writes the image under `generated/<assetSetId>/<emotion>/<jobId>-<filename>`, upserts `storage_objects` and `assets`, strips inline base64 from the stored job result, and exposes the image through `/static/...`. Tests must keep providers mocked; do not trigger paid image generation in CI.
+
+Persisted generated assets include provenance metadata on both `storage_objects` and `assets`: job id, content hash, content type, byte size, dimensions when known, source references, source (`hent-ai-generation-worker`), verification status, and hashes of request/provider metadata. The metadata intentionally avoids persisting raw prompts, conversation windows, or provider payloads with the long-lived storage object.
+
+Generated asset writes are treated as immutable. A worker must fail rather than overwrite an existing generated storage key or asset id; active-set changes are pointer updates, not root-file copy operations.
 
 For the community-cron workflow, `POST /v1/assets/generate` also accepts a cron selector request:
 

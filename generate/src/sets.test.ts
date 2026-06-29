@@ -37,4 +37,54 @@ describe("sets manifest handling", () => {
       await rm(assetDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects path-bearing set ids before writing directories", async () => {
+    const assetDir = await mkdtemp(join(tmpdir(), "hent-ai-sets-traversal-"));
+    try {
+      await expect(runSets(["register", "../escape", "--dir", assetDir])).rejects.toThrow("Invalid asset set id");
+    } finally {
+      await rm(assetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects path-bearing manifest entries when switching active sets", async () => {
+    const assetDir = await mkdtemp(join(tmpdir(), "hent-ai-sets-bad-manifest-"));
+    try {
+      await writeFile(join(assetDir, "manifest.json"), JSON.stringify({
+        version: 1,
+        activeSet: "",
+        sets: {
+          good: {
+            name: "Good",
+            createdAt: new Date().toISOString(),
+            emotions: { "../escape": ["../secret.png"] },
+          },
+        },
+      }), "utf-8");
+      await expect(runSets(["switch", "good", "--dir", assetDir])).rejects.toThrow("Invalid emotion key");
+    } finally {
+      await rm(assetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects path-bearing manifest filenames independently from emotion keys", async () => {
+    const assetDir = await mkdtemp(join(tmpdir(), "hent-ai-sets-bad-filename-"));
+    try {
+      await writeFile(join(assetDir, "manifest.json"), JSON.stringify({
+        version: 1,
+        activeSet: "",
+        sets: {
+          good: {
+            name: "Good",
+            createdAt: new Date().toISOString(),
+            emotions: { happy: ["../secret.png"] },
+          },
+        },
+      }), "utf-8");
+      await expect(runSets(["switch", "good", "--dir", assetDir])).rejects.toThrow("Invalid manifest filename");
+    } finally {
+      await rm(assetDir, { recursive: true, force: true });
+    }
+  });
+
 });
