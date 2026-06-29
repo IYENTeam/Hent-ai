@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier, VerifierJudgment } from "./verifier.js";
 
+export const FINAL_VERDICT_SCHEMA_VERSION = "FinalEmotionVerdictV1";
+export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV1";
+export const VERIFIER_CACHE_POLICY_VERSION = "VerifierCachePolicyV1";
+export const ASSET_POLICY_VERSION = "ServiceAssetPolicyV1";
+const VERIFIER_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+
 export type ServiceMediaResponse = {
   media: {
     filename: string;
@@ -112,17 +118,13 @@ function validEmotionsFromBody(body: unknown): string[] {
 
 function mediaResponseForChannelEmotion(db: ServiceDatabase, channelId: string | undefined, emotion: string): ServiceMediaResponse["media"] {
   if (!channelId) return null;
-  const mapping = db.getChannelMapping(channelId);
-  if (!mapping || mapping.enabled === false || !mapping.assetSetId) return null;
-  const row = db.db.prepare(`SELECT a.filename, o.content_type, o.object_url, o.storage_key
-    FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
-    WHERE a.asset_set_id = ? AND lower(a.emotion) = ? ORDER BY a.filename LIMIT 1`).get(mapping.assetSetId, emotion.toLowerCase()) as Record<string, unknown> | undefined;
-  return row ? {
-    filename: String(row.filename),
-    contentType: String(row.content_type),
-    url: String(row.object_url),
+  const asset = db.firstAssetForChannelEmotion(channelId, emotion);
+  return asset ? {
+    filename: asset.filename,
+    contentType: asset.contentType,
+    url: asset.objectUrl,
     sensitiveMedia: true,
-    metadata: { storageKey: String(row.storage_key) },
+    metadata: { storageKey: asset.storageKey },
   } : null;
 }
 
@@ -136,7 +138,15 @@ function validEmotionsForChannel(db: ServiceDatabase, channelId: string | undefi
 }
 
 function verdictCacheKey(channelId: string | undefined, finalText: string, validEmotions: string[]): string {
-  return createHash("sha256").update(JSON.stringify({ channelId: channelId ?? null, finalText, validEmotions })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({
+    version: FINAL_VERDICT_SCHEMA_VERSION,
+    mediaVersion: SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION,
+    verifierCacheVersion: VERIFIER_CACHE_POLICY_VERSION,
+    assetPolicyVersion: ASSET_POLICY_VERSION,
+    channelId: channelId ?? null,
+    finalText,
+    validEmotions,
+  })).digest("hex");
 }
 
 function cachedVerdict(db: ServiceDatabase, key: string, validEmotions: string[]): FinalVerdict | null | undefined {
@@ -150,10 +160,11 @@ function cachedVerdict(db: ServiceDatabase, key: string, validEmotions: string[]
 
 function storeCachedVerdict(db: ServiceDatabase, key: string, verdict: FinalVerdict | null): void {
   const stamp = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + VERIFIER_CACHE_TTL_MS).toISOString();
   db.db.prepare(`INSERT INTO verifier_cache (cache_key, verdict_json, expires_at, created_at, updated_at)
-    VALUES (?, ?, NULL, ?, ?)
-    ON CONFLICT(cache_key) DO UPDATE SET verdict_json = excluded.verdict_json, updated_at = excluded.updated_at`)
-    .run(key, JSON.stringify(verdict), stamp, stamp);
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(cache_key) DO UPDATE SET verdict_json = excluded.verdict_json, expires_at = excluded.expires_at, updated_at = excluded.updated_at`)
+    .run(key, JSON.stringify(verdict), expiresAt, stamp, stamp);
 }
 
 function skippedVerdict(reason: string): FinalVerdictResult {

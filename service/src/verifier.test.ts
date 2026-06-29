@@ -1,11 +1,28 @@
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { ServiceDatabase } from "./db.js";
+import {
+  ASSET_POLICY_VERSION,
+  FINAL_VERDICT_SCHEMA_VERSION,
+  SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION,
+  VERIFIER_CACHE_POLICY_VERSION,
+} from "./final-response-routes.js";
 import { createHentAiServer, listen } from "./server.js";
 import type { FinalResponseVerifier } from "./verifier.js";
 import { createRemoteFinalResponseVerifier, createOpenAiChatCompletionsFinalResponseVerifier, loadVerifierProviderConfigFromEnv, normalizeVerifierJudgment } from "./verifier.js";
 
 const token = "test-token";
+const finalResponseFixture = JSON.parse(
+  readFileSync(new URL("../../tests/fixtures/final-response-v1.json", import.meta.url), "utf-8"),
+) as {
+  versions: {
+    finalVerdict: string;
+    mediaResponse: string;
+    verifierCachePolicy: string;
+    assetPolicy: string;
+  };
+};
 
 function seedNeutralAsset(db: ServiceDatabase): void {
   db.upsertAssetSet({ id: "set", name: "Set" });
@@ -60,6 +77,63 @@ describe("final-response verifier boundary", () => {
         .resolves.toMatchObject({ verdict: { emotion: "neutral", reason: "remote_verifier" } });
       expect(calls).toBe(1);
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
+    });
+  });
+
+  it("stores verifier cache rows with a finite V1 contract expiry", async () => {
+    const db = new ServiceDatabase();
+    seedNeutralAsset(db);
+    const verifier: FinalResponseVerifier = {
+      verify: async () => ({ emotion: "neutral", confidence: 0.88, reason: "remote_verifier" }),
+    };
+
+    await withServer(db, verifier, async (baseUrl) => {
+      expect(FINAL_VERDICT_SCHEMA_VERSION).toBe("FinalEmotionVerdictV1");
+      expect(SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION).toBe("ServiceMediaResponseV1");
+      expect(VERIFIER_CACHE_POLICY_VERSION).toBe("VerifierCachePolicyV1");
+      expect(ASSET_POLICY_VERSION).toBe("ServiceAssetPolicyV1");
+      expect(finalResponseFixture.versions).toEqual({
+        finalVerdict: FINAL_VERDICT_SCHEMA_VERSION,
+        mediaResponse: SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION,
+        verifierCachePolicy: VERIFIER_CACHE_POLICY_VERSION,
+        assetPolicy: ASSET_POLICY_VERSION,
+      });
+      await requestVerdict(baseUrl, "hello with expiring cache");
+      const row = db.db.prepare("SELECT expires_at FROM verifier_cache").get() as { expires_at: string | null };
+      expect(row.expires_at).toEqual(expect.any(String));
+      expect(Date.parse(row.expires_at ?? "")).toBeGreaterThan(Date.now());
+    });
+  });
+
+  it("does not reuse expired cached verdicts or expired cached null verdicts", async () => {
+    const db = new ServiceDatabase();
+    seedNeutralAsset(db);
+    const responses: Array<Awaited<ReturnType<FinalResponseVerifier["verify"]>>> = [
+      { emotion: "neutral", confidence: 0.5, reason: "first" },
+      { emotion: "neutral", confidence: 0.9, reason: "second" },
+      null,
+      { emotion: "neutral", confidence: 0.91, reason: "after_null_expired" },
+    ];
+    const verifier: FinalResponseVerifier = {
+      verify: async () => responses.shift() ?? null,
+    };
+
+    await withServer(db, verifier, async (baseUrl) => {
+      await expect(requestVerdict(baseUrl, "expires verdict"))
+        .resolves.toMatchObject({ verdict: { emotion: "neutral", reason: "first" } });
+      db.db.prepare("UPDATE verifier_cache SET expires_at = ?").run(new Date(Date.now() - 1_000).toISOString());
+      await expect(requestVerdict(baseUrl, "expires verdict"))
+        .resolves.toMatchObject({ verdict: { emotion: "neutral", reason: "second" } });
+
+      await expect(requestVerdict(baseUrl, "expires null")).resolves.toEqual({
+        verdict: null,
+        diagnostics: [{ skipped: true, reason: "verifier_emotion_invalid" }],
+      });
+      db.db.prepare("UPDATE verifier_cache SET expires_at = ? WHERE verdict_json = ?")
+        .run(new Date(Date.now() - 1_000).toISOString(), "null");
+      await expect(requestVerdict(baseUrl, "expires null"))
+        .resolves.toMatchObject({ verdict: { emotion: "neutral", reason: "after_null_expired" } });
+      expect(responses).toHaveLength(0);
     });
   });
 

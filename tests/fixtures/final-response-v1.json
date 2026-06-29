@@ -1,0 +1,28 @@
+{
+  "versions": {
+    "finalVerdict": "FinalEmotionVerdictV1",
+    "mediaResponse": "ServiceMediaResponseV1",
+    "verifierCachePolicy": "VerifierCachePolicyV1",
+    "assetPolicy": "ServiceAssetPolicyV1"
+  },
+  "validVerdict": {
+    "verdict": {
+      "emotion": "neutral",
+      "confidence": 0.88,
+      "reason": "remote_verifier",
+      "media": {
+        "filename": "neutral.png",
+        "contentType": "image/png",
+        "url": "/static/sets/set/neutral.png",
+        "sensitiveMedia": true,
+        "metadata": {
+          "storageKey": "sets/set/neutral.png"
+        }
+      }
+    }
+  },
+  "nullVerdict": {
+    "verdict": null,
+    "diagnostics": [{ "skipped": true, "reason": "verifier_emotion_invalid" }]
+  }
+}
