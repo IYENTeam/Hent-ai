@@ -79,16 +79,18 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function serveStatic(assetRoot: string | undefined, pathname: string, res: ServerResponse): boolean {
+function serveStatic(db: ServiceDatabase, assetRoot: string | undefined, pathname: string, res: ServerResponse): boolean {
   if (!assetRoot || !pathname.startsWith("/static/")) return false;
   const key = decodeURIComponent(pathname.slice("/static/".length));
   const normalized = normalize(key);
-  if (normalized.startsWith("..")) return false;
+  if (normalized.startsWith("..") || normalized.startsWith("/") || normalized === ".") return false;
+  const object = db.db.prepare("SELECT content_type FROM storage_objects WHERE storage_key = ? AND object_url = ?")
+    .get(normalized, `/static/${normalized.split("/").map(encodeURIComponent).join("/")}`) as { content_type: string } | undefined;
+  if (!object || !object.content_type.startsWith("image/")) return false;
   const path = join(assetRoot, normalized);
   if (!existsSync(path)) return false;
   const bytes = readFileSync(path);
-  const contentType = path.endsWith(".png") ? "image/png" : path.endsWith(".jpg") || path.endsWith(".jpeg") ? "image/jpeg" : path.endsWith(".webp") ? "image/webp" : "application/octet-stream";
-  res.writeHead(200, { "content-type": contentType, "content-length": bytes.length });
+  res.writeHead(200, { "content-type": object.content_type, "content-length": bytes.length });
   res.end(bytes);
   return true;
 }
@@ -104,7 +106,7 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { ok: true, service: "@hent-ai/service" });
         return;
       }
-      if (req.method === "GET" && serveStatic(options.assetRoot, url.pathname, res)) return;
+      if (req.method === "GET" && serveStatic(options.db, options.assetRoot, url.pathname, res)) return;
       if (url.pathname.startsWith("/v1/") && !authorized(req, options.token)) {
         unauthorized(res);
         return;
