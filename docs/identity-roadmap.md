@@ -36,7 +36,7 @@ The canonical emotion set is:
 - `loyalty` — acknowledgment, greeting, attentive agreement
 - `neutral` — general informational responses
 
-Shared exports include `EMOTIONS`, `DEFAULT_EMOTION`, `DEFAULT_EMOTION_MAP`, `EMOTION_RULES`, `EMOTION_PROMPTS`, `EMOTION_LABELS`, and `VALID_EMOTIONS`.
+Shared exports include `EMOTION_CONTRACT_VERSION`, `CANONICAL_EMOTIONS`, `EMOTIONS`, `DEFAULT_EMOTION`, `DEFAULT_EMOTION_MAP`, `EMOTION_RULES`, `EMOTION_PROMPTS`, `EMOTION_LABELS`, and `VALID_EMOTIONS`. `tests/fixtures/emotion-contract-v1.json` is the current cross-surface fixture.
 
 Any new emotion requires an explicit roadmap decision, asset expectations, classifier behavior, generation prompt behavior, and runtime tests.
 
@@ -78,6 +78,7 @@ Current server code references:
 - `service/src/server.ts` — service HTTP endpoints, final-response verdict route, channel/profile policy integration.
 - `service/src/verifier.ts` — final-response verifier provider contract.
 - `service/src/db.ts` — service profile/channel/verifier state.
+- `service/src/final-response-routes.ts` — V1 final-verdict/media contract versions and finite verifier cache expiry.
 - `service/src/watcher-core.ts` and `service/src/watcher-adapter.ts` — watcher state and delivery gating.
 - `openclaw/index.ts` — thin OpenClaw adapter registration and service delegation.
 - `openclaw/README.md` — adapter setup and E2E verification contract.
@@ -143,9 +144,10 @@ Generation responsibilities:
 - consume shared `EMOTIONS` and `EMOTION_PROMPTS`;
 - generate a base image and one variant per emotion;
 - support limited regeneration through shared emotion names;
+- own its asset-set manifest helper under `generate/src/asset-manifest.ts`;
 - resize/reference-limit inputs and optionally rephrase prompts when a caller provides a rephrase provider.
 
-It must not define independent profile DB semantics.
+It must not define independent profile DB semantics or import OpenClaw runtime internals.
 
 ## Current accepted profile architecture
 

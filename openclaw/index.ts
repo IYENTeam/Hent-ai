@@ -491,6 +491,7 @@ function isConversationDeliveryPlan(value: unknown): value is ConversationDelive
       && isNonEmptyString(metadata.planId)
       && Number.isInteger(metadata.chunkIndex)
       && Number.isInteger(metadata.chunkCount)
+      && typeof metadata.chunkCount === "number"
       && metadata.chunkCount > 0
       ? {
           hentAiConversationChunk: true as const,

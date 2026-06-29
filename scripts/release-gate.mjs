@@ -7,16 +7,58 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const checks = [
   {
-    label: "service focused verifier/worker regression",
+    label: "service-owned architecture boundary",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/service-owned-boundary-check.mjs"],
+  },
+  {
+    label: "service focused verifier/poller/worker regression",
     cwd: "service",
     command: "npx",
-    args: ["vitest", "run", "src/service.test.ts", "src/verifier.test.ts", "src/generation-worker.test.ts"],
+    args: ["vitest", "run", "src/service.test.ts", "src/verifier.test.ts", "src/discord-rest-poller.test.ts", "src/generation-worker.test.ts"],
+  },
+  {
+    label: "shared emotion contract",
+    cwd: "shared",
+    command: "npx",
+    args: ["vitest", "run"],
+  },
+  {
+    label: "generate asset manifest regression",
+    cwd: "generate",
+    command: "npx",
+    args: ["vitest", "run", "src/sets.test.ts"],
+  },
+  {
+    label: "Hermes compatibility parity",
+    cwd: ".",
+    command: "python3",
+    args: ["-m", "unittest", "discover", "-s", "tests/hermes"],
   },
   {
     label: "openclaw full regression suite",
     cwd: "openclaw",
     command: "npx",
     args: ["vitest", "run"],
+  },
+  {
+    label: "openclaw typecheck",
+    cwd: "openclaw",
+    command: "npx",
+    args: ["tsc", "--noEmit"],
+  },
+  {
+    label: "service typecheck",
+    cwd: "service",
+    command: "npx",
+    args: ["tsc", "--noEmit"],
+  },
+  {
+    label: "generate typecheck",
+    cwd: "generate",
+    command: "npx",
+    args: ["tsc", "--noEmit"],
   },
 ];
 
