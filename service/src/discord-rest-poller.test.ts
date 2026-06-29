@@ -197,6 +197,12 @@ describe("Discord poller integration", () => {
       maxDelayMs: 0,
       maxChunkChars: 1_800,
     });
+    const originalEvaluate = runtime.evaluate.bind(runtime);
+    const evaluatedMessageIds: string[] = [];
+    vi.spyOn(runtime, "evaluate").mockImplementation(async (input) => {
+      evaluatedMessageIds.push(input.messageId);
+      return originalEvaluate(input);
+    });
     const fetchMessages = vi.fn<DiscordRestClient["fetchMessages"]>().mockResolvedValueOnce([
       restMessage({ id: "u1", content: "Please watch for repeated deployment framing", authorId: "human-1" }),
       restMessage({ id: "b1", content: "Repeat the same stale deployment plan", authorId: "bot-1", bot: true }),
@@ -216,6 +222,7 @@ describe("Discord poller integration", () => {
     expect(sendMessage).not.toHaveBeenCalled();
     await integration.evaluateOnce();
 
+    expect(evaluatedMessageIds).toEqual(["b1", "b2"]);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([
       { message_id: "u1", author_role: "user" },

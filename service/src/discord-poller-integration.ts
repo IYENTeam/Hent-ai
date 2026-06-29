@@ -61,10 +61,10 @@ export function createDiscordPollerIntegration(options: DiscordPollerIntegration
   });
 
   async function runEvaluation(): Promise<void> {
-    for (const evaluation of pendingEvaluations.values()) {
+    for (const evaluation of Array.from(pendingEvaluations.values())) {
       const result = await options.runtime.evaluate(evaluation);
-      const current = pendingEvaluations.get(evaluation.channelId);
-      if (current?.messageId === evaluation.messageId) pendingEvaluations.delete(evaluation.channelId);
+      const current = pendingEvaluations.get(evaluation.messageId);
+      if (current?.messageId === evaluation.messageId) pendingEvaluations.delete(evaluation.messageId);
       await deliverEvaluationResult({ result, runtime: options.runtime, client, log, wait });
     }
   }
@@ -142,7 +142,7 @@ async function handleDiscordMessage(input: {
       messageId: input.message.id,
     };
     input.runtime.recordAssistant(evaluation);
-    input.pendingEvaluations.set(input.message.channelId, evaluation);
+    input.pendingEvaluations.set(input.message.id, evaluation);
     return;
   }
   if (input.message.authorBot) {
