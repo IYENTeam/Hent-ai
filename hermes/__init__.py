@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import importlib.util as importlib_util
 import os
-import re
+import sys
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 
 def _load_watcher_runtime():
@@ -34,92 +34,53 @@ def _load_watcher_adapter():
     return _load_watcher_runtime().load_watcher_adapter()
 
 
+def _load_service_adapter():
+    try:
+        from . import service_adapter
+    except ImportError:
+        spec = importlib_util.spec_from_file_location(
+            "hent_ai_service_adapter", Path(__file__).resolve().parent / "service_adapter.py"
+        )
+        assert spec is not None and spec.loader is not None
+        service_adapter = importlib_util.module_from_spec(spec)
+        sys.modules[spec.name] = service_adapter
+        try:
+            spec.loader.exec_module(service_adapter)
+        except Exception:
+            sys.modules.pop(spec.name, None)
+            raise
+    return service_adapter
+
+
+def _load_emotion_rules():
+    spec = importlib_util.spec_from_file_location(
+        "hent_ai_emotion_rules", Path(__file__).resolve().parent / "emotion_rules.py"
+    )
+    assert spec is not None and spec.loader is not None
+    emotion_rules = importlib_util.module_from_spec(spec)
+    sys.modules[spec.name] = emotion_rules
+    try:
+        spec.loader.exec_module(emotion_rules)
+    except Exception:
+        sys.modules.pop(spec.name, None)
+        raise
+    return emotion_rules
+
+
 def _build_watcher_llm():
     return _load_watcher_runtime().build_watcher_llm()
 
 
-def _watcher_config_from_env() -> dict | None:
+def _watcher_config_from_env() -> dict[str, object] | None:
     return _load_watcher_runtime().watcher_config_from_env()
 
 
-def _derive_scope(platform: str, kwargs: dict) -> str:
-    return _load_watcher_runtime().derive_scope(platform, kwargs)
-
-DEFAULT_EMOTION_MAP: dict[str, str] = {
-    "sorry": "sorry.png",
-    "happy": "happy.png",
-    "confused": "confused.png",
-    "focused": "focused.png",
-    "loyalty": "loyalty.png",
-    "neutral": "neutral.png",
-}
-
-EMOTION_CONTRACT_VERSION = "EmotionContractV1"
-DEFAULT_EMOTION = "neutral"
-DEFAULT_SUPPORTED_PLATFORMS = {
-    "discord",
-    "telegram",
-    "slack",
-    "matrix",
-    "mattermost",
-}
-
-EMOTION_RULES: list[tuple[str, tuple[re.Pattern[str], ...]]] = [
-    (
-        "sorry",
-        (
-            re.compile(r"sorry|apolog|my bad|mistake|messed up|regret|oops", re.I),
-            re.compile(r"죄송|미안|실수|잘못|에러가? 발생|오류가? 발생|버그.*발견|실패", re.I),
-        ),
-    ),
-    (
-        "happy",
-        (
-            re.compile(
-                r"done|complete|succeed|fixed|shipped|great|awesome|excellent|perfect|nailed|pass|resolved|✅|🎉|🔥",
-                re.I,
-            ),
-            re.compile(
-                r"proud|happy|fantastic|wonderful|congrats|celebrate|woohoo|yay", re.I
-            ),
-            re.compile(r"완료|성공|통과|해결|고쳤|수정.*완료|빌드.*성공|테스트.*통과|잘 ?됐|문제.*없", re.I),
-        ),
-    ),
-    (
-        "confused",
-        (
-            re.compile(
-                r"confused|unclear|not sure|strange|unknown cause|weird|unexpected",
-                re.I,
-            ),
-            re.compile(r"question|how do we|how should|what should|any idea|could you clarify", re.I),
-            re.compile(r"확인.*필요|불확실|잘 ?모르|애매|이해가 안|의미가|어떤.*의미|모호|추가.*정보", re.I),
-        ),
-    ),
-    (
-        "focused",
-        (
-            re.compile(
-                r"investigating|debugging|analyzing|implementing|working on|coding|building",
-                re.I,
-            ),
-            re.compile(
-                r"in progress|checking|processing|deploying|testing|verifying", re.I
-            ),
-            re.compile(r"분석|조사|확인|살펴|디버깅|검토|읽[어고]|찾[아고]|작업 ?중|처리 ?중|검사", re.I),
-        ),
-    ),
-    (
-        "loyalty",
-        (
-            re.compile(
-                r"got it|understood|on it|yes sir|will do|right away|hello|hi there|sure thing",
-                re.I,
-            ),
-            re.compile(r"네[,.]?|알겠|이해했|시작하겠|바로|확인했|말씀대로|지시.*따[르라]|접수", re.I),
-        ),
-    ),
-]
+_rules = _load_emotion_rules()
+DEFAULT_EMOTION_MAP = _rules.DEFAULT_EMOTION_MAP
+EMOTION_CONTRACT_VERSION = _rules.EMOTION_CONTRACT_VERSION
+DEFAULT_EMOTION = _rules.DEFAULT_EMOTION
+DEFAULT_SUPPORTED_PLATFORMS = _rules.DEFAULT_SUPPORTED_PLATFORMS
+EMOTION_RULES = _rules.EMOTION_RULES
 
 
 def _split_csv(value: str | None) -> set[str]:
@@ -165,11 +126,7 @@ def resolve_assets_dir() -> Path:
 def detect_emotion(text: str, fallback: str = DEFAULT_EMOTION) -> str:
     """Detect an emotion from assistant response text using Hent-ai rules."""
 
-    for emotion, patterns in EMOTION_RULES:
-        for pattern in patterns:
-            if pattern.search(text):
-                return emotion
-    return fallback
+    return _rules.detect_emotion(text, fallback)
 
 
 def should_attach_for_platform(
@@ -177,11 +134,10 @@ def should_attach_for_platform(
 ) -> bool:
     """Return whether a Hermes platform should receive image attachments."""
 
-    if not platform:
-        return False
-    normalized = platform.lower()
-    allowed_set = set(allowed) if allowed is not None else supported_platforms()
-    return "*" in allowed_set or normalized in allowed_set
+    return _rules.should_attach_for_platform(
+        platform,
+        allowed if allowed is not None else supported_platforms(),
+    )
 
 
 def build_transformed_response(
@@ -190,6 +146,8 @@ def build_transformed_response(
     platform: str,
     assets_dir: Path | None = None,
     emotion_map: dict[str, str] | None = None,
+    hook_context: dict[str, object] | None = None,
+    **hook_context_kwargs: object,
 ) -> str | None:
     """Build a Hermes response with a MEDIA directive, or ``None`` to skip.
 
@@ -200,6 +158,21 @@ def build_transformed_response(
 
     sanitized_text = strip_media_directives(response_text)
     if not sanitized_text or not should_attach_for_platform(platform):
+        return None
+
+    active_hook_context = dict(hook_context or {})
+    active_hook_context.update(hook_context_kwargs)
+    service_adapter = _load_service_adapter()
+    if service_adapter.service_token_configured():
+        transformed = service_adapter.transformed_response(
+            sanitized_text,
+            platform=platform,
+            hook_context=active_hook_context,
+        )
+        if transformed is not None:
+            return transformed
+        if sanitized_text != response_text.strip():
+            return sanitized_text
         return None
 
     active_map = emotion_map or DEFAULT_EMOTION_MAP
@@ -216,10 +189,7 @@ def build_transformed_response(
 
 
 def strip_media_directives(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines()
-        if not line.lstrip().upper().startswith("MEDIA:")
-    ).strip()
+    return _rules.strip_media_directives(text)
 
 
 def register(ctx) -> None:
@@ -251,7 +221,7 @@ def register(ctx) -> None:
         watcher = wa.create_hermes_watcher_adapter(watcher_deps)
         compose_nudge = wa.compose_nudge
 
-    def transform_llm_output(response_text: str, platform: str = "", **kwargs) -> str | None:
+    def transform_llm_output(response_text: str, platform: str = "", **kwargs: object) -> str | None:
         base = response_text
         if watcher is not None and response_text and should_attach_for_platform(platform):
             try:
@@ -261,7 +231,7 @@ def register(ctx) -> None:
                     base = compose_nudge(response_text, nudge)
             except Exception:  # never let the watcher break the primary response
                 base = response_text
-        media = build_transformed_response(base, platform=platform)
+        media = build_transformed_response(base, platform=platform, hook_context=kwargs)
         if media is not None:
             return media
         return base if base != response_text else None
