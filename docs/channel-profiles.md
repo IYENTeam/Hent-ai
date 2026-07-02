@@ -39,13 +39,12 @@ OpenClaw 플러그인 config에는 서비스 접속 정보만 필요합니다.
 - `hentAiService.token`: 필수. literal token 또는 `${ENV_VAR}` placeholder를 지원합니다.
 - `hentAiService.timeoutMs`: 선택. 요청 timeout이며 기본값은 15000ms입니다.
 - `hentAiService.preReplyMedia`: 선택(기본 off). 켜면 inbound 메시지에 대해 서비스가 고른 media를 별도 메시지로 먼저 보냅니다.
-- `hentAiService.watcher`: 선택(기본 off). 켜면 group-chat anti-fixation watcher hook(record/evaluate/commit)을 등록합니다.
 
 설정이 없거나 유효하지 않으면 adapter는 hook을 등록하지 않고 disabled 상태를 로그에 남깁니다.
 
 ## Hook 흐름
 
-핵심 경로인 final-response media는 항상 동작합니다. adapter가 pre-reply / watcher handler를 등록하더라도, 관련 service call과 outbound 전송은 config로 켰을 때만 실행됩니다.
+핵심 경로인 final-response media는 항상 동작합니다. adapter가 pre-reply handler를 등록하더라도, 관련 service call과 outbound 전송은 config로 켰을 때만 실행됩니다.
 
 ```text
 Final assistant reply payload (항상)
@@ -57,14 +56,9 @@ Final assistant reply payload (항상)
 
 message_received (preReplyMedia 켤 때)
   └─ adapter POST /v1/pre-reply/media → 반환된 media를 별도 메시지로 outbound 전송
-
-message_received / message_sent (watcher 켤 때)
-  ├─ message_received → POST /v1/watcher/record-user (대화 window 기록)
-  └─ message_sent → POST /v1/watcher/evaluate
-       └─ decision=nudge면 nudge text 전송 후 POST /v1/watcher/commit-delivery
 ```
 
-Block payload과 final이 아닌 `reply_payload_sending` kind는 무시됩니다. pre-reply / watcher 전송은 직접 Discord REST가 아니라 OpenClaw outbound channel adapter abstraction을 사용합니다.
+Block payload과 final이 아닌 `reply_payload_sending` kind는 무시됩니다. pre-reply 전송은 직접 Discord REST가 아니라 OpenClaw outbound channel adapter abstraction을 사용합니다.
 
 Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media leaves the original payload unchanged so OpenClaw text continues.
 

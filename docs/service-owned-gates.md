@@ -4,7 +4,7 @@ Hent-ai's live OpenClaw integration is service-owned. After the full service ada
 
 ## Canonical ownership
 
-- `service/` owns final-response verdict selection, verifier/cache state, channel policy, profile/channel mappings, asset lookup, watcher state, and standalone Discord readback/delivery when local polling is enabled.
+- `service/` owns final-response verdict selection, verifier/cache state, channel policy, profile/channel mappings, asset lookup, and standalone Discord readback/chat participation when local polling is enabled.
 - `openclaw/` is a thin OpenClaw adapter. It validates config, forwards final assistant reply context to the service, and attaches service-returned Stage-1 media to the outgoing payload.
 - `shared/` is the contract layer for definitions and fixtures that must be reused across surfaces.
 - `hermes/` is a compatibility adapter. It may keep lightweight rules only where Hermes cannot call the service yet, but those rules must be treated as compatibility mirrors, not a new source of truth.
@@ -18,7 +18,7 @@ Reject, close, or request redesign for changes that do any of the following with
 - add platform-specific classifier rewrites without shared fixtures or documented server/client differences;
 - duplicate service-owned channel/profile policy in OpenClaw, Hermes, cron, or scripts;
 - revive filesystem `characters/<id>/character.json` as runtime SSOT;
-- treat successful stub tests as enough for runtime delivery, attachment, verifier, or watcher behavior;
+- treat successful stub tests as enough for runtime delivery, attachment, verifier, or Discord chat participation behavior;
 - merge config/schema/plugin entry changes while Changeset Validation requires owner review and no owner approval/`owner-reviewed` label exists.
 
 PR #99 is the reference case: it started as a useful audit repro, but after the service-owned OpenClaw adapter landed, the OpenClaw-local classifier part no longer fit the project direction. The correct action was to close rather than merge a second classifier path.
@@ -29,7 +29,7 @@ PR #99 is the reference case: it started as a useful audit repro, but after the 
 | --- | --- |
 | OpenClaw adapter code | OpenClaw tests plus proof that `openclaw/` remains service-thin: no local classifier, no local asset/profile lookup, no direct Discord REST. |
 | Service verdict/verifier changes | Service verifier/service tests and a request/response fixture for `/v1/final-response/verdict`. |
-| Watcher behavior | Watcher core/service tests covering state lifetime, dedup/cooldown, self-nudge prevention, and scope/thread handling. |
+| Discord chat participation | Service poller tests plus live or fixture-backed readback evidence covering human intake, self-bot recording, reply timing, and loop prevention. |
 | Hermes compatibility rules | Hermes tests plus parity evidence against `shared/` fixtures or an explicit documented difference. |
 | Shared classifier/fixture changes | Cross-surface fixture updates where practical, including Korean, English, mixed-language, progress, apology, uncertainty, greeting, and noisy media-tag cases. |
 | Asset/manifest/profile DB mutations | Diff/readback evidence; DB migrations require backup or reversible plan. |

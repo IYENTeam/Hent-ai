@@ -1,6 +1,5 @@
 import type { Server } from "node:http";
 import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
-import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
 import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier } from "./verifier.js";
@@ -19,7 +18,6 @@ export type HentAiServerWithPollerOptions = {
   readonly assetRoot?: string;
   readonly verifier: FinalResponseVerifier;
   readonly conversationConfig?: ConversationServiceConfig;
-  readonly conversationContextProvider?: ConversationContextProvider;
   readonly conversationRuntime?: ConversationRuntime;
   readonly discordPollerConfig?: DiscordPollerIntegrationConfig | null;
   readonly discordPollerClient?: DiscordRestClient;
@@ -36,9 +34,8 @@ export function createHentAiServerWithPoller(options: HentAiServerWithPollerOpti
   const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(
     options.db,
     options.conversationConfig ?? loadConversationConfigFromEnv(),
-    options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {},
   );
-  const server = createHentAiServer({ ...options, conversationRuntime });
+  const server = createHentAiServer(options);
   const pollerConfig = options.discordPollerConfig === undefined
     ? loadDiscordPollerConfigFromEnv()
     : options.discordPollerConfig;

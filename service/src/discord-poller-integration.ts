@@ -1,5 +1,5 @@
-import type { ConversationDeliveryPlanResponse } from "./conversation-delivery-plan.js";
-import type { ConversationRuntime, WatcherEvaluateResult } from "./conversation-runtime.js";
+import type { ConversationChatReplyResult } from "./conversation-chat-reply.js";
+import type { ConversationRuntime } from "./conversation-runtime.js";
 import {
   createDiscordRestClient,
   createDiscordRestPoller,
@@ -31,10 +31,9 @@ export type DiscordPollerIntegration = {
   readonly evaluateOnce: () => Promise<void>;
 };
 
-type PendingEvaluation = {
+type PendingChatReply = {
   readonly scopeId: string;
   readonly channelId: string;
-  readonly text: string;
   readonly messageId: string;
 };
 
@@ -45,9 +44,9 @@ export function createDiscordPollerIntegration(options: DiscordPollerIntegration
   const log = options.log ?? (() => {});
   const wait = options.wait ?? defaultWait;
   const client = options.client ?? createDiscordRestClient(options.config.token);
-  const pendingEvaluations = new Map<string, PendingEvaluation>();
-  let evaluationTimer: ReturnType<typeof setInterval> | null = null;
-  let activeEvaluation: Promise<void> | null = null;
+  const pendingChatReplies = new Map<string, PendingChatReply>();
+  let replyTimer: ReturnType<typeof setInterval> | null = null;
+  let activeReplyCheck: Promise<void> | null = null;
   const poller = createDiscordRestPoller({
     config: options.config,
     client,
@@ -57,46 +56,46 @@ export function createDiscordPollerIntegration(options: DiscordPollerIntegration
         log("info", `discord-poller-integration: observed channel=${channelId} messages=${messages.length}`);
       },
     },
-    onMessage: (message) => handleDiscordMessage({ message, runtime: options.runtime, config: options.config, log, pendingEvaluations }),
+    onMessage: (message) => handleDiscordMessage({ message, runtime: options.runtime, config: options.config, log, pendingChatReplies }),
   });
 
-  async function runEvaluation(): Promise<void> {
-    for (const evaluation of pendingEvaluations.values()) {
-      const result = await options.runtime.evaluate(evaluation);
-      const current = pendingEvaluations.get(evaluation.channelId);
-      if (current?.messageId === evaluation.messageId) pendingEvaluations.delete(evaluation.channelId);
-      await deliverEvaluationResult({ result, runtime: options.runtime, client, log, wait });
+  async function runReplyCheck(): Promise<void> {
+    for (const pendingReply of pendingChatReplies.values()) {
+      const result = await options.runtime.evaluateChatReply(pendingReply);
+      const current = pendingChatReplies.get(pendingReply.channelId);
+      const delivered = await deliverChatReply({ result, runtime: options.runtime, channelId: pendingReply.channelId, scopeId: pendingReply.scopeId, client, log, wait });
+      if (delivered && current?.messageId === pendingReply.messageId) pendingChatReplies.delete(pendingReply.channelId);
     }
   }
 
   async function evaluateOnce(): Promise<void> {
-    if (activeEvaluation) return activeEvaluation;
-    activeEvaluation = runEvaluation();
+    if (activeReplyCheck) return activeReplyCheck;
+    activeReplyCheck = runReplyCheck();
     try {
-      await activeEvaluation;
+      await activeReplyCheck;
     } finally {
-      activeEvaluation = null;
+      activeReplyCheck = null;
     }
   }
 
-  function startEvaluationTimer(): void {
-    if (evaluationTimer) return;
-    evaluationTimer = setInterval(() => void evaluateOnce(), positiveInteger(options.config.evaluationIntervalMs, DEFAULT_EVALUATION_INTERVAL_MS));
+  function startReplyTimer(): void {
+    if (replyTimer) return;
+    replyTimer = setInterval(() => void evaluateOnce(), positiveInteger(options.config.evaluationIntervalMs, DEFAULT_EVALUATION_INTERVAL_MS));
   }
 
   const integration = {
     poller,
     start() {
       poller.start();
-      startEvaluationTimer();
+      startReplyTimer();
     },
     async stop() {
-      if (evaluationTimer) {
-        clearInterval(evaluationTimer);
-        evaluationTimer = null;
+      if (replyTimer) {
+        clearInterval(replyTimer);
+        replyTimer = null;
       }
       await poller.stop();
-      if (activeEvaluation) await activeEvaluation;
+      if (activeReplyCheck) await activeReplyCheck;
     },
     evaluateOnce,
   };
@@ -110,9 +109,8 @@ export function loadDiscordPollerConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DiscordPollerIntegrationConfig | null {
   const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN)
-    ?? stringEnv(env.DISCORD_BOT_TOKEN)
-    ?? stringEnv(env.HENT_AI_DISCORD_TOKEN);
-  const channels = channelListEnv(stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS) ?? stringEnv(env.HENT_AI_WATCH_CHANNELS));
+    ?? stringEnv(env.DISCORD_BOT_TOKEN);
+  const channels = channelListEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS);
   if (!token || channels.length === 0) return null;
 
   return {
@@ -131,18 +129,16 @@ async function handleDiscordMessage(input: {
   readonly runtime: ConversationRuntime;
   readonly config: DiscordPollerIntegrationConfig;
   readonly log: DiscordPollerLog;
-  readonly pendingEvaluations: Map<string, PendingEvaluation>;
+  readonly pendingChatReplies: Map<string, PendingChatReply>;
 }): Promise<void> {
   const scopeId = `discord:${input.message.channelId}`;
   if (isSelfBotMessage(input.message, input.config.botUserId)) {
-    const evaluation = {
+    input.runtime.recordAssistant({
       scopeId,
       channelId: input.message.channelId,
       text: input.message.content,
       messageId: input.message.id,
-    };
-    input.runtime.recordAssistant(evaluation);
-    input.pendingEvaluations.set(input.message.channelId, evaluation);
+    });
     return;
   }
   if (input.message.authorBot) {
@@ -155,54 +151,37 @@ async function handleDiscordMessage(input: {
     text: input.message.content,
     id: input.message.id,
   });
-}
-
-async function deliverEvaluationResult(input: {
-  readonly result: WatcherEvaluateResult;
-  readonly runtime: ConversationRuntime;
-  readonly client?: DiscordRestClient;
-  readonly log: DiscordPollerLog;
-  readonly wait: (ms: number) => Promise<void>;
-}): Promise<void> {
-  if (input.result.deliveryPlan) {
-    await deliverPlan({ plan: input.result.deliveryPlan, runtime: input.runtime, client: input.client, log: input.log, wait: input.wait });
-    return;
-  }
-  if (input.result.nudgeText && input.result.audit?.allowed) {
-    input.log("warn", "discord-poller-integration: evaluation returned legacy nudge without delivery plan");
-  }
-}
-
-async function deliverPlan(input: {
-  readonly plan: ConversationDeliveryPlanResponse;
-  readonly runtime: ConversationRuntime;
-  readonly client?: DiscordRestClient;
-  readonly log: DiscordPollerLog;
-  readonly wait: (ms: number) => Promise<void>;
-}): Promise<void> {
-  if (!input.client) {
-    input.log("warn", `discord-poller-integration: no Discord client for plan=${input.plan.planId}`);
-    return;
-  }
-  const requiredChunkIds = new Set(input.plan.commit.requiredChunkIds);
-  const deliveryMessageIds: Record<string, string> = {};
-  for (const chunk of input.plan.chunks) {
-    await input.wait(chunk.delayMs);
-    const sentId = await input.client.sendMessage(input.plan.channelId, chunk.text);
-    if (sentId && requiredChunkIds.has(chunk.chunkId)) deliveryMessageIds[chunk.chunkId] = sentId;
-  }
-  if (!input.plan.commit.requiredChunkIds.every((chunkId) => deliveryMessageIds[chunkId])) {
-    input.log("warn", `discord-poller-integration: incomplete delivery for plan=${input.plan.planId}`);
-    return;
-  }
-  const commit = input.runtime.commitDeliveryPlan({
-    planId: input.plan.commit.planId,
-    cooldownKey: input.plan.commit.cooldownKey,
-    scopeId: input.plan.scopeId,
-    signalId: input.plan.commit.signalId,
-    deliveryMessageIds,
+  input.pendingChatReplies.set(input.message.channelId, {
+    scopeId,
+    channelId: input.message.channelId,
+    messageId: input.message.id,
   });
-  input.log("info", `discord-poller-integration: committed plan=${input.plan.planId} status=${commit.status}`);
+}
+
+async function deliverChatReply(input: {
+  readonly result: ConversationChatReplyResult;
+  readonly runtime: ConversationRuntime;
+  readonly channelId: string;
+  readonly scopeId: string;
+  readonly client?: DiscordRestClient;
+  readonly log: DiscordPollerLog;
+  readonly wait: (ms: number) => Promise<void>;
+}): Promise<boolean> {
+  if (input.result.decision === "no_reply") {
+    input.log("info", `discord-poller-integration: chat reply skipped reason=${input.result.reason}`);
+    return false;
+  }
+  if (!input.client) {
+    input.log("warn", "discord-poller-integration: no Discord client for chat reply");
+    return false;
+  }
+  for (const chunk of input.result.chunks) {
+    const sentId = await input.client.sendMessage(input.channelId, chunk);
+    if (sentId) input.runtime.recordAssistant({ scopeId: input.scopeId, channelId: input.channelId, text: chunk, messageId: sentId });
+    await input.wait(0);
+  }
+  input.log("info", `discord-poller-integration: delivered chat reply chunks=${input.result.chunks.length}`);
+  return true;
 }
 
 function isSelfBotMessage(message: DiscordRestMessage, botUserId: string | undefined): boolean {
