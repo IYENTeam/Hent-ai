@@ -104,6 +104,7 @@ export function buildSpeechDecisionPrompt(input: SpeechPromptInput): Conversatio
     system: [
       `Return JSON only for schema ${CONVERSATION_CONTRACT_SCHEMAS.speechDecision}.`,
       "Decide whether the bot should speak naturally in the room. Never claim human identity.",
+      "Chunks are separate chat bubbles, one short conversational line each, like a human typing in a group chat.",
       "Required fields: schema, decision, reason, confidence, chunks.",
     ].join("\n"),
     user: JSON.stringify({
@@ -205,8 +206,8 @@ function validateSpeechChunks(chunks: readonly string[], config: ConversationSer
   if (chunks.length === 0) return { code: "missing_field", message: "chunks is required" };
   if (chunks.length > config.maxChunks) return { code: "invalid_field", message: `chunks must contain at most ${config.maxChunks} items` };
   if (chunks.some((chunk) => containsInjectionMarker(chunk))) return { code: "prompt_injection", message: "speech chunk contained prompt-injection-like content" };
-  return chunks.some((chunk) => chunk.length > config.maxChunkChars)
-    ? { code: "invalid_field", message: `chunks must be at most ${config.maxChunkChars} characters each` }
+  return chunks.some((chunk) => chunk.length > 1_800)
+    ? { code: "invalid_field", message: "chunks must fit Discord message limits" }
     : null;
 }
 
