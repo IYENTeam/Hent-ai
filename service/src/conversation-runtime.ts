@@ -1,28 +1,28 @@
 import type { ServiceDatabase } from "./db.js";
-import type { ConversationServiceConfig } from "./conversation-config.js";
+import type { ConversationScope, ConversationServiceConfig } from "./conversation-config.js";
 import {
   evaluateConversationChatReply,
   type ConversationChatReplyInput,
   type ConversationChatReplyResult,
 } from "./conversation-chat-reply.js";
+import type { ConversationContextRefreshResult } from "./conversation-context-refresher.js";
 import { recordConversationUserIntake } from "./conversation-context.js";
 import type { ConversationRecordAssistantInput, ConversationRecordUserInput, ConversationRecordUserResult } from "./conversation-recording.js";
 import { createConversationStore, type ConversationStore } from "./conversation-store.js";
 import type { ConversationDecisionProvider } from "./conversation-config.js";
 
-const RECENT_TURN_WINDOW_SIZE = 8;
-
 export type { ConversationRecordAssistantInput, ConversationRecordUserInput, ConversationRecordUserResult } from "./conversation-recording.js";
 
 export type ConversationRuntimeOptions = {
   readonly decisionProvider?: ConversationDecisionProvider;
+  readonly refreshContext?: (scope: ConversationScope) => Promise<ConversationContextRefreshResult>;
 };
 
 export class ConversationRuntime {
   private readonly store: ConversationStore;
 
   constructor(
-    serviceDb: ServiceDatabase,
+    private readonly serviceDb: ServiceDatabase,
     private readonly config: ConversationServiceConfig,
     private readonly options: ConversationRuntimeOptions = {},
   ) {
@@ -45,7 +45,7 @@ export class ConversationRuntime {
       messageId,
       text: input.text,
       observedAt: now,
-      maxRecentEvents: RECENT_TURN_WINDOW_SIZE,
+      maxRecentEvents: this.config.recentTurnWindow,
     });
     return { ok: true, context };
   }
@@ -56,12 +56,16 @@ export class ConversationRuntime {
   }
 
   async evaluateChatReply(input: ConversationChatReplyInput): Promise<ConversationChatReplyResult> {
+    if (this.options.refreshContext && this.config.contextRefreshEnabled) {
+      await this.options.refreshContext({ scopeId: input.scopeId, channelId: input.channelId });
+    }
     return evaluateConversationChatReply({
       config: this.config,
       store: this.store,
       decisionProvider: this.options.decisionProvider,
+      resolveChannelPolicy: (channelId) => this.resolveChannelPolicy(channelId),
       scope: input,
-      maxRecentTurns: RECENT_TURN_WINDOW_SIZE,
+      maxRecentTurns: this.config.recentTurnWindow,
       nowMs: Date.now(),
     });
   }
@@ -85,6 +89,19 @@ export class ConversationRuntime {
 
   private syntheticUserMessageId(scopeId: string): string {
     return `u-${this.store.listRawEvents(scopeId).length + 1}`;
+  }
+
+  private resolveChannelPolicy(channelId: string): {
+    readonly enabled: boolean | null;
+    readonly profile?: { readonly soulSnippet: string | null } | undefined;
+  } {
+    const mapping = this.serviceDb.getChannelMapping(channelId);
+    const enabled = mapping?.enabled ?? this.config.defaultChannelEnabled;
+    const profile = mapping?.profileId ? this.serviceDb.getProfile(mapping.profileId) : null;
+    return {
+      enabled,
+      ...(profile ? { profile: { soulSnippet: profile.soulSnippet } } : {}),
+    };
   }
 }
 
