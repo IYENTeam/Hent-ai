@@ -58,6 +58,12 @@ export type GenerationJob = {
   updatedAt: string;
 };
 
+export type DiscordPollerState = {
+  channelId: string;
+  lastSeenMessageId: string;
+  updatedAt: string;
+};
+
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 function now(): string {
@@ -85,6 +91,34 @@ export class ServiceDatabase {
 
   tableNames(): string[] {
     return this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => (row as { name: string }).name);
+  }
+
+  getDiscordPollerState(channelId: string): DiscordPollerState | null {
+    const row = this.db.prepare("SELECT channel_id, last_seen_message_id, updated_at FROM discord_poller_state WHERE channel_id = ?").get(channelId) as Record<string, unknown> | undefined;
+    return row
+      ? {
+        channelId: String(row.channel_id),
+        lastSeenMessageId: String(row.last_seen_message_id),
+        updatedAt: String(row.updated_at),
+      }
+      : null;
+  }
+
+  listDiscordPollerState(): DiscordPollerState[] {
+    return this.db.prepare("SELECT channel_id, last_seen_message_id, updated_at FROM discord_poller_state ORDER BY channel_id").all()
+      .map((row) => ({
+        channelId: String((row as Record<string, unknown>).channel_id),
+        lastSeenMessageId: String((row as Record<string, unknown>).last_seen_message_id),
+        updatedAt: String((row as Record<string, unknown>).updated_at),
+      }));
+  }
+
+  setDiscordPollerState(channelId: string, lastSeenMessageId: string): void {
+    const stamp = now();
+    this.db.prepare(`INSERT INTO discord_poller_state (channel_id, last_seen_message_id, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(channel_id) DO UPDATE SET last_seen_message_id = excluded.last_seen_message_id, updated_at = excluded.updated_at`)
+      .run(channelId, lastSeenMessageId, stamp);
   }
 
   listProfiles(): Profile[] {

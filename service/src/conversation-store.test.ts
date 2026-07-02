@@ -120,4 +120,24 @@ describe("conversation schema repository", () => {
     db.close();
   });
 
+  it("persists Discord poller state per channel", () => {
+    // Given: the service database owns Discord poller watermarks.
+    const db = new ServiceDatabase();
+
+    // When: two channels advance independently and one channel advances again.
+    db.setDiscordPollerState("c1", "10");
+    db.setDiscordPollerState("c2", "20");
+    db.setDiscordPollerState("c1", "11");
+
+    // Then: the state table is present, upserts are per-channel, and listing is stable.
+    expect(db.tableNames()).toContain("discord_poller_state");
+    expect(db.getDiscordPollerState("c1")).toMatchObject({ channelId: "c1", lastSeenMessageId: "11" });
+    expect(db.getDiscordPollerState("missing")).toBeNull();
+    expect(db.listDiscordPollerState()).toMatchObject([
+      { channelId: "c1", lastSeenMessageId: "11" },
+      { channelId: "c2", lastSeenMessageId: "20" },
+    ]);
+    db.close();
+  });
+
 });
