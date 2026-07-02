@@ -24,6 +24,7 @@ export type DiscordFetchOptions = {
 export type DiscordRestClient = {
   readonly fetchMessages: (channelId: string, options: DiscordFetchOptions) => Promise<readonly DiscordRestMessage[]>;
   readonly sendMessage: (channelId: string, content: string) => Promise<string | null>;
+  readonly triggerTyping?: (channelId: string) => Promise<void>;
 };
 
 export type DiscordRestPollerCallbacks = {
@@ -31,10 +32,16 @@ export type DiscordRestPollerCallbacks = {
   readonly log?: (level: "info" | "warn" | "error", message: string) => void;
 };
 
+export type DiscordPollerStateStore = {
+  readonly getLastSeenMessageId: (channelId: string) => string | null | undefined;
+  readonly setLastSeenMessageId: (channelId: string, messageId: string) => void;
+};
+
 export type DiscordRestPollerDeps = {
   readonly config: DiscordRestPollerConfig;
   readonly client?: DiscordRestClient;
   readonly callbacks?: DiscordRestPollerCallbacks;
+  readonly stateStore?: DiscordPollerStateStore;
   readonly onMessage: (message: DiscordRestMessage) => Promise<void> | void;
   readonly now?: () => number;
 };
@@ -62,6 +69,17 @@ export class RateLimitError extends Error {
   }
 }
 
+export class DiscordHttpError extends Error {
+  constructor(
+    readonly label: string,
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(`${label} ${status}: ${responseBody.slice(0, 200)}`);
+    this.name = "DiscordHttpError";
+  }
+}
+
 export function chunkMessage(text: string, maxLen = DISCORD_MAX_MESSAGE_LENGTH): readonly string[] {
   if (text.length <= maxLen) return [text];
   const chunks: string[] = [];
@@ -83,6 +101,7 @@ export function createDiscordRestClient(token: string, fetchImpl: FetchLike = gl
   return {
     fetchMessages: (channelId, options) => fetchChannelMessages(token, channelId, options, fetchImpl),
     sendMessage: (channelId, content) => sendChannelMessage(token, channelId, content, fetchImpl),
+    triggerTyping: (channelId) => triggerTypingIndicator(token, channelId, fetchImpl),
   };
 }
 
@@ -122,6 +141,18 @@ export async function sendChannelMessage(
   return recordString(body, "id");
 }
 
+export async function triggerTypingIndicator(
+  token: string,
+  channelId: string,
+  fetchImpl: FetchLike = globalThis.fetch,
+): Promise<void> {
+  const response = await fetchImpl(`${DISCORD_API_BASE}/channels/${channelId}/typing`, {
+    method: "POST",
+    headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
+  });
+  await throwDiscordError(response, "Discord typing");
+}
+
 export function createDiscordRestPoller(deps: DiscordRestPollerDeps): DiscordRestPoller {
   const client = deps.client ?? createDiscordRestClient(deps.config.token);
   const intervalMs = positiveInteger(deps.config.intervalMs, DEFAULT_INTERVAL_MS);
@@ -130,15 +161,28 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps): DiscordRes
   const now = deps.now ?? Date.now;
   const lastSeenIds = new Map<string, string>();
   const unseeded = new Set(deps.config.channels);
+  const emptyHumanContentTicks = new Map<string, number>();
+  const emptyHumanContentWarned = new Set<string>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
   let activePoll: Promise<void> | null = null;
   let rateLimitUntilMs = 0;
 
+  for (const channelId of deps.config.channels) {
+    const persistedLastSeen = deps.stateStore?.getLastSeenMessageId(channelId)?.trim();
+    if (persistedLastSeen) {
+      lastSeenIds.set(channelId, persistedLastSeen);
+      unseeded.delete(channelId);
+    }
+  }
+
   async function pollChannel(channelId: string): Promise<void> {
     const messages = await client.fetchMessages(channelId, { after: lastSeenIds.get(channelId), limit });
     const newest = messages.at(-1);
-    if (newest) lastSeenIds.set(channelId, newest.id);
+    if (newest) {
+      lastSeenIds.set(channelId, newest.id);
+      deps.stateStore?.setLastSeenMessageId(channelId, newest.id);
+    }
 
     if (unseeded.has(channelId)) {
       unseeded.delete(channelId);
@@ -147,9 +191,26 @@ export function createDiscordRestPoller(deps: DiscordRestPollerDeps): DiscordRes
     }
     if (messages.length === 0) return;
 
+    recordContentIntentDiagnostic(channelId, messages);
     const nonEmptyMessages = messages.filter((message) => message.content.trim().length > 0);
     if (nonEmptyMessages.length > 0) deps.callbacks?.onMessages?.(channelId, nonEmptyMessages);
     for (const message of nonEmptyMessages) await deps.onMessage(message);
+  }
+
+  function recordContentIntentDiagnostic(channelId: string, messages: readonly DiscordRestMessage[]): void {
+    const humanMessages = messages.filter((message) => isHumanMessage(message, deps.config.botUserId));
+    if (humanMessages.length === 0 || humanMessages.some((message) => message.content.trim().length > 0)) {
+      emptyHumanContentTicks.set(channelId, 0);
+      emptyHumanContentWarned.delete(channelId);
+      return;
+    }
+
+    const tickCount = (emptyHumanContentTicks.get(channelId) ?? 0) + 1;
+    emptyHumanContentTicks.set(channelId, tickCount);
+    if (tickCount >= 3 && !emptyHumanContentWarned.has(channelId)) {
+      emptyHumanContentWarned.add(channelId);
+      log("error", `discord-rest-poller: channel=${channelId} received empty human message content for 3 consecutive polls; enable Discord Message Content Intent`);
+    }
   }
 
   async function runPoll(): Promise<void> {
@@ -211,7 +272,7 @@ async function throwDiscordError(response: Response, label: string): Promise<voi
   if (response.status === 429) throw new RateLimitError(retryAfterMs(response));
   if (response.ok) return;
   const body = await response.text();
-  throw new Error(`${label} ${response.status}: ${body.slice(0, 200)}`);
+  throw new DiscordHttpError(label, response.status, body);
 }
 
 function readDiscordMessages(value: unknown, channelId: string): readonly DiscordRestMessage[] {
@@ -238,6 +299,10 @@ function readDiscordMessage(value: unknown, channelId: string): DiscordRestMessa
     authorBot: author.bot === true,
     timestamp: recordString(value, "timestamp") ?? new Date().toISOString(),
   };
+}
+
+function isHumanMessage(message: DiscordRestMessage, botUserId: string | undefined): boolean {
+  return !message.authorBot && (!botUserId || message.authorId !== botUserId);
 }
 
 function retryAfterMs(response: Response): number {

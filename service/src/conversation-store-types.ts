@@ -48,47 +48,6 @@ export type ConversationSummary = ConversationSummaryInput & {
   readonly id: number;
 };
 
-export type DeliveryPlanInput = {
-  readonly planId: string;
-  readonly scopeId: string;
-  readonly channelId: string;
-  readonly signalId: string;
-  readonly cooldownKey: string;
-  readonly requiredChunkIds: readonly string[];
-  readonly createdAt: string;
-};
-
-export type DeliveryPlan = DeliveryPlanInput & {
-  readonly status: "planned" | "committed";
-  readonly deliveryMessageIds: Readonly<Record<string, string>>;
-  readonly committedAt: string | null;
-};
-
-export type CommitDeliveryInput = {
-  readonly planId: string;
-  readonly deliveryMessageIds: Readonly<Record<string, string>>;
-  readonly committedAt: string;
-  readonly cooldownUntil?: string;
-  readonly budgetWindowStart?: string;
-  readonly budgetCount?: number;
-};
-
-export type CommitDeliveryResult =
-  | { readonly status: "committed"; readonly plan: DeliveryPlan }
-  | { readonly status: "idempotent"; readonly plan: DeliveryPlan }
-  | { readonly status: "missing_required_chunks"; readonly missingChunkIds: readonly string[] }
-  | { readonly status: "conflict"; readonly plan: DeliveryPlan };
-
-export type ConversationGateState = {
-  readonly scopeId: string;
-  readonly stateKey: string;
-  readonly cooldownUntil: string | null;
-  readonly budgetWindowStart: string | null;
-  readonly budgetCount: number;
-  readonly lastSignalId: string | null;
-  readonly updatedAt: string;
-};
-
 export type RawRetentionInput = {
   readonly retentionDays: number;
   readonly now: string;

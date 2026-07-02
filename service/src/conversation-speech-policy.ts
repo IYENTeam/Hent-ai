@@ -1,15 +1,15 @@
 import type { ConversationServiceConfig } from "./conversation-config.js";
+import { GENERIC_CONVERSATION_PERSONA, resolvePersonaText } from "./conversation-persona.js";
 
-export const GENERIC_CONVERSATION_PERSONA =
-  "You are HentAI, a concise bot presence. Never claim to be human. Keep replies short, useful, and clearly bot-authored.";
+export { GENERIC_CONVERSATION_PERSONA };
 
 export type ConversationSuppressedReason =
   | "service_disabled"
   | "channel_disabled"
   | "privacy_blocked"
   | "thread_blocked"
-  | "duplicate_signal"
-  | "self_nudge"
+  | "duplicate_turn"
+  | "self_echo"
   | "cooldown"
   | "hourly_budget_exhausted"
   | "no_recent_human_activity"
@@ -55,8 +55,8 @@ export type ConversationPolicyProviderDecision = {
 export type ConversationPolicySafeguards = {
   readonly privacyAllowed: boolean;
   readonly threadAllowed: boolean;
-  readonly duplicateSignal: boolean;
-  readonly selfNudge: boolean;
+  readonly duplicateTurn: boolean;
+  readonly selfEcho: boolean;
 };
 
 export type ConversationSpeechPolicyInput = {
@@ -68,18 +68,6 @@ export type ConversationSpeechPolicyInput = {
   readonly safeguards: ConversationPolicySafeguards;
   readonly nowMs: number;
 };
-
-type PersonaCandidate = {
-  readonly source: ConversationPersonaSource;
-  readonly note: string;
-};
-
-const HUMAN_IDENTITY_CLAIM_PATTERNS = [
-  /\b(?:i\s+am|i'm|im)\s+(?:a\s+|an\s+)?(?:(?:actual|living|real)\s+)?(?:human(?:\s+being)?|person)\b[,.! ]*/gi,
-  /\b(?:i\s+am|i'm|im)\s+not\s+(?:a\s+|an\s+)?(?:ai|artificial\s+intelligence|bot|robot)\b[,.! ]*/gi,
-  /\b(?:not|never)\s+(?:a\s+|an\s+)?(?:ai|artificial\s+intelligence|bot|robot)\b[,.! ]*/gi,
-  /\b(?:actual|living|real)\s+(?:human(?:\s+being)?|person)\b[,.! ]*/gi,
-] as const;
 
 export function evaluateConversationSpeechPolicy(input: ConversationSpeechPolicyInput): ConversationSpeechPolicyResult {
   const suppressedReason = suppressedReasonFor(input);
@@ -93,13 +81,7 @@ export function evaluateConversationSpeechPolicy(input: ConversationSpeechPolicy
 }
 
 export function resolveConversationPersona(input: ConversationSpeechPolicyInput): ConversationPolicyPersona {
-  const profileNote = sanitizePersonaNote(input.profile?.soulSnippet);
-  if (profileNote) return withPersonaBoundary({ source: "channel_profile", note: profileNote });
-
-  const configNote = sanitizePersonaNote(input.config.persona);
-  if (configNote) return withPersonaBoundary({ source: "config", note: configNote });
-
-  return { source: "generic", text: GENERIC_CONVERSATION_PERSONA };
+  return resolvePersonaText({ soulSnippet: input.profile?.soulSnippet ?? null, configPersona: input.config.persona });
 }
 
 function suppressedReasonFor(input: ConversationSpeechPolicyInput): ConversationSuppressedReason | null {
@@ -107,8 +89,8 @@ function suppressedReasonFor(input: ConversationSpeechPolicyInput): Conversation
   if (input.channel.enabled !== true) return "channel_disabled";
   if (!input.safeguards.privacyAllowed) return "privacy_blocked";
   if (!input.safeguards.threadAllowed) return "thread_blocked";
-  if (input.safeguards.duplicateSignal) return "duplicate_signal";
-  if (input.safeguards.selfNudge) return "self_nudge";
+  if (input.safeguards.duplicateTurn) return "duplicate_turn";
+  if (input.safeguards.selfEcho) return "self_echo";
   if (isCoolingDown(input)) return "cooldown";
   if (input.state.speechCountThisHour >= input.config.budgetPerHour) return "hourly_budget_exhausted";
   if (input.state.lastHumanMessageAtMs === null) return "no_recent_human_activity";
@@ -118,22 +100,4 @@ function suppressedReasonFor(input: ConversationSpeechPolicyInput): Conversation
 
 function isCoolingDown(input: ConversationSpeechPolicyInput): boolean {
   return input.state.lastSpeechAtMs !== null && input.nowMs - input.state.lastSpeechAtMs < input.config.cooldownMs;
-}
-
-function withPersonaBoundary(candidate: PersonaCandidate): ConversationPolicyPersona {
-  return {
-    source: candidate.source,
-    text: `You are HentAI, a concise bot presence. Never claim to be human. Persona notes: ${candidate.note}`,
-  };
-}
-
-function sanitizePersonaNote(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const withoutIdentityClaims = HUMAN_IDENTITY_CLAIM_PATTERNS.reduce(
-    (current, pattern) => current.replace(pattern, " "),
-    trimmed,
-  );
-  const normalized = withoutIdentityClaims.replace(/\s+/g, " ").replace(/^[,.;:\s]+/g, "").trim();
-  return normalized.length > 0 ? normalized : null;
 }

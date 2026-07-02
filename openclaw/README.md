@@ -2,7 +2,7 @@
 
 Minimal Hent-ai service adapter for OpenClaw.
 
-The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). In OpenClaw-hosted mode, text delivery remains owned by OpenClaw and uses host send APIs; in standalone local mode, the Hent-ai service can own Discord REST polling and conversation delivery.
+The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). In standalone local mode, the Hent-ai service owns Discord REST polling and chat participation.
 
 ## Configuration
 
@@ -19,10 +19,7 @@ Configure the `hentAiService` namespace in the plugin config:
             "url": "https://hent-ai.example.com",
             "token": "${HENT_AI_SERVICE_TOKEN}",
             "timeoutMs": 15000,
-            "conversation": {
-              "enabled": false,
-              "watcherCompatibility": true
-            }
+            "preReplyMedia": { "enabled": false }
           }
         }
       }
@@ -37,31 +34,21 @@ Configure the `hentAiService` namespace in the plugin config:
 | `hentAiService.token` | `string` | yes | Bearer token for service requests. Literal values and `${ENV_VAR}` placeholders are supported. |
 | `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `15000`. |
 | `hentAiService.preReplyMedia` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, sends service-selected media as a separate message on inbound `message_received`. Defaults to **off**. |
-| `hentAiService.watcher` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, registers the group-chat anti-fixation watcher (record/evaluate/commit). Defaults to **off**. |
-| `hentAiService.conversation.enabled` | `boolean` | no | Forwards group-chat turns to the service when `true`. Defaults to `false`. |
-| `hentAiService.conversation.watcherCompatibility` | `boolean` | no | Preserves compatibility payload fields with legacy watcher clients while using service-owned runtime behavior. Defaults to `true`. |
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
-> Note: `preReplyMedia` and `watcher` are read from the resolved `hentAiService` config by `openclaw/index.ts` and declared in `openclaw.plugin.json`'s `hentAiService` schema. Keep code and schema in sync when adding new `hentAiService` keys.
+> Note: `preReplyMedia` is read from the resolved `hentAiService` config by `openclaw/index.ts` and declared in `openclaw.plugin.json`'s `hentAiService` schema. Keep code and schema in sync when adding new `hentAiService` keys.
 
 ## Runtime Hooks
 
-The final-response media path is always active. The pre-reply and watcher handlers may be registered by the adapter, but service calls and outbound delivery for pre-reply/watcher behavior run only when the corresponding feature is explicitly enabled.
+The final-response media path is always active. The pre-reply handler is registered by the adapter, but service calls and outbound delivery for pre-reply behavior run only when `preReplyMedia` is explicitly enabled.
 
 | Hook | When | Condition | Service call |
 | --- | --- | --- | --- |
 | `reply_payload_sending` | Final assistant reply (`kind: "final"`) | always | `POST /v1/final-response/verdict` → attaches `verdict.media` to the payload |
 | `message_received` | Inbound user message | `preReplyMedia` enabled | `POST /v1/pre-reply/media` → sends returned media as a separate message |
-| `message_received` | Inbound user message | `watcher` enabled | `POST /v1/watcher/record-user` (records conversation window) |
-| `message_sent` | Outbound assistant message | `watcher` enabled | `POST /v1/watcher/evaluate`; on a `nudge` verdict, sends the nudge text and `POST /v1/watcher/commit-delivery` |
 
-When conversation forwarding is enabled:
-
-- `message_received` → `POST /v1/watcher/record-user`
-- `message_sent` → `POST /v1/watcher/evaluate`, optional `POST /v1/watcher/commit-delivery`
-
-Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
+Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply media delivery uses OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call. The legacy `pre_reply_media`, `message_sent_media`, and watcher/nudge hooks have been removed; do not depend on them for new setups.
 
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
@@ -84,46 +71,6 @@ Expected service response:
 
 If the service returns `dataBase64` instead of `url`, the adapter converts it to a data URL using `contentType` or `image/png`.
 
-### Group-chat delivery
-
-`conversation.enabled: true` allows service-owned conversation context to flow:
-
-- user messages are sent from `message_received` as room turns (`scopeId`, `text`, `id`).
-- bot messages are sent from `message_sent` for policy/gating and delivery decisions.
-- if the service returns a `deliveryPlan`, the adapter sends each chunk through host `sendText` with the provided delays and commits delivery only after all required message IDs return.
-
-Expected decision payload (partial):
-
-```json
-{
-  "decision": "nudge",
-  "deliveryPlan": {
-    "planId": "watcher:scope-1",
-    "scopeId": "channel:123:session:s1",
-    "channelId": "123",
-    "chunks": [
-      {
-        "chunkId": "watcher:scope-1:0",
-        "text": "짧게 먼저 반응해도 좋고",
-        "delayMs": 1200,
-        "metadata": {
-          "hentAiConversationChunk": true,
-          "planId": "watcher:scope-1",
-          "chunkIndex": 0,
-          "chunkCount": 1
-        }
-      }
-    ],
-    "commit": {
-      "planId": "watcher:scope-1",
-      "cooldownKey": "channel:123:topic:repeat",
-      "signalId": "signal-7",
-      "requiredChunkIds": ["watcher:scope-1:0"]
-    }
-  }
-}
-```
-
 ## Service-owned Decisions
 
 The Hent-ai service owns:
@@ -134,20 +81,52 @@ The Hent-ai service owns:
 - emotion/verdict selection
 - onboarding/generation jobs
 - verifier/cache/rate-limit state
-- short-term memory, long-term summary memory, and speech delivery policy for conversation rooms.
+- short-term memory, long-term summary memory, and chat-reply policy for conversation rooms.
+
+Run the standalone service from `service/`:
+
+```bash
+npm start
+```
+
+HTTP service env:
+
+- `HENT_AI_HOST` / `HENT_AI_PORT` (defaults `127.0.0.1` / `8787`)
+- `HENT_AI_DB_PATH` (defaults `./hent-ai.sqlite`)
+- `HENT_AI_SERVICE_TOKEN`
+
+Conversation provider env:
+
+- `HENT_AI_CONVERSATION_PROVIDER_ENDPOINT`
+- `HENT_AI_CONVERSATION_PROVIDER_TOKEN`
+- `HENT_AI_CONVERSATION_PROVIDER_MODEL`
+- `HENT_AI_CONVERSATION_PROVIDER_TIMEOUT_MS` (default `20000`)
+- `HENT_AI_CONVERSATION_PROVIDER_EXTRA_HEADERS` / `HENT_AI_CONVERSATION_PROVIDER_EXTRA_BODY` (JSON objects)
+- `HENT_AI_CONVERSATION_DECISION_MODEL`, `HENT_AI_CONVERSATION_CONTEXT_MODEL`, `HENT_AI_CONVERSATION_MEMORY_MODEL` (optional per-use overrides)
 
 Service-side conversation knobs (defaults are conservative) can be controlled by environment variables:
 
 - `HENT_AI_CONVERSATION_ENABLED` (default `false`)
 - `HENT_AI_CONVERSATION_RAW_RETENTION_DAYS` (default `14`)
-- `HENT_AI_CONVERSATION_MIN_DELAY_MS` (default `650`)
-- `HENT_AI_CONVERSATION_MAX_DELAY_MS` (default `6500`)
-
-Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
+- `HENT_AI_CONVERSATION_PERSONA`
+- `HENT_AI_CONVERSATION_DEFAULT_CHANNEL_ENABLED` (default `true`)
+- `HENT_AI_CONVERSATION_COOLDOWN_MS` (default `600000`)
+- `HENT_AI_CONVERSATION_BUDGET_PER_HOUR` (default `20`)
+- `HENT_AI_CONVERSATION_MIN_HUMAN_IDLE_MS` (default `12000`)
+- `HENT_AI_CONVERSATION_CONFIDENCE_THRESHOLD` (default `0.7`)
+- `HENT_AI_CONVERSATION_RECENT_TURNS` (default `24`)
+- `HENT_AI_CONVERSATION_CONTEXT_REFRESH` (default `on`)
+- `HENT_AI_CONVERSATION_COMPACTION_INTERVAL_MS` (default `21600000`)
+- `HENT_AI_CONVERSATION_MAX_CHUNKS` (default `5`)
+- `HENT_AI_CONVERSATION_MAX_CHUNK_CHARS` (default `140`)
+- `HENT_AI_CONVERSATION_MIN_DELAY_MS` / `HENT_AI_CONVERSATION_MAX_DELAY_MS` (defaults `650` / `6500`)
+- `HENT_AI_CONVERSATION_BASE_PAUSE_MS` (default `400`)
+- `HENT_AI_CONVERSATION_PER_CHAR_MS` (default `55`)
+- `HENT_AI_CONVERSATION_MAX_DELIVERY_ATTEMPTS` (default `3`)
 
 Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(...)` or deployment wiring that calls it, then configure:
 
-- `HENT_AI_DISCORD_POLLER_TOKEN` (falls back to `DISCORD_BOT_TOKEN`)
+- `HENT_AI_DISCORD_POLLER_TOKEN` (falls back to the generic `DISCORD_BOT_TOKEN`)
 - `HENT_AI_DISCORD_POLLER_CHANNELS` (comma-separated Discord channel IDs)
 - `HENT_AI_DISCORD_POLLER_BOT_USER_ID` (the bot user id; required for self-message evaluation)
 - `HENT_AI_DISCORD_POLLER_INTERVAL_MS` (default `15000`)
@@ -155,13 +134,13 @@ Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(.
 - `HENT_AI_DISCORD_POLLER_LIMIT` (default `50`, capped at Discord's `100`)
 - `HENT_AI_DISCORD_POLLER_AUTO_START` (`false` disables automatic start)
 
-Existing service deployments that already expose `HENT_AI_DISCORD_TOKEN` and `HENT_AI_WATCH_CHANNELS` continue to work as fallback names. The explicit `HENT_AI_DISCORD_POLLER_*` names win when both are set.
-
-The standalone service poller separates intake from evaluation:
+The standalone service poller separates intake from chat reply checks:
 
 - every new human Discord message is recorded immediately through the conversation intake path;
-- every new self-bot Discord message is recorded immediately as an assistant turn and queued as the latest evaluation candidate for that channel;
-- evaluation runs on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message, and delivers/commits a nudge only when the periodic evaluation allows it.
+- every new self-bot Discord message is recorded immediately as an assistant turn, but it does not trigger a new reply by itself;
+- reply checks run on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message;
+- each reply check asks the service conversation decision provider whether the bot should answer naturally in the room;
+- when the provider returns `speak` and policy gates allow it, the service sends the returned chunks to Discord and records those sent chunks as assistant turns.
 
 Live Discord REST verification is opt-in because it needs a real bot token and channel:
 

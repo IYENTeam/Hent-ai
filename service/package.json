@@ -8,8 +8,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "start": "tsx src/main.ts",
     "test": "vitest run",
     "verify:discord-rest": "vitest run src/discord-rest-poller.live.test.ts"
+  },
+  "bin": {
+    "hent-ai-service": "src/main.ts"
   },
   "license": "MIT",
   "dependencies": {

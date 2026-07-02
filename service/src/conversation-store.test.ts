@@ -120,73 +120,24 @@ describe("conversation schema repository", () => {
     db.close();
   });
 
-  it("commits delivery ledger rows only after all host message ids exist and preserves gate state", () => {
-    // Given: a delivery plan that requires two host-confirmed chunks.
+  it("persists Discord poller state per channel", () => {
+    // Given: the service database owns Discord poller watermarks.
     const db = new ServiceDatabase();
-    const store = createConversationStore(db);
-    const plan = store.createDeliveryPlan({
-      planId: "plan-1",
-      scopeId: "channel:c1:session:s1",
-      channelId: "c1",
-      signalId: "signal-1",
-      cooldownKey: "channel:c1:session:s1:ambient",
-      requiredChunkIds: ["chunk-1", "chunk-2"],
-      createdAt: "2026-06-22T01:00:00.000Z",
-    });
 
-    // When: a partial commit arrives before every host send has confirmed.
-    const partial = store.commitDelivery({
-      planId: plan.planId,
-      deliveryMessageIds: { "chunk-1": "discord-1" },
-      committedAt: "2026-06-22T01:00:05.000Z",
-      cooldownUntil: "2026-06-22T01:10:05.000Z",
-      budgetWindowStart: "2026-06-22T01:00:00.000Z",
-      budgetCount: 1,
-    });
+    // When: two channels advance independently and one channel advances again.
+    db.setDiscordPollerState("c1", "10");
+    db.setDiscordPollerState("c2", "20");
+    db.setDiscordPollerState("c1", "11");
 
-    // Then: no cooldown or message ids are committed yet.
-    expect(partial.status).toBe("missing_required_chunks");
-    expect(store.getDeliveryPlan(plan.planId)).toMatchObject({ status: "planned", deliveryMessageIds: {} });
-    expect(store.getGateState("channel:c1:session:s1", "channel:c1:session:s1:ambient")).toBeNull();
-
-    // When: all host send ids are confirmed, duplicate commit is retried, then a conflicting retry arrives.
-    const committed = store.commitDelivery({
-      planId: plan.planId,
-      deliveryMessageIds: { "chunk-1": "discord-1", "chunk-2": "discord-2" },
-      committedAt: "2026-06-22T01:00:06.000Z",
-      cooldownUntil: "2026-06-22T01:10:06.000Z",
-      budgetWindowStart: "2026-06-22T01:00:00.000Z",
-      budgetCount: 1,
-    });
-    const duplicate = store.commitDelivery({
-      planId: plan.planId,
-      deliveryMessageIds: { "chunk-1": "discord-1", "chunk-2": "discord-2" },
-      committedAt: "2026-06-22T01:00:07.000Z",
-      cooldownUntil: "2026-06-22T01:10:07.000Z",
-      budgetWindowStart: "2026-06-22T01:00:00.000Z",
-      budgetCount: 1,
-    });
-    const conflict = store.commitDelivery({
-      planId: plan.planId,
-      deliveryMessageIds: { "chunk-1": "discord-1", "chunk-2": "different" },
-      committedAt: "2026-06-22T01:00:08.000Z",
-    });
-
-    // Then: delivery commit is idempotent, conflicts are visible, and gate state is persisted for fail-closed decisions.
-    expect(committed.status).toBe("committed");
-    expect(duplicate.status).toBe("idempotent");
-    expect(conflict.status).toBe("conflict");
-    expect(store.getDeliveryPlan(plan.planId)).toMatchObject({
-      status: "committed",
-      deliveryMessageIds: { "chunk-1": "discord-1", "chunk-2": "discord-2" },
-      committedAt: "2026-06-22T01:00:06.000Z",
-    });
-    expect(store.getGateState("channel:c1:session:s1", "channel:c1:session:s1:ambient")).toMatchObject({
-      cooldownUntil: "2026-06-22T01:10:06.000Z",
-      budgetWindowStart: "2026-06-22T01:00:00.000Z",
-      budgetCount: 1,
-      lastSignalId: "signal-1",
-    });
+    // Then: the state table is present, upserts are per-channel, and listing is stable.
+    expect(db.tableNames()).toContain("discord_poller_state");
+    expect(db.getDiscordPollerState("c1")).toMatchObject({ channelId: "c1", lastSeenMessageId: "11" });
+    expect(db.getDiscordPollerState("missing")).toBeNull();
+    expect(db.listDiscordPollerState()).toMatchObject([
+      { channelId: "c1", lastSeenMessageId: "11" },
+      { channelId: "c2", lastSeenMessageId: "20" },
+    ]);
     db.close();
   });
+
 });

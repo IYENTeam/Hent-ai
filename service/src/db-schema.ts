@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -183,6 +183,12 @@ CREATE TABLE IF NOT EXISTS conversation_gate_state (
   last_signal_id TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY(scope_id, state_key)
+);
+
+CREATE TABLE IF NOT EXISTS discord_poller_state (
+  channel_id TEXT PRIMARY KEY,
+  last_seen_message_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 `;
 

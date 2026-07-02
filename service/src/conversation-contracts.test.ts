@@ -233,7 +233,7 @@ describe("conversation llm contracts", () => {
     });
   });
 
-  it("fails closed on low-confidence speech decisions", () => {
+  it("fails closed on low-confidence reply decisions", () => {
     // Given: a speak decision is below the configured threshold.
     const lowConfidence = JSON.stringify({
       schema: CONVERSATION_CONTRACT_SCHEMAS.speechDecision,
@@ -254,7 +254,7 @@ describe("conversation llm contracts", () => {
     });
   });
 
-  it("fails closed on low-confidence no-reply speech decisions", () => {
+  it("fails closed on low-confidence no-reply decisions", () => {
     // Given: a no-reply decision is below the configured confidence threshold.
     const lowConfidence = JSON.stringify({
       schema: CONVERSATION_CONTRACT_SCHEMAS.speechDecision,

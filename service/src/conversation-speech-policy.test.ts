@@ -31,8 +31,8 @@ function allowedInput(overrides: Partial<ConversationSpeechPolicyInput> = {}): C
     safeguards: {
       privacyAllowed: true,
       threadAllowed: true,
-      duplicateSignal: false,
-      selfNudge: false,
+      duplicateTurn: false,
+      selfEcho: false,
     },
     nowMs,
     ...overrides,
@@ -139,8 +139,8 @@ describe("conversation speech policy", () => {
         safeguards: {
           privacyAllowed: false,
           threadAllowed: true,
-          duplicateSignal: false,
-          selfNudge: false,
+          duplicateTurn: false,
+          selfEcho: false,
         },
       }),
       "privacy_blocked",
@@ -153,39 +153,39 @@ describe("conversation speech policy", () => {
         safeguards: {
           privacyAllowed: true,
           threadAllowed: false,
-          duplicateSignal: false,
-          selfNudge: false,
+          duplicateTurn: false,
+          selfEcho: false,
         },
       }),
       "thread_blocked",
     );
   });
 
-  it("suppresses duplicate signals", () => {
+  it("suppresses duplicate turns", () => {
     expectSuppressed(
       allowedInput({
         safeguards: {
           privacyAllowed: true,
           threadAllowed: true,
-          duplicateSignal: true,
-          selfNudge: false,
+          duplicateTurn: true,
+          selfEcho: false,
         },
       }),
-      "duplicate_signal",
+      "duplicate_turn",
     );
   });
 
-  it("suppresses self nudges", () => {
+  it("suppresses self echoes", () => {
     expectSuppressed(
       allowedInput({
         safeguards: {
           privacyAllowed: true,
           threadAllowed: true,
-          duplicateSignal: false,
-          selfNudge: true,
+          duplicateTurn: false,
+          selfEcho: true,
         },
       }),
-      "self_nudge",
+      "self_echo",
     );
   });
 
