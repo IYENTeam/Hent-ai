@@ -83,14 +83,46 @@ The Hent-ai service owns:
 - verifier/cache/rate-limit state
 - short-term memory, long-term summary memory, and chat-reply policy for conversation rooms.
 
+Run the standalone service from `service/`:
+
+```bash
+npm start
+```
+
+HTTP service env:
+
+- `HENT_AI_HOST` / `HENT_AI_PORT` (defaults `127.0.0.1` / `8787`)
+- `HENT_AI_DB_PATH` (defaults `./hent-ai.sqlite`)
+- `HENT_AI_SERVICE_TOKEN`
+
+Conversation provider env:
+
+- `HENT_AI_CONVERSATION_PROVIDER_ENDPOINT`
+- `HENT_AI_CONVERSATION_PROVIDER_TOKEN`
+- `HENT_AI_CONVERSATION_PROVIDER_MODEL`
+- `HENT_AI_CONVERSATION_PROVIDER_TIMEOUT_MS` (default `20000`)
+- `HENT_AI_CONVERSATION_PROVIDER_EXTRA_HEADERS` / `HENT_AI_CONVERSATION_PROVIDER_EXTRA_BODY` (JSON objects)
+- `HENT_AI_CONVERSATION_DECISION_MODEL`, `HENT_AI_CONVERSATION_CONTEXT_MODEL`, `HENT_AI_CONVERSATION_MEMORY_MODEL` (optional per-use overrides)
+
 Service-side conversation knobs (defaults are conservative) can be controlled by environment variables:
 
 - `HENT_AI_CONVERSATION_ENABLED` (default `false`)
 - `HENT_AI_CONVERSATION_RAW_RETENTION_DAYS` (default `14`)
-- `HENT_AI_CONVERSATION_MIN_DELAY_MS` (default `650`)
-- `HENT_AI_CONVERSATION_MAX_DELAY_MS` (default `6500`)
-
-Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
+- `HENT_AI_CONVERSATION_PERSONA`
+- `HENT_AI_CONVERSATION_DEFAULT_CHANNEL_ENABLED` (default `true`)
+- `HENT_AI_CONVERSATION_COOLDOWN_MS` (default `600000`)
+- `HENT_AI_CONVERSATION_BUDGET_PER_HOUR` (default `20`)
+- `HENT_AI_CONVERSATION_MIN_HUMAN_IDLE_MS` (default `12000`)
+- `HENT_AI_CONVERSATION_CONFIDENCE_THRESHOLD` (default `0.7`)
+- `HENT_AI_CONVERSATION_RECENT_TURNS` (default `24`)
+- `HENT_AI_CONVERSATION_CONTEXT_REFRESH` (default `on`)
+- `HENT_AI_CONVERSATION_COMPACTION_INTERVAL_MS` (default `21600000`)
+- `HENT_AI_CONVERSATION_MAX_CHUNKS` (default `5`)
+- `HENT_AI_CONVERSATION_MAX_CHUNK_CHARS` (default `140`)
+- `HENT_AI_CONVERSATION_MIN_DELAY_MS` / `HENT_AI_CONVERSATION_MAX_DELAY_MS` (defaults `650` / `6500`)
+- `HENT_AI_CONVERSATION_BASE_PAUSE_MS` (default `400`)
+- `HENT_AI_CONVERSATION_PER_CHAR_MS` (default `55`)
+- `HENT_AI_CONVERSATION_MAX_DELIVERY_ATTEMPTS` (default `3`)
 
 Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(...)` or deployment wiring that calls it, then configure:
 

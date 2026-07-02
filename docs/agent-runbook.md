@@ -39,6 +39,33 @@ cd openclaw && npx vitest run
 
 Any failing command blocks the release. CI required-check enforcement is intentionally deferred; this gate is the local/manual release checklist for this slice.
 
+## Standalone Service Startup
+
+The canonical runtime is the HTTP service. Start it from `service/`:
+
+```bash
+HENT_AI_SERVICE_TOKEN=... \
+HENT_AI_DB_PATH=./hent-ai.sqlite \
+npm start
+```
+
+The service listens on `HENT_AI_HOST` / `HENT_AI_PORT` (`127.0.0.1:8787` by default) and logs startup diagnostics for disabled conversation config, missing Discord poller env, missing bot user id, missing conversation provider, and missing final-response verifier.
+
+For Discord group-chat participation, configure the service-owned poller and OpenAI-compatible conversation provider:
+
+```bash
+HENT_AI_CONVERSATION_ENABLED=true \
+HENT_AI_DISCORD_POLLER_TOKEN=... \
+HENT_AI_DISCORD_POLLER_CHANNELS=123456789012345678 \
+HENT_AI_DISCORD_POLLER_BOT_USER_ID=... \
+HENT_AI_CONVERSATION_PROVIDER_ENDPOINT=https://provider.example/v1/chat/completions \
+HENT_AI_CONVERSATION_PROVIDER_TOKEN=... \
+HENT_AI_CONVERSATION_PROVIDER_MODEL=... \
+npm start
+```
+
+Useful conversation controls include `HENT_AI_CONVERSATION_RECENT_TURNS`, `HENT_AI_CONVERSATION_CONTEXT_REFRESH`, `HENT_AI_CONVERSATION_COMPACTION_INTERVAL_MS`, `HENT_AI_CONVERSATION_MAX_CHUNKS`, `HENT_AI_CONVERSATION_MAX_CHUNK_CHARS`, `HENT_AI_CONVERSATION_BASE_PAUSE_MS`, `HENT_AI_CONVERSATION_PER_CHAR_MS`, and `HENT_AI_CONVERSATION_MAX_DELIVERY_ATTEMPTS`.
+
 ## Remote Verifier Configuration
 
 Production final-response verification uses an external verifier provider. Configure it through deployment environment variables or service config; do not put literal token values in docs or logs:
