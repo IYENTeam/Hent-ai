@@ -8,8 +8,8 @@ PLUGIN_PATH = Path(__file__).resolve().parents[2] / "hermes" / "__init__.py"
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "emotion-contract-v1.json"
 
 spec = importlib.util.spec_from_file_location("hent_ai_hermes_plugin", PLUGIN_PATH)
+assert spec is not None and spec.loader is not None
 plugin = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
 spec.loader.exec_module(plugin)
 
 
@@ -76,6 +76,23 @@ class HermesPluginTests(unittest.TestCase):
             assert transformed is not None
             self.assertEqual(transformed.count("MEDIA:"), 1)
             self.assertNotIn("/etc/passwd", transformed)
+            self.assertIn(f"MEDIA:{image.resolve()}", transformed)
+
+    def test_strips_inline_model_media_directives_before_appending_plugin_media(self):
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "happy.png"
+            image.write_bytes(b"png")
+            transformed = plugin.build_transformed_response(
+                'Task complete MEDIA:"/tmp/model supplied.png" MEDIA:http://evil.example/happy.png MEDIA:relative.png',
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertIsNotNone(transformed)
+            assert transformed is not None
+            self.assertEqual(transformed.count("MEDIA:"), 1)
+            self.assertNotIn("model supplied", transformed)
+            self.assertNotIn("evil.example", transformed)
+            self.assertNotIn("relative.png", transformed)
             self.assertIn(f"MEDIA:{image.resolve()}", transformed)
 
     def test_missing_image_leaves_response_unchanged(self):
