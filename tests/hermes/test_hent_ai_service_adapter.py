@@ -120,6 +120,30 @@ class HermesServiceAdapterTests(unittest.TestCase):
 
         self.assertIsNone(transformed)
 
+    def test_service_error_ignores_safe_whitespace_normalization(self):
+        def handler(method, path, request_body, headers):
+            if method == "POST" and path == "/v1/final-response/verdict":
+                return 500, {"Content-Type": "application/json"}, {"error": "boom"}
+            return 404, {"Content-Type": "text/plain"}, b"missing"
+
+        with FakeHentService(handler) as base_url, TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {
+                    "HENT_AI_SERVICE_URL": base_url,
+                    "HENT_AI_SERVICE_TOKEN": "secret-token",
+                    "HENT_AI_HERMES_CACHE_DIR": str(Path(tmp) / "cache"),
+                },
+            ):
+                transformed = plugin.build_transformed_response(
+                    "Task  complete",
+                    platform="discord",
+                    assets_dir=Path(tmp),
+                    channel_id="discord-channel-1",
+                )
+
+        self.assertIsNone(transformed)
+
     def test_registered_hook_strips_inline_model_media_when_service_fails(self):
         def handler(method, path, request_body, headers):
             if method == "POST" and path == "/v1/final-response/verdict":

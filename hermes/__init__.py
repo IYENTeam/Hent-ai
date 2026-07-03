@@ -156,8 +156,15 @@ def build_transformed_response(
     unchanged.
     """
 
+    media_was_removed = _contains_media_directive(response_text)
     sanitized_text = strip_media_directives(response_text)
-    if not sanitized_text or not should_attach_for_platform(platform):
+    if not should_attach_for_platform(platform):
+        if media_was_removed:
+            return sanitized_text or " "
+        return None
+    if not sanitized_text:
+        if media_was_removed:
+            return " "
         return None
 
     active_hook_context = dict(hook_context or {})
@@ -171,7 +178,7 @@ def build_transformed_response(
         )
         if transformed is not None:
             return transformed
-        if sanitized_text != response_text.strip():
+        if media_was_removed:
             return sanitized_text
         return None
 
@@ -183,6 +190,8 @@ def build_transformed_response(
 
     image_path = (assets_dir or resolve_assets_dir()) / filename
     if not image_path.exists():
+        if media_was_removed:
+            return sanitized_text
         return None
 
     return f"{sanitized_text.rstrip()}\n\nMEDIA:{image_path.resolve()}"
@@ -190,6 +199,10 @@ def build_transformed_response(
 
 def strip_media_directives(text: str) -> str:
     return _rules.strip_media_directives(text)
+
+
+def _contains_media_directive(text: str) -> bool:
+    return _rules.MEDIA_DIRECTIVE_RE.search(text) is not None
 
 
 def register(ctx) -> None:

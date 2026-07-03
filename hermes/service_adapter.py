@@ -49,6 +49,8 @@ def config_from_env(env: Mapping[str, str] | None = None) -> ServiceConfig | Non
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    if parsed.scheme == "http" and not _is_plaintext_loopback(parsed.hostname):
+        return None
 
     cache_raw = _string_value(source.get("HENT_AI_HERMES_CACHE_DIR"))
     cache_dir = Path(cache_raw).expanduser() if cache_raw else Path.home() / ".cache" / "hent-ai" / "hermes-media"
@@ -60,6 +62,13 @@ def config_from_env(env: Mapping[str, str] | None = None) -> ServiceConfig | Non
         cache_dir=cache_dir,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _is_plaintext_loopback(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    normalized = hostname.rstrip(".").lower()
+    return normalized in {"localhost", "127.0.0.1", "::1"} or normalized.endswith(".localhost")
 
 
 def service_token_configured(env: Mapping[str, str] | None = None) -> bool:

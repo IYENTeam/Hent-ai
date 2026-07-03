@@ -33,7 +33,9 @@ hermes gateway restart
 Optional environment variables:
 
 - `HENT_AI_SERVICE_URL`: Hent-ai HTTP service base URL. Defaults to
-  `http://127.0.0.1:8787` when `HENT_AI_SERVICE_TOKEN` is set.
+  `http://127.0.0.1:8787` when `HENT_AI_SERVICE_TOKEN` is set. Non-local
+  remote service URLs must use HTTPS; plaintext HTTP is accepted only for
+  localhost, loopback, or `.localhost` development hosts.
 - `HENT_AI_SERVICE_TOKEN`: bearer token for Hent-ai service `/v1` endpoints.
   When set, Hermes delegates final-response verdict/media selection to the
   service.
@@ -48,14 +50,17 @@ Optional environment variables:
 
 ## How it works
 
-The plugin registers Hermes' `transform_llm_output` hook. For supported gateway
-platforms, it strips any model-supplied `MEDIA:` directives, posts the final
-assistant text to Hent-ai service `/v1/final-response/verdict`, downloads the
-returned service media URL to a local cache file, and appends Hermes'
-`MEDIA:<path>` directive. Hermes Gateway then sends the image using its native
-media delivery path for the active platform.
+The plugin registers Hermes' `transform_llm_output` hook. It strips
+model-supplied `MEDIA:` directives before any Hent-ai handling. For supported
+gateway platforms, it posts the final assistant text to Hent-ai service
+`/v1/final-response/verdict`, downloads the returned service media URL to a
+local cache file, and appends Hermes' `MEDIA:<path>` directive. Hermes Gateway
+then sends the image using its native media delivery path for the active
+platform.
 
 When `HENT_AI_SERVICE_TOKEN` is configured, the service is authoritative: HTTP
-errors, null verdicts, missing media, or failed media downloads leave the
-Hermes response unchanged and do not fall back to local rules. Without a service
-token, the plugin keeps the legacy local rule-based image selection path.
+errors, null verdicts, missing media, or failed media downloads do not fall back
+to local rules. Unsupported platform, no media, and service failure paths still
+strip model-supplied `MEDIA:` directives so unsafe model text is not left
+unchanged. Without a service token, the plugin keeps the legacy local
+rule-based image selection path.

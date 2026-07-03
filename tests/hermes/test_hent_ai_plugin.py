@@ -50,6 +50,34 @@ class HermesPluginTests(unittest.TestCase):
             )
             self.assertIsNone(transformed)
 
+    def test_sanitizes_model_media_directive_for_unsupported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "Task complete\nMEDIA:/private/tmp/happy.png",
+            platform="cli",
+        )
+        self.assertEqual(transformed, "Task complete")
+
+    def test_replaces_media_only_response_for_unsupported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "MEDIA:/private/tmp/happy.png",
+            platform="cli",
+        )
+        self.assertEqual(transformed, " ")
+
+    def test_unsupported_platform_ignores_safe_whitespace_normalization(self):
+        transformed = plugin.build_transformed_response(
+            "Task  complete",
+            platform="cli",
+        )
+        self.assertIsNone(transformed)
+
+    def test_replaces_media_only_response_for_supported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "MEDIA:/etc/passwd",
+            platform="discord",
+        )
+        self.assertEqual(transformed, " ")
+
     def test_appends_media_directive_for_supported_platform(self):
         with TemporaryDirectory() as tmp:
             image = Path(tmp) / "happy.png"
@@ -95,10 +123,28 @@ class HermesPluginTests(unittest.TestCase):
             self.assertNotIn("relative.png", transformed)
             self.assertIn(f"MEDIA:{image.resolve()}", transformed)
 
+    def test_sanitizes_model_media_directive_when_supported_image_missing(self):
+        with TemporaryDirectory() as tmp:
+            transformed = plugin.build_transformed_response(
+                "Task complete\nMEDIA:/etc/passwd",
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertEqual(transformed, "Task complete")
+
     def test_missing_image_leaves_response_unchanged(self):
         with TemporaryDirectory() as tmp:
             transformed = plugin.build_transformed_response(
                 "Task complete",
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertIsNone(transformed)
+
+    def test_missing_image_ignores_safe_whitespace_normalization(self):
+        with TemporaryDirectory() as tmp:
+            transformed = plugin.build_transformed_response(
+                "Task  complete",
                 platform="discord",
                 assets_dir=Path(tmp),
             )

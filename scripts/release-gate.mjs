@@ -16,7 +16,7 @@ const checks = [
     label: "service focused verifier/poller/worker regression",
     cwd: "service",
     command: "npx",
-    args: ["vitest", "run", "src/service.test.ts", "src/verifier.test.ts", "src/discord-rest-poller.test.ts", "src/generation-worker.test.ts"],
+    args: ["vitest", "run", "src/service.test.ts", "src/verifier.test.ts", "src/final-response-media-sanitizer.test.ts", "src/discord-rest-poller.test.ts", "src/generation-worker.test.ts"],
   },
   {
     label: "shared emotion contract",

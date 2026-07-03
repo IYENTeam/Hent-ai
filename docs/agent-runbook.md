@@ -34,7 +34,7 @@ The gate runs the service-owned boundary check, focused service verifier/poller/
 
 ```bash
 node scripts/service-owned-boundary-check.mjs
-cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts
+cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts src/final-response-media-sanitizer.test.ts
 cd shared && npx vitest run
 cd generate && npx vitest run src/sets.test.ts
 python3 -m unittest discover -s tests/hermes
