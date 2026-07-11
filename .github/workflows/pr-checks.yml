@@ -22,6 +22,23 @@ jobs:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
         continue-on-error: true
 
+  branch-flow:
+    name: Branch Flow Policy
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate branch flow
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: node scripts/branch-flow-policy.mjs --base "$BASE_REF" --head "$HEAD_REF"
+
   size:
     name: PR Size Check
     runs-on: ubuntu-latest
@@ -34,8 +51,8 @@ jobs:
 
       - name: Check PR size
         run: |
-          ADDITIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$1} END {print sum+0}')
-          DELETIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$2} END {print sum+0}')
+          ADDITIONS=$(git diff --numstat ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} | awk '{sum+=$1} END {print sum+0}')
+          DELETIONS=$(git diff --numstat ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} | awk '{sum+=$2} END {print sum+0}')
           TOTAL=$((ADDITIONS + DELETIONS))
           echo "📊 PR Size: +$ADDITIONS / -$DELETIONS (total: $TOTAL lines)"
 
@@ -68,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CHANGED=$(git diff --name-only origin/main...HEAD)
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
           OWNER_GATE_REQUIRED=0
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
@@ -122,7 +139,7 @@ jobs:
           fi
 
           # Check if assets were removed
-          REMOVED=$(git diff --name-only --diff-filter=D origin/main...HEAD | grep "^assets/" || true)
+          REMOVED=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} | grep "^assets/" || true)
           if [ -n "$REMOVED" ]; then
             echo "::error::Asset files removed. This may break emotion image display:"
             echo "$REMOVED"

@@ -30,14 +30,30 @@ Equivalent package script:
 npm run release:check
 ```
 
-The gate runs the focused service verifier/worker regression tests and the full OpenClaw suite:
+List the exact lanes without executing any tests:
 
 ```bash
-cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/generation-worker.test.ts
-cd openclaw && npx vitest run
+node scripts/release-gate.mjs --list-json
 ```
 
-Any failing command blocks the release. CI required-check enforcement is intentionally deferred; this gate is the local/manual release checklist for this slice.
+The full gate runs Service TypeScript and all Service tests with live Discord
+credentials unset, OpenClaw TypeScript and all OpenClaw tests, Generate build and
+tests, Shared tests, Hermes `unittest` discovery, and static manifest, asset, and
+entrypoint assertions. Any child failure makes the gate exit nonzero and blocks
+the release.
+
+The trusted GitHub `Release` workflow runs this same gate. Its `dry_run` input
+defaults to true, and only its publish job receives `contents: write`. Operators
+must dispatch from the hard-pinned `main` branch and dry-run first; changing the
+repository default branch does not change release authority. The workflow
+creates an immutable annotated tag, safely
+resumes when the same-SHA tag already exists, fails on a different-SHA tag, and
+does nothing when the same-SHA GitHub release already exists. It never deploys
+production or restarts the gateway. Pull-request merges remain human-only.
+
+See [Release Process](release-process.md) for the permanent `dev`, `release`, and
+`main` branch flow, merge methods, RC and hotfix back-sync, dispatch steps, smoke
+checks, and rollback.
 
 ## Standalone Service Startup
 

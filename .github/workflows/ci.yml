@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, release]
   pull_request:
-    branches: [main]
+    branches: [main, dev, release]
   workflow_dispatch:
 
 concurrency:
@@ -54,16 +54,10 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Type check
-        run: pnpm exec tsc --noEmit --skipLibCheck 2>/dev/null || echo "::warning::TypeScript check skipped (SDK types unavailable in CI)"
-
-      - name: Lint
-        run: pnpm exec biome check . 2>/dev/null || echo "::warning::Lint skipped (biome not configured)"
+        run: pnpm exec tsc --noEmit --skipLibCheck
 
       - name: Test
         run: pnpm test
-
-      - name: Test coverage
-        run: pnpm exec vitest run --coverage --coverage.reporter=text 2>/dev/null || echo "::warning::Coverage report unavailable"
 
   generate:
     name: Generate Module
@@ -112,6 +106,53 @@ jobs:
         if: steps.check.outputs.exists != 'true'
         run: echo "generate/ not present on this branch, skipping"
 
+  service:
+    name: Service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+  shared:
+    name: Shared
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shared
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
   hermes:
     name: Hermes Plugin (Python)
     runs-on: ubuntu-latest
@@ -138,13 +179,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install test dependencies
-        if: steps.check.outputs.exists == 'true'
-        run: pip install pytest
-
       - name: Run hermes tests
         if: steps.check.outputs.exists == 'true'
-        run: pytest tests/hermes/ -v
+        run: python -m unittest discover -s tests/hermes -p 'test_*.py' -v
 
       - name: Skip (module not present)
         if: steps.check.outputs.exists != 'true'
@@ -153,7 +190,7 @@ jobs:
   integration:
     name: Integration Check
     runs-on: ubuntu-latest
-    needs: [openclaw, generate]
+    needs: [openclaw, generate, service, shared, hermes]
 
     steps:
       - name: Checkout
@@ -211,3 +248,46 @@ jobs:
             }
             console.log('✅ Entry point uses definePluginEntry');
           "
+
+  ci_required:
+    name: CI Required
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [openclaw, generate, service, shared, hermes, integration]
+
+    steps:
+      - name: Require every CI lane
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const needs = JSON.parse(process.env.NEEDS_JSON);
+          const failed = Object.entries(needs).filter(([, value]) => value.result !== "success");
+          if (failed.length > 0) {
+            console.error("Required CI jobs did not succeed:", failed);
+            process.exit(1);
+          }
+          console.log("All required CI jobs succeeded.");
+          NODE
+
+  release_gate:
+    name: Release Gate
+    runs-on: ubuntu-latest
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'push' &&
+          (github.ref_name == 'main' || github.ref_name == 'release')) ||
+        (github.event_name == 'pull_request' &&
+          (github.base_ref == 'main' || github.base_ref == 'release'))
+      )
+    needs: [ci_required]
+
+    steps:
+      - name: Require CI aggregate
+        run: |
+          if [ "${{ needs.ci_required.result }}" != "success" ]; then
+            echo "CI Required did not succeed"
+            exit 1
+          fi
+          echo "Release gate passed"

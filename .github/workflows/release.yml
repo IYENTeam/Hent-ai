@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Calendar version from openclaw/package.json (YYYY.M.PATCH)
+        required: true
+        type: string
+      dry_run:
+        description: Validate metadata and run the full gate without publishing
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: release-v${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trusted_dispatch:
+    name: Verify trusted main dispatch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the production main branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          TRUSTED_MAIN_REF: refs/heads/main
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_REF" != "$TRUSTED_MAIN_REF" ]; then
+            echo "::error::Release must be dispatched from $TRUSTED_MAIN_REF."
+            exit 1
+          fi
+
+  validate:
+    name: Validate release candidate
+    needs: trusted_dispatch
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.metadata.outputs.plan }}
+    steps:
+      - name: Checkout dispatched main commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Refresh trusted main and tags
+        run: git fetch --force origin "refs/heads/main:refs/remotes/origin/main" --tags
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate release metadata without writes
+        id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_SHA: ${{ github.sha }}
+          MAIN_REF: refs/remotes/origin/main
+        run: |
+          set -euo pipefail
+          PLAN=$(node scripts/release-metadata.mjs \
+            --version "$RELEASE_VERSION" \
+            --target-sha "$TARGET_SHA" \
+            --main-ref "$MAIN_REF" \
+            --dry-run)
+          echo "plan=$PLAN" >> "$GITHUB_OUTPUT"
+          echo "$PLAN"
+
+      - name: Install service dependencies from lockfile
+        working-directory: service
+        run: npm ci --no-audit --no-fund
+
+      - name: Install shared dependencies from lockfile
+        working-directory: shared
+        run: npm ci --no-audit --no-fund
+
+      - name: Install generate dependencies from lockfile
+        working-directory: generate
+        run: npm ci --no-audit --no-fund
+
+      - name: Prepare OpenClaw package for standalone CI
+        working-directory: openclaw
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            for (const section of ["dependencies", "devDependencies", "peerDependencies"]) {
+              if (packageJson[section]) delete packageJson[section]["@openclaw/plugin-sdk"];
+            }
+            fs.writeFileSync("package.json", JSON.stringify(packageJson, null, 2) + "\n");
+          '
+          pnpm install --no-frozen-lockfile --ignore-scripts
+
+      - name: Run full service-owned release gate
+        env:
+          HENT_AI_DISCORD_POLLER_TOKEN: ""
+          HENT_AI_DISCORD_POLLER_CHANNELS: ""
+          HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT: ""
+          DISCORD_BOT_TOKEN: ""
+        run: node scripts/release-gate.mjs
+
+      - name: Dry-run summary
+        if: inputs.dry_run
+        env:
+          PLAN: ${{ steps.metadata.outputs.plan }}
+        run: echo "Release dry-run passed with plan ${PLAN}"
+
+  publish:
+    name: Publish immutable tag and GitHub release
+    needs: validate
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Refresh trusted main and tags
+        run: git fetch --force origin "refs/heads/main:refs/remotes/origin/main" --tags
+
+      - name: Revalidate and publish idempotently
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_SHA: ${{ github.sha }}
+          MAIN_REF: refs/remotes/origin/main
+        run: |
+          set -euo pipefail
+          PLAN=$(node scripts/release-metadata.mjs \
+            --version "$RELEASE_VERSION" \
+            --target-sha "$TARGET_SHA" \
+            --main-ref "$MAIN_REF")
+          ACTION=$(PLAN="$PLAN" node -e 'process.stdout.write(JSON.parse(process.env.PLAN).action)')
+          TAG="v${RELEASE_VERSION}"
+
+          if [ "$ACTION" = "noop" ]; then
+            echo "Release $TAG already exists at $TARGET_SHA; nothing to publish."
+            exit 0
+          fi
+
+          if [ "$ACTION" = "create" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" "$TARGET_SHA" -m "Hent-ai $TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Hent-ai $TAG" \
+            --generate-notes
