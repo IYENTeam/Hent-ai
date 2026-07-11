@@ -53,6 +53,10 @@ test("preserves the existing package lanes and integration contract checks", () 
 test("runs push and pull-request CI on main, dev, and release", () => {
   assert.deepEqual(branches("push"), ["main", "dev", "release"]);
   assert.deepEqual(branches("pull_request"), ["main", "dev", "release"]);
+  assert.match(
+    workflow,
+    /pull_request:\n\s+branches: \[main, dev, release\]\n\s+types: \[opened, synchronize, reopened, ready_for_review, edited\]/,
+  );
 });
 
 test("makes TypeScript and tests blocking across runtime/package lanes", () => {

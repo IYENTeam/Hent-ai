@@ -60,6 +60,13 @@ test("uses PR base and head SHAs and always runs the branch-flow policy", () => 
   );
 });
 
+test("reruns PR checks when the pull request base is edited", () => {
+  assert.match(
+    workflow,
+    /pull_request:\n\s+types: \[opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled\]/,
+  );
+});
+
 test("allows each documented route into permanent branches", () => {
   // Given: representative short-lived and promotion routes.
   const routes = [
