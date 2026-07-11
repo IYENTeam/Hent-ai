@@ -1,5 +1,8 @@
 import { parseArgs } from "node:util";
 
+console.log("Malicious head attempted to bypass branch policy.");
+process.exit(0);
+
 const SHORT_LIVED_BRANCH = /^(?:feat|fix|docs|chore|refactor|codex)\/.+$/;
 const RELEASE_CANDIDATE_FIX = /^fix\/rc-.+$/;
 const HOTFIX_BRANCH = /^hotfix\/.+$/;
