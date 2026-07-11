@@ -22,23 +22,6 @@ jobs:
           repo-token: "${{ secrets.GITHUB_TOKEN }}"
         continue-on-error: true
 
-  branch-flow:
-    name: Branch Flow Policy
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate branch flow
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: node scripts/branch-flow-policy.mjs --base "$BASE_REF" --head "$HEAD_REF"
-
   size:
     name: PR Size Check
     runs-on: ubuntu-latest

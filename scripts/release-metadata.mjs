@@ -38,6 +38,9 @@ export function buildReleasePlan(input) {
   if (input.tagSha === undefined) {
     return { version, tag, targetSha: input.targetSha, action: "create", dryRun: input.dryRun };
   }
+  if (input.tagType !== "tag") {
+    throw new ReleaseMetadataError(`tag ${tag} must be an annotated tag; found ${input.tagType ?? "unknown"} object`);
+  }
   if (input.tagSha !== input.targetSha) {
     throw new ReleaseMetadataError(`tag ${tag} already points to different SHA ${input.tagSha}`);
   }
@@ -114,12 +117,19 @@ export async function inspectRelease(argv, options = {}) {
   const version = parseReleaseVersion(args.version);
   const tag = `v${version}`;
   const mainSha = gitValue(root, ["rev-parse", "--verify", `${args.mainRef}^{commit}`]);
-  const tagSha = gitValue(root, ["rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`], true);
+  const tagType = gitValue(root, ["for-each-ref", "--format=%(objecttype)", `refs/tags/${tag}`]) || undefined;
+  if (tagType !== undefined && tagType !== "tag") {
+    throw new ReleaseMetadataError(`tag ${tag} must be an annotated tag; found ${tagType} object`);
+  }
+  const tagSha = tagType === undefined
+    ? undefined
+    : gitValue(root, ["rev-parse", "--verify", `refs/tags/${tag}^{commit}`]);
   const plan = buildReleasePlan({
     version,
     packageVersion: packageJson.version,
     targetSha: args.targetSha,
     mainSha,
+    tagType,
     tagSha,
     releaseExists: false,
     dryRun: args.dryRun,

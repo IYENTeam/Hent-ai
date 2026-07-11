@@ -1,0 +1,27 @@
+name: Branch Flow Policy
+
+on:
+  pull_request_target:
+    branches: [main, dev, release]
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  branch-flow:
+    name: Branch Flow Policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout trusted base policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Validate branch flow
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: node scripts/branch-flow-policy.mjs --base "$BASE_REF" --head "$HEAD_REF"

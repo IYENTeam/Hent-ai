@@ -75,24 +75,27 @@ test("stale target SHA is rejected", () => {
   assert.throws(() => buildReleasePlan(input({ targetSha: otherSha })), /is not current main/);
 });
 
-test("same-SHA tag resumes a missing release", () => {
+test("same-SHA annotated tag resumes a missing release", () => {
   // Given: the annotated tag already exists at the target after an interruption.
   // When: no GitHub release exists yet.
-  const plan = buildReleasePlan(input({ tagSha: sha }));
+  const plan = buildReleasePlan(input({ tagType: "tag", tagSha: sha }));
   // Then: the release safely resumes without recreating the tag.
   assert.equal(plan.action, "resume");
 });
 
-test("different-SHA tag fails closed", () => {
+test("different-SHA annotated tag fails closed", () => {
   // Given: the immutable version tag already names another commit.
   // When/Then: release planning refuses to move it.
-  assert.throws(() => buildReleasePlan(input({ tagSha: otherSha })), /already points to different SHA/);
+  assert.throws(
+    () => buildReleasePlan(input({ tagType: "tag", tagSha: otherSha })),
+    /already points to different SHA/,
+  );
 });
 
-test("existing same-SHA release is an idempotent no-op", () => {
+test("existing same-SHA annotated release is an idempotent no-op", () => {
   // Given: both tag and GitHub release already exist for the target.
   // When: the release is planned again.
-  const plan = buildReleasePlan(input({ tagSha: sha, releaseExists: true }));
+  const plan = buildReleasePlan(input({ tagType: "tag", tagSha: sha, releaseExists: true }));
   // Then: no publication action is requested.
   assert.equal(plan.action, "noop");
 });
@@ -152,6 +155,27 @@ test("different-SHA tags fail before any GitHub release lookup", async (context)
       },
     }),
     /already points to different SHA/,
+  );
+  assert.equal(lookupCalled, false);
+});
+
+test("lightweight tags fail before any GitHub release lookup", async (context) => {
+  // Given: a same-SHA tag whose object is a commit rather than an annotated tag object.
+  const fixture = await createRepository();
+  context.after(() => rm(fixture.root, { recursive: true, force: true }));
+  execFileSync("git", ["tag", "v2026.5.6", fixture.targetSha], { cwd: fixture.root });
+  let lookupCalled = false;
+
+  // When/Then: local tag-integrity validation rejects it before the external release seam.
+  await assert.rejects(
+    inspectRelease(["--version", "2026.5.6", "--target-sha", fixture.targetSha], {
+      root: fixture.root,
+      releaseExists: async () => {
+        lookupCalled = true;
+        return false;
+      },
+    }),
+    /must be an annotated tag/,
   );
   assert.equal(lookupCalled, false);
 });

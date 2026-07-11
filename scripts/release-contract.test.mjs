@@ -165,3 +165,15 @@ test("release authority is pinned to main even if the repository default branch 
   });
   assert.notEqual(denied.status, 0);
 });
+
+test("operator docs preserve rollback ancestry and the conflicted PR handoff", async () => {
+  const process = await readFile(resolve(root, "docs/release-process.md"), "utf8");
+
+  assert.match(process, /revert[^\n]*`main`[\s\S]*?`main`[^\n]*`release`[\s\S]*?`release`[^\n]*`dev`/i);
+  assert.match(process, /PR #115[\s\S]*?current `dev`[\s\S]*?node scripts\/release-gate\.mjs/);
+  assert.match(
+    process,
+    /PR #115[\s\S]*?--force-with-lease=refs\/heads\/codex\/hent-ai-service-hardening:01a4c61968eb57e2c652ce66235a805c82d4cf0c/,
+  );
+  assert.match(process, /PR #119[\s\S]*?after PR #115 is\s+human-merged[\s\S]*?human-only/i);
+});

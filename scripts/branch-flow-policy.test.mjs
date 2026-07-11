@@ -8,6 +8,17 @@ const workflow = readFileSync(
   new URL("../.github/workflows/pr-checks.yml", import.meta.url),
   "utf8",
 );
+let policyWorkflow;
+try {
+  policyWorkflow = readFileSync(
+    new URL("../.github/workflows/branch-flow-policy.yml", import.meta.url),
+    "utf8",
+  );
+} catch (error) {
+  if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+    throw error;
+  }
+}
 const policyPath = fileURLToPath(
   new URL("./branch-flow-policy.mjs", import.meta.url),
 );
@@ -38,32 +49,52 @@ test("preserves the current-head owner gate and asset-deletion block", () => {
   assert.match(workflow, /::error::Asset files removed/);
 });
 
-test("uses PR base and head SHAs and always runs the branch-flow policy", () => {
+test("uses PR base and head SHAs without executing branch policy from PR code", () => {
   // Given: a PR whose base may not be main.
   // When: size, breaking-change, asset, and branch-flow checks are inspected.
-  // Then: every diff uses the immutable PR SHA range and policy cannot be skipped.
+  // Then: every diff uses the immutable PR SHA range and this workflow owns no policy job.
   const pullRequestRange =
     "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}";
   assert.equal(workflow.includes("origin/main...HEAD"), false);
   assert.equal(workflow.split(pullRequestRange).length - 1, 4);
-  assert.match(
-    workflow,
-    /branch-flow:\n[\s\S]*?name: Branch Flow Policy\n[\s\S]*?if: \$\{\{ always\(\) \}\}/,
-  );
-  assert.match(
-    workflow,
-    /- name: Validate branch flow\n\s+env:\n\s+BASE_REF: \$\{\{ github\.event\.pull_request\.base\.ref \}\}\n\s+HEAD_REF: \$\{\{ github\.event\.pull_request\.head\.ref \}\}\n\s+run: node scripts\/branch-flow-policy\.mjs --base "\$BASE_REF" --head "\$HEAD_REF"/,
-  );
-  assert.doesNotMatch(
-    workflow,
-    /run:[^\n]*github\.event\.pull_request\.(?:base|head)\.ref/,
-  );
+  assert.doesNotMatch(workflow, /name: Branch Flow Policy/);
 });
 
 test("reruns PR checks when the pull request base is edited", () => {
   assert.match(
     workflow,
     /pull_request:\n\s+types: \[opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled\]/,
+  );
+});
+
+test("runs trusted-base policy for conflicting and edited pull requests", () => {
+  assert.ok(policyWorkflow, "Branch Flow Policy workflow missing");
+  assert.match(policyWorkflow, /pull_request_target:/);
+  assert.match(policyWorkflow, /branches: \[main, dev, release\]/);
+  assert.match(
+    policyWorkflow,
+    /types: \[opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled\]/,
+  );
+  assert.match(policyWorkflow, /permissions:\n  contents: read/);
+  assert.doesNotMatch(policyWorkflow, /(?:contents|pull-requests|actions|checks): write/);
+  assert.match(
+    policyWorkflow,
+    /uses: actions\/checkout@11bd71901bbe5b1630ceea73d27597364c9af683/,
+  );
+  assert.match(policyWorkflow, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(policyWorkflow, /persist-credentials: false/);
+  assert.doesNotMatch(policyWorkflow, /github\.event\.pull_request\.head\.sha|refs\/pull|github\.sha/);
+  assert.match(
+    policyWorkflow,
+    /BASE_REF: \$\{\{ github\.event\.pull_request\.base\.ref \}\}\n\s+HEAD_REF: \$\{\{ github\.event\.pull_request\.head\.ref \}\}/,
+  );
+  assert.match(
+    policyWorkflow,
+    /run: node scripts\/branch-flow-policy\.mjs --base "\$BASE_REF" --head "\$HEAD_REF"/,
+  );
+  assert.doesNotMatch(
+    policyWorkflow,
+    /run:[^\n]*\$\{\{[\s\S]*?github\.event\.pull_request\.(?:base|head)\.ref/,
   );
 });
 

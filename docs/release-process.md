@@ -81,5 +81,36 @@ perform the service/plugin smoke checks appropriate to the separate deployment.
 The release workflow itself never deploys or restarts a runtime.
 
 Rollback means forward repair: revert the bad change on `main` through a human-
-merged pull request, back-sync that revert to `dev`, increment the patch version,
-and publish a new tag. Do not delete, recreate, or move an already published tag.
+merged pull request, then back-sync `main` to `release` and `release` to `dev`
+through human-reviewed merge commits. Increment the patch version and publish a
+new tag only after all three permanent branches contain the revert. Do not
+delete, recreate, or move an already published tag.
+
+## Current stacked PR handoff
+
+PR #115 (`codex/hent-ai-service-hardening` to `dev`) is currently conflicting at
+head `01a4c61968eb57e2c652ce66235a805c82d4cf0c`. A human owner must resolve it
+against the current `dev`; agents and workflows must not merge it. In a clean,
+disposable worktree, the owner should fetch both refs, confirm the expected head
+has not moved, merge `origin/dev`, resolve the conflicts deliberately, and run
+the full gate before updating the PR branch:
+
+```bash
+git fetch origin dev codex/hent-ai-service-hardening
+test "$(git rev-parse origin/codex/hent-ai-service-hardening)" = \
+  01a4c61968eb57e2c652ce66235a805c82d4cf0c
+git switch --detach 01a4c61968eb57e2c652ce66235a805c82d4cf0c
+git switch -c resolve/pr-115
+git merge --no-ff origin/dev
+node scripts/release-gate.mjs
+git push \
+  --force-with-lease=refs/heads/codex/hent-ai-service-hardening:01a4c61968eb57e2c652ce66235a805c82d4cf0c \
+  origin HEAD:refs/heads/codex/hent-ai-service-hardening
+```
+
+PR #119 (`codex/hermes-agent-service-adapter`) remains stacked on PR #115 at
+head `d1b6ea84954009534806eddf5017e9fe8ce3bc80`. Only after PR #115 is
+human-merged into `dev` should a human owner restack #119 onto the refreshed
+`origin/dev`, run `node scripts/release-gate.mjs`, update its head with an exact
+SHA `--force-with-lease`, and retarget #119 to `dev`. Both branch update and
+eventual merge remain human-only.
