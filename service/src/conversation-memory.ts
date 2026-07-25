@@ -35,16 +35,11 @@ export type CompactConversationMemoryResult = {
   readonly diagnostics: readonly ConversationMemoryDiagnostic[];
 };
 
-type ScopeGroup = {
-  readonly scope: ConversationScope;
-  readonly events: readonly ConversationRawEvent[];
-};
-
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export async function compactConversationMemory(input: CompactConversationMemoryInput): Promise<CompactConversationMemoryResult> {
   const cutoff = new Date(new Date(input.now).getTime() - input.config.rawRetentionDays * MS_PER_DAY).toISOString();
-  const groups = input.store.listRawEventScopeIdsBefore(cutoff).map((scopeId) => groupEventsForScope(input.store, scopeId, cutoff));
+  const groups = input.store.listArchiveCandidateGroups(cutoff).map((group) => ({ scope: scopeFromEvent(group.events[0]), events: group.events }));
   const diagnostics: ConversationMemoryDiagnostic[] = [];
   let compactedScopeCount = 0;
   let summaryCount = 0;
@@ -83,7 +78,7 @@ export async function compactConversationMemory(input: CompactConversationMemory
     });
     summaryCount += 1;
     compactedScopeCount += 1;
-    prunedRawCount += input.store.deleteRawEventsByIds(group.events.map((event) => event.id));
+    // Raw transcript is permanent. The archive scheduler marks it only after its source-linked summary commits.
   }
 
   return { compactedScopeCount, summaryCount, prunedRawCount, diagnostics };
@@ -104,14 +99,6 @@ async function requestProvider(
     }
     return { kind: "failed", diagnostic: toDiagnostic(request.scope.scopeId, { code: "provider_error", message: "provider failed with a non-error value" }) };
   }
-}
-
-function groupEventsForScope(store: ConversationStore, scopeId: string, cutoff: string): ScopeGroup {
-  const events = store.listRawEvents(scopeId).filter((event) => event.eventTs < cutoff);
-  return {
-    scope: scopeFromEvent(events[0]),
-    events,
-  };
 }
 
 function scopeFromEvent(event: ConversationRawEvent | undefined): ConversationScope {

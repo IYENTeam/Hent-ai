@@ -1,3 +1,8 @@
+import {
+  parseDiscordParticipantAllowlist,
+  type DiscordParticipantStartupConfig,
+} from "./adaptive-ambient-contracts.js";
+
 export type ConversationServiceConfig = {
   readonly enabled: boolean;
   readonly rawRetentionDays: number;
@@ -10,6 +15,7 @@ export type ConversationServiceConfig = {
   readonly minHumanIdleMs: number;
   readonly confidenceThreshold: number;
   readonly persona?: string;
+  readonly participant: DiscordParticipantStartupConfig;
   readonly diagnostics: readonly string[];
 };
 
@@ -59,6 +65,8 @@ const ENV_KEYS = {
   rawRetentionDays: "HENT_AI_CONVERSATION_RAW_RETENTION_DAYS",
   minDelayMs: "HENT_AI_CONVERSATION_MIN_DELAY_MS",
   maxDelayMs: "HENT_AI_CONVERSATION_MAX_DELAY_MS",
+  persona: "HENT_AI_CONVERSATION_PERSONA",
+  participantAllowlist: "HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST",
 } as const;
 
 export const DEFAULT_CONVERSATION_CONFIG: ConversationServiceConfig = {
@@ -72,6 +80,11 @@ export const DEFAULT_CONVERSATION_CONFIG: ConversationServiceConfig = {
   budgetPerHour: 20,
   minHumanIdleMs: 12_000,
   confidenceThreshold: 0.7,
+  participant: {
+    enabled: false,
+    allowlist: [],
+    diagnostics: ["HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST is required"],
+  },
   diagnostics: [],
 };
 
@@ -137,12 +150,17 @@ export function loadConversationConfigFromEnv(env: EnvMap = process.env): Conver
     diagnostics.push(`${ENV_KEYS.maxDelayMs} must be greater than or equal to ${ENV_KEYS.minDelayMs}`);
   }
 
+  const persona = env[ENV_KEYS.persona]?.trim() || undefined;
+  const participant = parseDiscordParticipantAllowlist(env[ENV_KEYS.participantAllowlist]);
+
   return {
     ...DEFAULT_CONVERSATION_CONFIG,
     enabled: enabled.kind === "valid" && diagnostics.length === 0 ? enabled.value : false,
     rawRetentionDays: rawRetentionDays.value,
     minDelayMs: minDelayMs.value,
     maxDelayMs: maxDelayMs.value,
+    ...(persona ? { persona } : {}),
+    participant,
     diagnostics,
   };
 }

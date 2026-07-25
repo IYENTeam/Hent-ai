@@ -12,6 +12,10 @@ function parseJsonValue(value: string): unknown {
   return parsed;
 }
 
+export function adaptiveFenceFromRow(row: Readonly<Record<string, unknown>>, key: string): { key: string; holderId: string; fenceToken: number; expiresAtMs: number } {
+  return { key, holderId: requireString(row, "holder_id"), fenceToken: requireNumber(row, "fence_token"), expiresAtMs: requireNumber(row, "expires_at_ms") };
+}
+
 export function requireRowRecord(value: unknown, source: string): Readonly<Record<string, unknown>> {
   if (isRowRecord(value)) return value;
   throw new TypeError(`Expected ${source} row`);

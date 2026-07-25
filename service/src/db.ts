@@ -1,62 +1,12 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { initializeServiceSchema } from "./db-schema.js";
+import { prepareDatabasePath, secureDatabaseFiles } from "./db-file-security.js";
 import { rowToJob, rowToProfile } from "./db-rows.js";
+import type { ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput } from "./db-types.js";
+
+export type { ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput } from "./db-types.js";
 
 export { SCHEMA_VERSION } from "./db-schema.js";
-
-export type Profile = {
-  id: string;
-  name: string;
-  character: string | null;
-  soulSnippet: string | null;
-  model: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ProfileCreateInput = {
-  id: string;
-  name: string;
-  character?: string | null;
-  soulSnippet?: string | null;
-  model?: string | null;
-};
-
-export type ProfileUpdateInput = Partial<Omit<ProfileCreateInput, "id">>;
-
-export type ChannelMapping = {
-  channelId: string;
-  profileId: string | null;
-  mode: string | null;
-  enabled: boolean | null;
-  cronEnabled: boolean | null;
-  assetSetId: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-};
-
-export type StorageObjectInput = {
-  storageKey: string;
-  objectUrl: string;
-  contentHash: string;
-  contentType: string;
-  sizeBytes: number;
-  provenance: string;
-  localPath?: string | null;
-  metadata?: unknown;
-};
-
-export type GenerationJob = {
-  id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  request: unknown;
-  result: unknown | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
 
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
@@ -68,11 +18,14 @@ export class ServiceDatabase {
   readonly db: Database.Database;
 
   constructor(path = ":memory:") {
-    if (path !== ":memory:") mkdirSync(dirname(resolve(path)), { recursive: true });
+    if (path !== ":memory:") prepareDatabasePath(path);
     this.db = new Database(path);
     this.db.pragma("foreign_keys = ON");
     if (path !== ":memory:") this.db.pragma("journal_mode = WAL");
+    if (path !== ":memory:") this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("busy_timeout = 5000");
     this.initialize();
+    if (path !== ":memory:") secureDatabaseFiles(path);
   }
 
   close(): void {

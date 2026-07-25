@@ -21,6 +21,11 @@ describe("conversation config defaults", () => {
       budgetPerHour: 20,
       minHumanIdleMs: 12_000,
       confidenceThreshold: 0.7,
+      participant: {
+        enabled: false,
+        allowlist: [],
+        diagnostics: ["HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST is required"],
+      },
       diagnostics: [],
     });
   });
@@ -43,6 +48,19 @@ describe("conversation config defaults", () => {
       "HENT_AI_CONVERSATION_RAW_RETENTION_DAYS must be a positive integer",
       "HENT_AI_CONVERSATION_MAX_DELAY_MS must be greater than or equal to HENT_AI_CONVERSATION_MIN_DELAY_MS",
     ]);
+  });
+
+  it("loads the optional global conversation persona without changing existing conversation gates", () => {
+    // Given: a service-owned global persona is configured at startup.
+    const env = {
+      HENT_AI_CONVERSATION_PERSONA: "Prefer concise operational replies.",
+    };
+
+    // When: the service reads startup configuration.
+    const config = loadConversationConfigFromEnv(env);
+
+    // Then: the configured persona is available to the existing channel-to-global-to-generic resolver.
+    expect(config.persona).toBe("Prefer concise operational replies.");
   });
 
   it("enables conversation only when every service env override is valid", () => {

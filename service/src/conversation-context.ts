@@ -37,9 +37,9 @@ export function recordConversationUserIntake(input: ConversationIntakeInput): Co
     observedAt: input.observedAt,
     botSelfLoop: false,
   });
-  const recentEvents = input.store.listRawEvents(input.scopeId).slice(-input.maxRecentEvents);
+  const recentEvents = input.store.listActiveRawEvents(input.scopeId).slice(-input.maxRecentEvents);
   const checkpointEventIds = recentEvents.map((event) => event.id);
-  const summary = summarizeRecentEvents(recentEvents);
+  const summary = summarizeContext(recentEvents, input.store.listArchivedSummaries(input.scopeId).map((entry) => entry.summary));
   input.store.upsertCheckpoint({
     scopeId: input.scopeId,
     channelId: input.channelId,
@@ -59,7 +59,8 @@ export function recordConversationUserIntake(input: ConversationIntakeInput): Co
   };
 }
 
-function summarizeRecentEvents(events: readonly ConversationRawEvent[]): string {
+function summarizeContext(events: readonly ConversationRawEvent[], archivedSummaries: readonly string[]): string {
   const turns = events.map((event) => `${event.authorRole}: ${event.text}`).join(" | ");
-  return `Recent room context: ${turns}`;
+  const archive = archivedSummaries.length === 0 ? "" : ` Archived room context: ${archivedSummaries.join(" | ")}`;
+  return `Recent room context: ${turns}${archive}`;
 }
