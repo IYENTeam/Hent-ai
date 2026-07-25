@@ -9,6 +9,9 @@
   },
   "scripts": {
     "test": "vitest run",
+    "start": "tsx src/main.ts",
+    "start:api": "tsx src/main.ts",
+    "start:discord-ambient-worker": "tsx src/discord-ambient-worker.ts",
     "verify:discord-rest": "vitest run src/discord-rest-poller.live.test.ts"
   },
   "license": "MIT",

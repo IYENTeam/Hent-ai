@@ -124,7 +124,7 @@ Shared responsibilities:
 - profile ID validation (`shared/profile.ts`);
 - SQLite-backed profile/channel/settings DB utilities (`shared/db.ts`).
 
-Current profile storage:
+Legacy `ProfileDatabase` storage used by migration/generation tooling:
 
 - DB file: `<imageDir>/hentai.db`
 - Tables:
@@ -155,7 +155,9 @@ The accepted runtime profile architecture is SQLite-backed service state plus pr
 
 ### Profile storage
 
-Profiles are stored in SQLite through `ProfileDatabase` in the service runtime.
+Profiles and channel mappings in the current service runtime are stored through `ServiceDatabase`, opened from `HENT_AI_SERVICE_DB_PATH` for the participant worker (and the configured service DB path for the HTTP API). `ProfileDatabase` remains true only for legacy OpenClaw/generation migration tooling; it is not a service runtime profile SSOT.
+
+The service runtime tables are `profiles`, `channel_mappings`, and `channel_settings`. `channel_mappings.profile_id` selects the profile and `channel_mappings.mode` selects the channel mode; `channel_settings.enabled` and its other settings hold service-owned channel policy. The legacy `channel_profiles` table belongs only to `ProfileDatabase` migration tooling.
 
 A profile may include:
 
@@ -174,7 +176,7 @@ Profile-specific images live under the configured service image directory:
 <imageDir>/profiles/<profileId>/
 ```
 
-The service resolves active profile/media state from its SQLite-backed `channel_profiles` mapping and asset set records. The OpenClaw adapter must not duplicate that resolution logic or fall back to plugin-local profile configuration.
+The service resolves active profile/media state from its SQLite-backed `channel_mappings` and `channel_settings` records plus asset set records. The OpenClaw adapter must not duplicate that resolution logic or fall back to plugin-local profile configuration.
 
 ### Dynamic persona injection
 
@@ -223,6 +225,13 @@ Automatic time-based, mood-based, mood-detection, or hidden-context profile swit
 ## Roadmap priorities
 
 ### P0 — OpenClaw server correctness
+
+### Accepted Discord ambient participant topology
+
+The service-owned Discord participant is an optional separate worker, not an OpenClaw capability and not an HTTP API side effect. `service/src/main.ts` serves HTTP only; `service/src/discord-ambient-worker.ts` owns allowlisted Discord polling, durable ambient work, and delivery. It requires a startup-only environment allowlist plus enabled `ServiceDatabase` channel mapping, uses per-guild/channel fenced and work-claim leases, and shares the `HENT_AI_SERVICE_DB_PATH` WAL database with the API. Profile persona resolves channel profile, then global persona, then generic persona.
+
+Archive policy is permanent: raw events become archived after 14 days and source-linked summaries are retained; neither raw archives nor summaries are deleted. An archive-only owner has its own lease and may call the configured provider without a participant scope lease only for exact startup-allowlisted Discord scopes that remain DB-enabled; it makes no Discord API calls. Membership v1 uses complete fresh roster evidence. Ambient appraisal is continuous and probabilistic: ordinary silence requests are social evidence that may be accepted, ignored, resisted, or escalated, never deterministic mute/quit state. Operational config and lease fences remain deterministic kill switches. The bot-token QA pair is documentation/fixture-only and is not production scope.
+
 
 Before broad identity expansion, the service-owned OpenClaw delivery path must remain reliable.
 
@@ -296,7 +305,7 @@ Classify work as:
 
 Recommended cancellation/pause triggers:
 
-- runtime profile architecture that bypasses SQLite `profiles` / `channel_profiles`;
+- runtime profile architecture that bypasses service SQLite `profiles` / `channel_mappings` / `channel_settings`;
 - filesystem `characters/<id>/character.json` revived as a second runtime SSOT;
 - docs that present OpenClaw and Hermes as symmetric profile runtimes;
 - dynamic personality injection without host prompt-policy boundaries;
@@ -313,7 +322,7 @@ Before merging or accepting identity/profile work, verify:
 - [ ] The change preserves natural agent writing; Hent-ai still infers emotion and owns image delivery.
 - [ ] The change cites this roadmap if it affects profile/personality identity.
 - [ ] The change keeps service-owned final-response verdict/profile/channel policy as the canonical OpenClaw delivery path.
-- [ ] The change uses SQLite `profiles` / `channel_profiles` unless a new owner-approved decision replaces that architecture.
+- [ ] The change uses service SQLite `profiles` / `channel_mappings` / `channel_settings` unless a new owner-approved decision replaces that architecture.
 - [ ] The change describes Hermes as a compatibility adapter unless it intentionally adopts shared DB state.
 - [ ] The change does not revive filesystem `characters/<id>/character.json` as a second runtime SSOT.
 - [ ] Classifier behavior changes include parity fixtures or documented server/client differences.

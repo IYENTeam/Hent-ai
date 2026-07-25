@@ -32,6 +32,10 @@ export type HentAiServerResult = {
   readonly stopPoller?: () => Promise<void>;
 };
 
+/**
+ * @deprecated Legacy watcher poller composition only. Production API startup uses main.ts and
+ * never starts a Discord participant worker; use discord-ambient-worker.ts for that process.
+ */
 export function createHentAiServerWithPoller(options: HentAiServerWithPollerOptions): HentAiServerResult {
   const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(
     options.db,
