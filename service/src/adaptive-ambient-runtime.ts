@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import {
   isDiscordParticipantScopeAllowed,
+  readAmbientSettings,
   type AmbientAppraisalParseResult,
   type DiscordInboundMessage,
   type DiscordMembershipSnapshot,
   type DiscordParticipantScope,
 } from "./adaptive-ambient-contracts.js";
 import type { AdaptiveAmbientAppraisalProvider } from "./adaptive-ambient-provider.js";
-import { evaluateAmbientDecision } from "./conversation-ambient.js";
+import { applyAmbientIdleDecay, evaluateAmbientDecision, IDLE_DECAY_TAU_MS } from "./conversation-ambient.js";
 import { normalizeDiscordAmbientBubbles } from "./discord-ambient-delivery.js";
 import { GENERIC_CONVERSATION_PERSONA } from "./conversation-speech-policy.js";
 import { deriveActiveHumanIds } from "./conversation-roster.js";
@@ -39,7 +40,9 @@ export type AdaptiveAmbientRuntime = {
 };
 
 const BUDGET_KEY = "ambient";
+const DEFAULT_AMBIENT_DRIVE = 0.5;
 const RECENT_CONTEXT_LIMIT = 20;
+const ROSTER_FRESHNESS_MS = 5 * 60_000;
 
 export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOptions): AdaptiveAmbientRuntime {
   const clock = options.clock ?? Date.now;
@@ -47,9 +50,11 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
   async function run(input: { readonly fence: Fence; readonly signal: AbortSignal }): Promise<RuntimeStatus> {
     const mapping = options.serviceDb.getChannelMapping(options.scope.channelId);
     if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, mapping)) return "disabled";
+    const ambientSettings = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId));
+    const budgetLimit = ambientSettings.ambientBudgetPerHour ?? options.budgetPerHour;
     if (input.signal.aborted) return "aborted";
     if (!options.store.isFenceCurrent(input.fence)) return "lease_unavailable";
-    if (!budgetAvailable(options.store, options.scope, options.budgetPerHour, clock())) return "idle";
+    if (!budgetAvailable(options.store, options.scope, budgetLimit, clock())) return "idle";
 
     const workId = options.store.claimNextWork(options.scope, input.fence);
     if (!workId) return "idle";
@@ -70,6 +75,9 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       const beforeProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);
       if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, beforeProviderMapping)) return "disabled";
       if (!activeWork.isCurrent()) return "aborted";
+      const now = clock();
+      const state = options.store.state(options.scope);
+      const activeHumanIds = loadActiveHumanIds(options.serviceDb, options.scope, roster, now);
       let appraisal: AmbientAppraisalParseResult;
       try {
         appraisal = await options.provider.appraise({
@@ -77,6 +85,12 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           persona: personaFor(options.serviceDb, beforeProviderMapping?.profileId ?? null, options.globalPersona),
           transcript: context.transcript,
           context: { archiveSummaries: context.archiveSummaries, relationships: context.relationships },
+          audience: {
+            rosterComplete: roster.complete,
+            activeHumanCount: activeHumanIds.length,
+            currentDrive: state?.drive ?? 0.5,
+            budgetRemaining: budgetRemaining(options.store, options.scope, budgetLimit, now),
+          },
         }, { signal: activeWork.signal });
       } catch {
         appraisal = { kind: "invalid", diagnostic: "provider appraisal failed" };
@@ -84,28 +98,34 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       if (!activeWork.isCurrent()) return "aborted";
       const afterProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);
       if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterProviderMapping)) return "disabled";
-      if (appraisal.kind === "valid" && appraisal.proposal.confidence < 0.7) {
+      if (appraisal.kind === "valid" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? 0.7)) {
         appraisal = { kind: "invalid", diagnostic: "provider confidence was below threshold" };
       }
       if (appraisal.kind === "valid" && !relationshipTargetsAuthorized(appraisal.proposal.relationshipProposals, context.transcript, roster)) {
         appraisal = { kind: "invalid", diagnostic: "relationship target was not authenticated by transcript or roster" };
       }
 
-      const state = options.store.state(options.scope);
       const decision = evaluateAmbientDecision({
         appraisal,
         eventId: work.eventId,
-        state: state && { ...state, scope: options.scope, updatedAtMs: clock() },
+        state: state && { ...state, scope: options.scope },
         message: context.event,
         botUserId: options.botUserId,
         roster,
-        activeHumanIds: loadActiveHumanIds(options.serviceDb, options.scope, roster, clock()),
-        nowMs: clock(),
+        activeHumanIds,
+        nowMs: now,
+        observeOnly: work.observeOnly,
+        ambientPityEnabled: ambientSettings.ambientPityEnabled ?? true,
+        confidenceFloor: ambientSettings.ambientConfidenceFloor ?? 0.7,
+        idleDecayTauMs: ambientSettings.ambientIdleDecayTauMs,
+        pressureTauMs: ambientSettings.ambientPressureTauMs,
       });
       const proposal = appraisal.kind === "valid" ? appraisal.proposal : undefined;
       const bubbles = proposal ? normalizeDiscordAmbientBubbles(proposal.chunks) : null;
       const planned = decision.shouldSpeak && !work.observeOnly && bubbles !== null;
       const budget = planned ? nextBudget(options.store, options.scope, clock()) : undefined;
+      const driveBefore = decision.driveUpdate === null ? null : state === null ? DEFAULT_AMBIENT_DRIVE
+        : applyAmbientIdleDecay(state.drive, state.updatedAtMs, now, ambientSettings.ambientIdleDecayTauMs ?? IDLE_DECAY_TAU_MS);
       const result = options.store.recordOutcome({
         fence: input.fence,
         eventId: work.eventId,
@@ -113,7 +133,23 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         outcome: decision.audit.outcome === "invalid" ? "invalid" : planned ? "planned" : "observe",
         diagnostic: decision.audit.diagnostic,
         proposal,
-        state: decision.driveUpdate && { drive: decision.driveUpdate.drive, version: decision.driveUpdate.version },
+        auditEvidence: {
+          evidenceWeight: decision.evidenceWeight,
+          probability: decision.probability,
+          draw: decision.draw,
+          driveBefore,
+          driveAfter: decision.driveUpdate?.drive ?? null,
+          activeHumanCount: activeHumanIds.length,
+          rosterFresh: isFreshCompleteRoster(roster, now),
+        },
+        state: decision.driveUpdate && {
+          drive: decision.driveUpdate.drive,
+          version: decision.driveUpdate.version,
+          pressure: decision.driveUpdate.pressure,
+          pressureUpdatedAtMs: decision.driveUpdate.pressureUpdatedAtMs,
+          speakStreak: decision.driveUpdate.speakStreak,
+          skipStreak: decision.driveUpdate.skipStreak,
+        },
         relationships: proposal?.relationshipProposals,
         ...(budget ? { budget } : {}),
         ...(planned ? { plan: planFor(work.id, options.scope, work.eventId, bubbles!) } : {}),
@@ -137,8 +173,8 @@ function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: nu
   const event = transcript.find((entry) => entry.eventId === eventId) ?? { eventId, scope, authorId: "unknown", authorIsBot: false, content: "", mentions: [], replyTo: null, createdAtMs: now };
   const archiveSummaries = db.db.prepare(`SELECT s.summary FROM conversation_archive_summaries s JOIN conversation_archive_batches b ON b.batch_key=s.batch_key
     WHERE b.scope_id=? AND b.status='completed' ORDER BY s.created_at_ms DESC LIMIT 20`).all(scopeId).map((row) => String((row as { summary: string }).summary));
-  const relationships = db.db.prepare("SELECT user_id,rapport,familiarity,notes_json FROM adaptive_relationship_profiles WHERE guild_id=? ORDER BY user_id")
-    .all(scope.guildId).map((row) => relationship(row as { user_id: string; rapport: number; familiarity: number; notes_json: string }));
+  const relationships = db.db.prepare("SELECT user_id,rapport,familiarity,notes_json FROM adaptive_relationship_profiles WHERE guild_id=? AND channel_id=? ORDER BY user_id")
+    .all(scope.guildId, scope.channelId).map((row) => relationship(row as { user_id: string; rapport: number; familiarity: number; notes_json: string }));
   return { transcript, event, archiveSummaries, relationships };
 }
 
@@ -180,10 +216,23 @@ function loadActiveHumanIds(db: ServiceDatabase, scope: Scope, roster: DiscordMe
   }), now);
 }
 
+function channelSettingsJson(db: ServiceDatabase, channelId: string): string | null {
+  const row = db.db.prepare("SELECT settings_json FROM channel_settings WHERE channel_id=?").get(channelId) as { readonly settings_json: string | null } | undefined;
+  return row?.settings_json ?? null;
+}
+
+function isFreshCompleteRoster(roster: DiscordMembershipSnapshot, now: number): boolean {
+  return Number.isFinite(now) && roster.complete && Number.isFinite(roster.observedAtMs)
+    && now >= roster.observedAtMs && now - roster.observedAtMs <= ROSTER_FRESHNESS_MS;
+}
+
 function budgetAvailable(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): boolean {
   if (!Number.isInteger(limit) || limit <= 0) return false;
+  return budgetRemaining(store, scope, limit, now) > 0;
+}
+function budgetRemaining(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): number {
   const current = store.budget(scope, BUDGET_KEY); const windowStartMs = hourStart(now);
-  return !current || current.windowStartMs !== windowStartMs || current.count < limit;
+  return !current || current.windowStartMs !== windowStartMs ? limit : Math.max(0, limit - current.count);
 }
 function nextBudget(store: AdaptiveAmbientStore, scope: Scope, now: number) { const windowStartMs = hourStart(now); const current = store.budget(scope, BUDGET_KEY); return { key: BUDGET_KEY, count: current?.windowStartMs === windowStartMs ? current.count + 1 : 1, windowStartMs }; }
 function hourStart(now: number): number { return Math.floor(now / 3_600_000) * 3_600_000; }

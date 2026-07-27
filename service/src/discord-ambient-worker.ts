@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { isDiscordParticipantScopeAllowed, parseDiscordParticipantAllowlist, type DiscordParticipantScope } from "./adaptive-ambient-contracts.js";
+import { isDiscordParticipantScopeAllowed, parseDiscordParticipantAllowlist, readAmbientSettings, type DiscordParticipantScope } from "./adaptive-ambient-contracts.js";
 import { createAdaptiveAmbientAppraisalProvider } from "./adaptive-ambient-provider.js";
 import { createAdaptiveAmbientRuntime } from "./adaptive-ambient-runtime.js";
 import { createAdaptiveAmbientStore, type AdaptiveAmbientStore } from "./adaptive-ambient-store.js";
@@ -15,6 +15,7 @@ import { createDiscordAmbientWorkerCore, type DiscordAmbientWorkerCore } from ".
 import { createDiscordParticipantClient, type DiscordParticipantClient } from "./discord-participant-client.js";
 
 const POLL_INTERVAL_MS = 10_000;
+const DEFAULT_AMBIENT_BUDGET_PER_HOUR = 20;
 type Env = Readonly<Record<string, string | undefined>>;
 type Timer = { readonly setInterval: (callback: () => void, ms: number) => unknown; readonly clearInterval: (handle: unknown) => void };
 export type WorkerLogLevel = "info" | "warn" | "error";
@@ -31,6 +32,7 @@ export type DiscordAmbientWorkerDependencies = {
   /** Test composition can inject a loopback provider client without relaxing HTTPS env validation. */
   readonly createProviderClient?: (config: { readonly endpoint: string; readonly token: string; readonly model: string; readonly timeoutMs: number }) => ConversationProviderClient;
   readonly createDelivery?: typeof createDiscordAmbientDelivery;
+  readonly createRuntime?: typeof createAdaptiveAmbientRuntime;
   readonly createCore?: typeof createDiscordAmbientWorkerCore;
   readonly createScheduler?: typeof createConversationArchiveScheduler;
   readonly timer?: Timer;
@@ -137,13 +139,14 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   }
   if (!await startArchive()) return disabled();
   const cores: DiscordAmbientWorkerCore[] = [];
+  const createRuntime = dependencies.createRuntime ?? createAdaptiveAmbientRuntime;
   for (const scope of [...eligible].sort(compareScope)) {
     const key = leaseKey(scope); const fence = scopeFences.get(key);
     if (!fence || startupController.signal.aborted) continue;
     const startupHeartbeat = scopeHeartbeats.get(key);
     if (startupHeartbeat !== undefined) timer.clearInterval(startupHeartbeat);
     scopeHeartbeats.delete(key);
-    const runtime = createAdaptiveAmbientRuntime({ serviceDb: db, store, provider, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 20,
+    const runtime = createRuntime({ serviceDb: db, store, provider, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: ambientBudgetPerHour(db, scope),
       globalPersona: config.globalPersona, clock, scheduleHeartbeat: (callback, ms) => { const handle = timer.setInterval(callback, ms); return () => timer.clearInterval(handle); },
       loadRoster: async (current, signal) => (await accumulateDiscordRoster(current, ({ after }) => client.fetchGuildMembers(current.guildId, after, signal).then((members) => members.map((member) => ({ userId: member.userId, bot: member.bot }))), clock())).roster });
     const delivery = (dependencies.createDelivery ?? createDiscordAmbientDelivery)({ store, client, isAuthorized: (channelId) => channelId === scope.channelId && isDiscordParticipantScopeAllowed({ enabled: true, allowlist: [scope], diagnostics: [] }, scope, db.getChannelMapping(channelId)) });
@@ -180,6 +183,10 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
 }
 
 function validScope(db: ServiceDatabase, scope: DiscordParticipantScope): boolean { const mapping = db.getChannelMapping(scope.channelId); return mapping?.enabled === true && (!mapping.profileId || db.getProfile(mapping.profileId) !== null); }
+function ambientBudgetPerHour(db: ServiceDatabase, scope: DiscordParticipantScope): number {
+  const row = db.db.prepare("SELECT settings_json FROM channel_settings WHERE channel_id=?").get(scope.channelId) as { readonly settings_json: string | null } | undefined;
+  return readAmbientSettings(row?.settings_json ?? null).ambientBudgetPerHour ?? DEFAULT_AMBIENT_BUDGET_PER_HOUR;
+}
 function archiveScopeAuthorized(config: DiscordAmbientWorkerConfig, db: ServiceDatabase, scopeId: string): boolean {
   const scope = config.scopes.find((candidate) => scopeId === `discord:${candidate.guildId}:${candidate.channelId}`);
   return scope !== undefined && isDiscordParticipantScopeAllowed({ enabled: true, allowlist: config.scopes, diagnostics: [] }, scope, db.getChannelMapping(scope.channelId));

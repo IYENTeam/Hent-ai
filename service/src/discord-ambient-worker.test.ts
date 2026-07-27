@@ -105,6 +105,20 @@ describe("Discord ambient worker entrypoint", () => {
     ownerDb.close();
   });
 
+  it("composes each scope runtime with its channel budget override", async () => {
+    const dbPath = path(); const db = new service.ServiceDatabase(dbPath);
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { ambientBudgetPerHour: 3 } }); db.close();
+    let budgetPerHour: number | undefined;
+    const worker = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), {
+      createClient: () => client(),
+      createRuntime: ((options: { readonly budgetPerHour: number }) => { budgetPerHour = options.budgetPerHour; return { run: async () => "idle" }; }) as never,
+      createCore: (() => ({ signal: new AbortController().signal, claimNextWork: () => null, runOnce: async () => "ingested", stop: async () => undefined })) as never,
+      timer: { setInterval: () => 0, clearInterval: () => undefined },
+    });
+    expect(budgetPerHour).toBe(3);
+    await worker.stop();
+  });
+
   it("injects exact dynamic Discord archive authorization", async () => {
     const dbPath = path(); const db = new service.ServiceDatabase(dbPath);
     db.setChannelMapping(scopes[0]!.channelId, { enabled: true }); db.close();
