@@ -12,13 +12,36 @@ export type ParticipantIngressEvent = {
   readonly raw: { readonly scopeId: string; readonly channelId: string; readonly messageId: string; readonly authorRole: "user" | "assistant";
     readonly text: string; readonly eventTs: string; readonly botSelfLoop: boolean; readonly metadata: unknown };
 };
+type AuditEvidence = {
+  readonly evidenceWeight: number; readonly probability: number; readonly draw: number | null;
+  readonly driveBefore: number | null; readonly driveAfter: number | null;
+  readonly activeHumanCount: number; readonly rosterFresh: boolean;
+};
 export type OutcomeInput = {
   readonly fence: Fence; readonly eventId: string; readonly scope: Scope; readonly outcome: "invalid" | "observe" | "planned";
-  readonly diagnostic?: string | null; readonly proposal?: unknown; readonly state?: { readonly drive: number; readonly version: number } | null;
+  readonly diagnostic?: string | null; readonly proposal?: unknown; readonly auditEvidence?: AuditEvidence;
+  readonly state?: { readonly drive: number; readonly version: number; readonly pressure?: number; readonly pressureUpdatedAtMs?: number | null; readonly speakStreak?: number; readonly skipStreak?: number } | null;
   readonly relationships?: readonly Relationship[]; readonly budget?: { readonly key: string; readonly count: number; readonly windowStartMs: number };
   readonly plan?: { readonly id: string; readonly workId: string; readonly chunks: readonly { readonly content: string; readonly nonce: string }[] };
   readonly workId: string; readonly failAfterAudit?: boolean;
 };
+
+function auditEvidenceFor(input: OutcomeInput): {
+  readonly evidenceWeight: number | null; readonly probability: number | null; readonly draw: number | null;
+  readonly driveBefore: number | null; readonly driveAfter: number | null;
+  readonly activeHumanCount: number | null; readonly rosterFresh: number | null;
+} {
+  const evidence = input.auditEvidence;
+  if (!evidence) return { evidenceWeight: null, probability: null, draw: null, driveBefore: null, driveAfter: null, activeHumanCount: null, rosterFresh: null };
+  if (input.outcome === "invalid") {
+    return { evidenceWeight: evidence.evidenceWeight, probability: 0, draw: null, driveBefore: null, driveAfter: null,
+      activeHumanCount: evidence.activeHumanCount, rosterFresh: Number(evidence.rosterFresh) };
+  }
+  return { evidenceWeight: evidence.evidenceWeight, probability: evidence.probability, draw: evidence.draw,
+    driveBefore: evidence.driveBefore, driveAfter: evidence.driveAfter,
+    activeHumanCount: evidence.activeHumanCount, rosterFresh: Number(evidence.rosterFresh) };
+}
+
 export class AdaptiveAmbientStore {
   constructor(private readonly serviceDb: ServiceDatabase, private readonly clock: ServiceClock = () => Date.now()) {}
   acquireLease(key: string, holderId: string): Fence | null {
@@ -64,9 +87,12 @@ export class AdaptiveAmbientStore {
     const now = this.clock(); this.serviceDb.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireFence(input.fence, now);
-      const audit = this.serviceDb.db.prepare(`INSERT INTO adaptive_ambient_audits (event_id,guild_id,channel_id,outcome,diagnostic,proposal_json,recorded_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id,guild_id,channel_id) DO NOTHING`)
-        .run(input.eventId, input.scope.guildId, input.scope.channelId, input.outcome, input.diagnostic ?? null, JSON.stringify(input.proposal ?? null), now);
+      const evidence = auditEvidenceFor(input);
+      const audit = this.serviceDb.db.prepare(`INSERT INTO adaptive_ambient_audits (event_id,guild_id,channel_id,outcome,diagnostic,proposal_json,recorded_at_ms,
+        evidence_weight,probability,draw,drive_before,drive_after,active_human_count,roster_fresh)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id,guild_id,channel_id) DO NOTHING`)
+        .run(input.eventId, input.scope.guildId, input.scope.channelId, input.outcome, input.diagnostic ?? null, JSON.stringify(input.proposal ?? null), now,
+          evidence.evidenceWeight, evidence.probability, evidence.draw, evidence.driveBefore, evidence.driveAfter, evidence.activeHumanCount, evidence.rosterFresh);
       if (audit.changes === 0) { this.serviceDb.db.exec("COMMIT"); return "idempotent"; }
       if (input.failAfterAudit) throw new Error("forced adaptive transition failure");
       const validTransition = input.outcome !== "invalid" && input.state !== null && input.state !== undefined;
@@ -193,7 +219,10 @@ export class AdaptiveAmbientStore {
     return persistMembershipSnapshot(this.serviceDb.db, scope, memberIds, complete, observedAtMs, fence, now, (current, at) => this.fencedArgs(current, at));
   }
 
-  state(scope: Scope): { drive: number; version: number } | null { return (this.serviceDb.db.prepare("SELECT drive,version FROM adaptive_ambient_state WHERE guild_id=? AND channel_id=?").get(scope.guildId, scope.channelId) as { drive: number; version: number } | undefined) ?? null; }
+  state(scope: Scope): { drive: number; version: number; updatedAtMs: number; pressure: number; pressureUpdatedAtMs: number | null; speakStreak: number; skipStreak: number } | null {
+    return (this.serviceDb.db.prepare("SELECT drive,version,updated_at_ms AS updatedAtMs,pressure,pressure_updated_at_ms AS pressureUpdatedAtMs,COALESCE(speak_streak, 0) AS speakStreak,COALESCE(skip_streak, 0) AS skipStreak FROM adaptive_ambient_state WHERE guild_id=? AND channel_id=?")
+      .get(scope.guildId, scope.channelId) as { drive: number; version: number; updatedAtMs: number; pressure: number; pressureUpdatedAtMs: number | null; speakStreak: number; skipStreak: number } | undefined) ?? null;
+  }
   counts(): Record<string, number> { const table = (name: string) => Number((this.serviceDb.db.prepare(`SELECT COUNT(*) AS count FROM ${name}`).get() as { count: number }).count); return { audits: table("adaptive_ambient_audits"), states: table("adaptive_ambient_state"), budgets: table("adaptive_budgets"), relationships: table("adaptive_relationship_profiles"), plans: table("participant_delivery_plans") }; }
   private transitionDelivery(planId: string, status: "retryable" | "cancelled", fence: Fence): boolean {
     const now = this.clock(); this.serviceDb.db.exec("BEGIN IMMEDIATE");
@@ -226,18 +255,27 @@ export class AdaptiveAmbientStore {
   private requireFence(fence: Fence, now: number): void { if (!this.serviceDb.db.prepare(`SELECT 1 FROM adaptive_leases WHERE ${this.fencedWhere()}`).get(...this.fencedArgs(fence, now))) throw new Error("stale fence"); }
   private fencedWhere(): string { return "EXISTS (SELECT 1 FROM adaptive_leases l WHERE l.lease_key=? AND l.holder_id=? AND l.fence_token=? AND l.expires_at_ms>?)"; }
   private fencedArgs(fence: Fence, now: number): [string, string, number, number] { return [fence.key, fence.holderId, fence.fenceToken, now]; }
-  private writeState(input: OutcomeInput, now: number): void { const state = input.state!; this.serviceDb.db.prepare(`INSERT INTO adaptive_ambient_state (guild_id,channel_id,drive,version,updated_at_ms) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(guild_id,channel_id) DO UPDATE SET drive=excluded.drive,version=excluded.version,updated_at_ms=excluded.updated_at_ms`).run(input.scope.guildId, input.scope.channelId, state.drive, state.version, now); }
+  private writeState(input: OutcomeInput, now: number): void {
+    const state = input.state!;
+    this.serviceDb.db.prepare(`INSERT INTO adaptive_ambient_state (guild_id,channel_id,drive,version,updated_at_ms,pressure,pressure_updated_at_ms,speak_streak,skip_streak) VALUES (?, ?, ?, ?, ?, COALESCE(?, 0), ?, COALESCE(?, 0), COALESCE(?, 0))
+      ON CONFLICT(guild_id,channel_id) DO UPDATE SET drive=excluded.drive,version=excluded.version,updated_at_ms=excluded.updated_at_ms,
+      pressure=CASE WHEN ? IS NULL THEN adaptive_ambient_state.pressure ELSE excluded.pressure END,
+      pressure_updated_at_ms=CASE WHEN ? IS NULL THEN adaptive_ambient_state.pressure_updated_at_ms ELSE excluded.pressure_updated_at_ms END,
+      speak_streak=excluded.speak_streak,skip_streak=excluded.skip_streak`)
+      .run(input.scope.guildId, input.scope.channelId, state.drive, state.version, now, state.pressure ?? null, state.pressureUpdatedAtMs ?? null, state.speakStreak ?? null, state.skipStreak ?? null, state.pressure ?? null, state.pressure ?? null);
+  }
   private mergeRelationships(input: OutcomeInput, now: number): void { for (const [index, relation] of (input.relationships ?? []).entries()) {
     const notes = normalizeRelationshipNotes(relation.notes);
-    const added = this.serviceDb.db.prepare(`INSERT OR IGNORE INTO adaptive_relationship_ledger (event_id,user_id,proposal_index,guild_id,rapport_delta,familiarity_delta,notes_json,created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.eventId, relation.userId, index, input.scope.guildId, relation.rapportDelta, relation.familiarityDelta, JSON.stringify(notes), now);
+    const added = this.serviceDb.db.prepare(`INSERT OR IGNORE INTO adaptive_relationship_ledger (event_id,user_id,proposal_index,guild_id,channel_id,rapport_delta,familiarity_delta,notes_json,created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.eventId, relation.userId, index, input.scope.guildId, input.scope.channelId, relation.rapportDelta, relation.familiarityDelta, JSON.stringify(notes), now);
     if (added.changes === 0) continue;
-    const current = this.serviceDb.db.prepare("SELECT rapport,familiarity,notes_json FROM adaptive_relationship_profiles WHERE guild_id=? AND user_id=?").get(input.scope.guildId, relation.userId) as { rapport: number; familiarity: number; notes_json: string } | undefined;
+    const current = this.serviceDb.db.prepare("SELECT rapport,familiarity,notes_json FROM adaptive_relationship_profiles WHERE guild_id=? AND channel_id=? AND user_id=?")
+      .get(input.scope.guildId, input.scope.channelId, relation.userId) as { rapport: number; familiarity: number; notes_json: string } | undefined;
     const merged = mergeRelationshipProfile(current ? { rapport: current.rapport, familiarity: current.familiarity, notes: parseNotes(current.notes_json) } : null, { rapportDelta: relation.rapportDelta, familiarityDelta: relation.familiarityDelta, notes });
-    this.serviceDb.db.prepare(`INSERT INTO adaptive_relationship_profiles (guild_id,user_id,rapport,familiarity,notes_json,updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(guild_id,user_id) DO UPDATE SET rapport=excluded.rapport,familiarity=excluded.familiarity,notes_json=excluded.notes_json,updated_at_ms=excluded.updated_at_ms`)
-      .run(input.scope.guildId, relation.userId, merged.rapport, merged.familiarity, JSON.stringify(merged.notes), now);
+    this.serviceDb.db.prepare(`INSERT INTO adaptive_relationship_profiles (guild_id,channel_id,user_id,rapport,familiarity,notes_json,updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(guild_id,user_id) DO UPDATE SET rapport=excluded.rapport,familiarity=excluded.familiarity,notes_json=excluded.notes_json,updated_at_ms=excluded.updated_at_ms
+      WHERE adaptive_relationship_profiles.channel_id=excluded.channel_id`)
+      .run(input.scope.guildId, input.scope.channelId, relation.userId, merged.rapport, merged.familiarity, JSON.stringify(merged.notes), now);
   } }
   private writeBudget(input: OutcomeInput, now: number): void { const budget = input.budget!; this.serviceDb.db.prepare(`INSERT INTO adaptive_budgets (scope_key,budget_key,count,window_start_ms,updated_at_ms) VALUES (?, ?, ?, ?, ?) ON CONFLICT(scope_key,budget_key) DO UPDATE SET count=excluded.count,window_start_ms=excluded.window_start_ms,updated_at_ms=excluded.updated_at_ms`).run(`${input.scope.guildId}:${input.scope.channelId}`, budget.key, budget.count, budget.windowStartMs, now); }
   private writePlan(input: OutcomeInput, now: number): void { const plan=input.plan!; this.serviceDb.db.prepare("INSERT INTO participant_delivery_plans (id,work_id,guild_id,channel_id,status,created_at_ms,updated_at_ms) VALUES (?, ?, ?, ?, 'pending', ?, ?)").run(plan.id, plan.workId, input.scope.guildId, input.scope.channelId, now, now); for (const [index, chunk] of plan.chunks.entries()) this.serviceDb.db.prepare("INSERT INTO participant_delivery_chunks (plan_id,chunk_index,content,nonce) VALUES (?, ?, ?, ?)").run(plan.id,index,chunk.content,chunk.nonce); }
