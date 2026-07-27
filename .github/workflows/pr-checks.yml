@@ -33,9 +33,14 @@ jobs:
           fetch-depth: 0
 
       - name: Check PR size
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          ADDITIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$1} END {print sum+0}')
-          DELETIONS=$(git diff --numstat origin/main...HEAD | awk '{sum+=$2} END {print sum+0}')
+          set -euo pipefail
+
+          git cat-file -e "$BASE_SHA^{commit}"
+          ADDITIONS=$(git diff --numstat "$BASE_SHA"...HEAD | awk '{sum+=$1} END {print sum+0}')
+          DELETIONS=$(git diff --numstat "$BASE_SHA"...HEAD | awk '{sum+=$2} END {print sum+0}')
           TOTAL=$((ADDITIONS + DELETIONS))
           echo "📊 PR Size: +$ADDITIONS / -$DELETIONS (total: $TOTAL lines)"
 
@@ -65,10 +70,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER_REVIEWERS: changeroa
           OWNER_REVIEW_LABEL: owner-reviewed
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
 
-          CHANGED=$(git diff --name-only origin/main...HEAD)
+          git cat-file -e "$BASE_SHA^{commit}"
+          CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD)
           OWNER_GATE_REQUIRED=0
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
@@ -122,7 +129,7 @@ jobs:
           fi
 
           # Check if assets were removed
-          REMOVED=$(git diff --name-only --diff-filter=D origin/main...HEAD | grep "^assets/" || true)
+          REMOVED=$(git diff --name-only --diff-filter=D "$BASE_SHA"...HEAD | grep "^assets/" || true)
           if [ -n "$REMOVED" ]; then
             echo "::error::Asset files removed. This may break emotion image display:"
             echo "$REMOVED"
