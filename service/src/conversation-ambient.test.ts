@@ -18,10 +18,15 @@ type AmbientEvidenceInput = {
   readonly nowMs: number;
 };
 
+type AmbientStateWithStreaks = AmbientState & { readonly speakStreak?: number; readonly skipStreak?: number };
+
 type AmbientDecisionInput = AmbientEvidenceInput & {
-  readonly state: AmbientState | null;
+  readonly state: AmbientStateWithStreaks | null;
   readonly eventId: string;
   readonly appraisal: AmbientAppraisalParseResult;
+  readonly observeOnly?: boolean;
+  readonly ambientPityEnabled?: boolean;
+  readonly confidenceFloor?: number;
 };
 
 type AmbientDecisionResult = {
@@ -33,7 +38,11 @@ type AmbientDecisionResult = {
   readonly shouldSpeak: boolean;
 };
 
+type PressureState = AmbientState & { readonly pressure?: number; readonly pressureUpdatedAtMs?: number | null };
+
 type ConversationAmbientApi = {
+  readonly applyAmbientIdleDecay: (drive: number, updatedAtMs: number, nowMs: number, tauMs: number) => number;
+  readonly applyAmbientPressure: (state: PressureState | null, appraisal: AmbientAppraisalParseResult, nowMs: number, tauMs?: number) => number;
   readonly calculateAmbientEvidenceWeight: (input: AmbientEvidenceInput) => number;
   readonly calculateAmbientProbability: (input: {
     readonly decision: "observe" | "speak";
@@ -60,6 +69,8 @@ const roster: DiscordMembershipSnapshot = {
 function conversationAmbientApi(): ConversationAmbientApi | null {
   const candidate = service as object;
   const keys: readonly (keyof ConversationAmbientApi)[] = [
+    "applyAmbientIdleDecay",
+    "applyAmbientPressure",
     "calculateAmbientEvidenceWeight",
     "calculateAmbientProbability",
     "calculateNextAmbientDrive",
@@ -133,6 +144,65 @@ describe("adaptive ambient drive and evidence", () => {
     expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);
   });
 
+  it("relaxes ambient drive toward baseline across idle time without changing the EMA", () => {
+    const api = ambient();
+    const tauMs = 2 * 3_600_000;
+
+    expect(api.applyAmbientIdleDecay(0.9, nowMs - tauMs, nowMs, tauMs)).toBeCloseTo(0.5 + 0.4 * Math.exp(-1));
+    expect(api.applyAmbientIdleDecay(0.9, nowMs, nowMs, tauMs)).toBe(0.9);
+    expect(api.applyAmbientIdleDecay(0.9, nowMs + 1, nowMs, tauMs)).toBe(0.9);
+    expect(api.applyAmbientIdleDecay(0.9, Number.NaN, nowMs, tauMs)).toBe(0.9);
+    expect(api.applyAmbientIdleDecay(0.9, nowMs - 1, nowMs, 0)).toBe(0.9);
+    expect(api.applyAmbientIdleDecay(10, nowMs - 1, nowMs, 1_000_000_000)).toBe(1);
+    expect(api.applyAmbientIdleDecay(-10, nowMs - 1, nowMs, 1_000_000_000)).toBe(0);
+
+    const first = api.evaluateAmbientDecision(decisionInput({ appraisal: appraisal({ desiredDrive: 0.8 }) }));
+    expect(first.driveUpdate?.drive).toBe(0.575);
+
+    const stale = api.evaluateAmbientDecision(decisionInput({
+      state: { scope, drive: 0.8, version: 7, updatedAtMs: Number.NaN },
+      appraisal: appraisal({ desiredDrive: 0.8 }),
+    }));
+    expect(stale.driveUpdate).toMatchObject({ drive: 0.8, version: 8, updatedAtMs: nowMs });
+  });
+
+  it("accumulates decaying silence pressure without making addressed speech impossible", () => {
+    const api = ambient();
+    const mild = appraisal({ confidence: 0.7, silenceRequest: { present: true, intensity: "mild" } });
+    const singleMild = api.evaluateAmbientDecision(decisionInput({ appraisal: mild }));
+
+    // A mild 0.7-confidence request produces pressure 0.5 * 0.7 = 0.35,
+    // so the EMA receives desiredDrive 0.8 * (1 - 0.35) = 0.52.
+    expect(singleMild.driveUpdate).toMatchObject({ drive: 0.505, pressure: 0.35, pressureUpdatedAtMs: nowMs });
+    expect(singleMild.evidenceWeight).toBe(1);
+    expect(singleMild.probability).toBeGreaterThan(0);
+    expect(singleMild.shouldSpeak).toBe(true);
+    expect("mute" in singleMild).toBe(false);
+    expect("quietUntil" in singleMild).toBe(false);
+    expect("forceSilent" in singleMild).toBe(false);
+
+    const strong = appraisal({ desiredDrive: 1, confidence: 1, silenceRequest: { present: true, intensity: "strong" } });
+    const firstStrong = api.evaluateAmbientDecision(decisionInput({ appraisal: strong }));
+    const secondStrong = api.evaluateAmbientDecision(decisionInput({ state: firstStrong.driveUpdate as PressureState, appraisal: strong }));
+    const thirdStrong = api.evaluateAmbientDecision(decisionInput({ state: secondStrong.driveUpdate as PressureState, appraisal: strong }));
+    expect(thirdStrong.driveUpdate).toMatchObject({ pressure: 1 });
+    expect(thirdStrong.driveUpdate?.drive).toBeCloseTo((secondStrong.driveUpdate?.drive ?? 0) * 0.75);
+
+    const stalePressure: PressureState = { scope, drive: 0.5, version: 3, updatedAtMs: nowMs, pressure: 0.8, pressureUpdatedAtMs: nowMs - 30 * 60_000 };
+    expect(api.applyAmbientPressure(stalePressure, appraisal(), nowMs, 30 * 60_000)).toBeCloseTo(0.8 * Math.exp(-1));
+    expect(api.evaluateAmbientDecision(decisionInput({ state: stalePressure, appraisal: appraisal() })).driveUpdate).toMatchObject({ pressure: 0.8 * Math.exp(-1) });
+    const legacyPressure: PressureState = { ...stalePressure, pressure: 0.4, pressureUpdatedAtMs: null };
+    expect(api.applyAmbientPressure(legacyPressure, appraisal(), nowMs, 30 * 60_000)).toBe(0.4);
+    expect(api.evaluateAmbientDecision(decisionInput({ state: legacyPressure, appraisal: appraisal() })).driveUpdate).toMatchObject({ pressure: 0.4 });
+
+    const malformedSilence = appraisal({ silenceRequest: "garbage" });
+    const malformedResult = api.evaluateAmbientDecision(decisionInput({ appraisal: malformedSilence }));
+    expect(malformedResult.driveUpdate).toMatchObject({ pressure: 0 });
+    const invalidResult: AmbientAppraisalParseResult = { kind: "invalid", diagnostic: "garbage silenceRequest" };
+    expect(api.applyAmbientPressure(stalePressure, invalidResult, nowMs, 30 * 60_000)).toBeCloseTo(0.8 * Math.exp(-1));
+    expect(api.evaluateAmbientDecision(decisionInput({ state: stalePressure, appraisal: invalidResult })).driveUpdate).toBeNull();
+  });
+
   it("clamps only valid drive inputs and fails closed for invalid probability inputs", () => {
     const api = ambient();
     const fullState: AmbientState = { scope, drive: 1, version: 4, updatedAtMs: nowMs };
@@ -159,7 +229,7 @@ describe("adaptive ambient drive and evidence", () => {
 
   it("advances drive for a valid observe proposal without planning speech", () => {
     const outcome = ambient().evaluateAmbientDecision(decisionInput({
-      state: { scope, drive: 0.4, version: 7, updatedAtMs: nowMs - 1 },
+      state: { scope, drive: 0.4, version: 7, updatedAtMs: nowMs },
       appraisal: appraisal({ decision: "observe", desiredDrive: 0.8, chunks: [] }),
     }));
 
@@ -181,6 +251,52 @@ describe("adaptive ambient drive and evidence", () => {
       expect(outcome.probability).toBe(0);
       expect(outcome.shouldSpeak).toBe(false);
     }
+  });
+
+  it("boosts probability after quiet streaks without forcing a decision", () => {
+    const api = ambient();
+    const baseState = { scope, drive: 0, version: 1, updatedAtMs: nowMs };
+    const baseInput = {
+      appraisal: appraisal({ desiredDrive: 0.5 }),
+      state: baseState,
+      eventId: "pity-high-draw",
+    };
+
+    const base = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 0 } }));
+    const boosted = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 } }));
+    const capped = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 10 } }));
+    const disabled = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 }, ambientPityEnabled: false }));
+
+    expect(base.probability).toBeCloseTo(0.1);
+    expect(boosted.probability).toBeCloseTo(1 - 0.9 ** 5);
+    expect(capped.probability).toBeCloseTo(0.05);
+    expect(disabled.probability).toBeCloseTo(0.1);
+    expect(boosted.shouldSpeak).toBe(false);
+    expect(boosted.shouldSpeak).toBe(boosted.draw! < boosted.probability);
+    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 0, skipStreak: 5 });
+
+    const speech = api.evaluateAmbientDecision(decisionInput({
+      ...baseInput,
+      eventId: "event-1",
+      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
+    }));
+    expect(speech.shouldSpeak).toBe(true);
+    expect(speech.driveUpdate).toMatchObject({ speakStreak: 3, skipStreak: 0 });
+
+    const providerObserve = api.evaluateAmbientDecision(decisionInput({
+      ...baseInput,
+      appraisal: appraisal({ decision: "observe", desiredDrive: 0.5, chunks: [] }),
+      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
+    }));
+    expect(providerObserve.driveUpdate).toMatchObject({ speakStreak: 2, skipStreak: 4 });
+
+    const observeOnly = api.evaluateAmbientDecision(decisionInput({
+      ...baseInput,
+      eventId: "event-1",
+      observeOnly: true,
+      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
+    }));
+    expect(observeOnly.driveUpdate).toMatchObject({ speakStreak: 2, skipStreak: 4 });
   });
 
   it("treats a be quiet request as social evidence while allowing resistant defiant output", () => {
