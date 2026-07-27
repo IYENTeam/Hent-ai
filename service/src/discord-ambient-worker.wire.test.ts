@@ -217,4 +217,107 @@ describe("Discord ambient worker localhost wire QA", () => {
       });
     }
   });
+
+  it("accumulates silence pressure over a fake clock without suppressing an explicit mention", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hent-ambient-pressure-wire-"));
+    const dbPath = join(root, "service.sqlite");
+    let now = Date.parse("2026-07-25T12:00:00.000Z");
+    const sent: { readonly content: string; readonly nonce: string }[] = [];
+    const messages = [message(seedId, "existing baseline", humanA, new Date(now - 1_000).toISOString())] as Array<ReturnType<typeof message> & { mentions?: unknown }>;
+    let discord: Server | undefined;
+    let provider: Server | undefined;
+    let worker: service.DiscordAmbientWorker | undefined;
+
+    try {
+      const seedDb = new service.ServiceDatabase(dbPath);
+      seedDb.createProfile({ id: "pressure-wire-profile", name: "Pressure Wire", soulSnippet: "Treat repeated silence requests as social pressure." });
+      seedDb.setChannelMapping(scope.channelId, { profileId: "pressure-wire-profile", enabled: true });
+      seedDb.close();
+
+      discord = createServer(async (request, response) => {
+        const url = new URL(request.url ?? "/", "http://localhost");
+        if (request.method === "GET" && url.pathname === "/users/@me") return json(response, 200, { id: botId, username: "ambient-bot", bot: true });
+        if (request.method === "GET" && url.pathname === `/channels/${scope.channelId}`) return json(response, 200, { id: scope.channelId, guild_id: scope.guildId });
+        if (request.method === "GET" && url.pathname === `/channels/${scope.channelId}/messages`) {
+          const after = url.searchParams.get("after");
+          return json(response, 200, after === null ? [messages[0]] : messages.filter((entry) => BigInt(entry.id) > BigInt(after)));
+        }
+        if (request.method === "GET" && url.pathname === `/guilds/${scope.guildId}/members`) {
+          return json(response, 200, [{ user: { id: humanA, bot: false } }, { user: { id: humanB, bot: false } }]);
+        }
+        if (request.method === "POST" && url.pathname === `/channels/${scope.channelId}/typing`) { response.writeHead(204); return response.end(); }
+        if (request.method === "POST" && url.pathname === `/channels/${scope.channelId}/messages`) {
+          const input = await body(request) as { content: string; nonce: string; enforce_nonce: boolean };
+          expect(input.enforce_nonce).toBe(true);
+          sent.push({ content: input.content, nonce: input.nonce });
+          return json(response, 200, { ...message(`10000000000000030${sent.length}`, input.content, botId, new Date(now).toISOString()), nonce: input.nonce });
+        }
+        response.writeHead(404); response.end();
+      });
+      const discordUrl = await listen(discord);
+
+      provider = createServer(async (request, response) => {
+        if (request.method !== "POST" || request.url !== "/chat/completions") { response.writeHead(404); return response.end(); }
+        const input = await body(request) as { messages: { content: string }[] };
+        const transcript = JSON.parse(input.messages[1]?.content ?? "{}") as { transcript?: { content?: string }[] };
+        const content = transcript.transcript?.at(-1)?.content;
+        const appraisal = content === "조용히 해"
+          ? { schema: service.ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: "observe", desiredDrive: 1, confidence: 1, chunks: [], relationshipProposals: [], silenceRequest: { present: true, intensity: "mild" } }
+          : { schema: service.ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: "speak", desiredDrive: 1, confidence: 1, chunks: [content?.includes(botId) ? "mention reply" : "ambient reply"], relationshipProposals: [] };
+        return json(response, 200, { choices: [{ message: { content: JSON.stringify(appraisal) } }] });
+      });
+      const providerUrl = await listen(provider);
+
+      const timers = new Set<() => void>();
+      const archiveTimers: (() => void)[] = [];
+      const advanceClock = (milliseconds: number): void => {
+        for (let elapsed = 0; elapsed < milliseconds; elapsed += 10_000) {
+          now += Math.min(10_000, milliseconds - elapsed);
+          for (const timer of timers) timer();
+        }
+      };
+      worker = await service.startDiscordAmbientWorker({
+        HENT_AI_DISCORD_PARTICIPANT_ENABLED: "true", HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST: `${scope.guildId}:${scope.channelId}`,
+        HENT_AI_SERVICE_DB_PATH: dbPath, HENT_AI_DISCORD_BOT_TOKEN: "redacted-bot-token", HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "https://provider.invalid/chat/completions",
+        HENT_AI_CONVERSATION_PROVIDER_TOKEN: "redacted-provider-token", HENT_AI_CONVERSATION_PROVIDER_MODEL: "wire-model",
+      }, {
+        createClient: (token) => service.createDiscordParticipantClient({ token, apiBaseUrl: discordUrl }),
+        createProviderClient: () => service.createOpenAiConversationProviderClient({ endpoint: `${providerUrl}/chat/completions`, token: "redacted-provider-token", model: "wire-model", timeoutMs: 1_000 }),
+        createDelivery: (options) => service.createDiscordAmbientDelivery({ ...options, delay: async () => undefined }),
+        createScheduler: (options) => service.createConversationArchiveScheduler({ ...options, timer: { setInterval: (callback) => { archiveTimers.push(callback); return callback; }, clearInterval: () => undefined } }),
+        timer: { setInterval: (callback) => { timers.add(callback); return callback; }, clearInterval: (handle) => timers.delete(handle as () => void) },
+        clock: () => now, holderId: "pressure-wire-worker",
+      });
+      await worker.runOnce(); // Seed only; the baseline message never reaches the provider.
+
+      const addAndRun = async (id: string, content: string, authorId: string, mentions: unknown = undefined): Promise<void> => {
+        advanceClock(60_000);
+        messages.push({ ...message(id, content, authorId, new Date(now).toISOString()), ...(mentions === undefined ? {} : { mentions }) });
+        await worker!.runOnce();
+      };
+      for (const id of ["100000000000000200", "100000000000000201", "100000000000000202", "100000000000000203", "100000000000000204"]) {
+        await addAndRun(id, "조용히 해", humanA);
+      }
+      await addAndRun("100000000000000205", "ordinary ambient conversation", humanB);
+      await addAndRun("100000000000000234", `<@${botId}> answer this`, humanB, [{ id: botId, username: "ambient-bot", bot: true }]);
+
+      const liveDb = new service.ServiceDatabase(dbPath);
+      const pressure = liveDb.db.prepare("SELECT pressure FROM adaptive_ambient_state WHERE guild_id=? AND channel_id=?").get(scope.guildId, scope.channelId) as { pressure: number };
+      const ambientAudit = liveDb.db.prepare("SELECT outcome,probability FROM adaptive_ambient_audits WHERE event_id=?").get("100000000000000205") as { outcome: string; probability: number };
+      const mentionAudit = liveDb.db.prepare("SELECT outcome,evidence_weight FROM adaptive_ambient_audits WHERE event_id=?").get("100000000000000234") as { outcome: string; evidence_weight: number };
+      liveDb.close();
+
+      expect(pressure.pressure).toBeGreaterThan(0.9);
+      expect(ambientAudit).toMatchObject({ outcome: "observe" });
+      expect(ambientAudit.probability).toBeLessThan(0.1);
+      expect(mentionAudit).toEqual({ outcome: "planned", evidence_weight: 1 });
+      expect(sent.map((entry) => entry.content)).toEqual(["mention reply"]);
+    } finally {
+      if (worker) await worker.stop();
+      if (discord) await close(discord);
+      if (provider) await close(provider);
+      rmSync(root, { recursive: true, force: true });
+      expect(existsSync(root)).toBe(false);
+    }
+  });
 });

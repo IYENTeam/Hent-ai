@@ -20,6 +20,22 @@ Guild/user relationships are bounded and idempotent. Membership v1 uses complete
 
 Ambient participation is continuous and probabilistic. A normal request for silence is social transcript evidence: the model may accept, ignore, resist, or escalate. It must never become deterministic mute, quit, or quiet-until state. Only operational kill switches, lease loss, disabled mappings, and invalid startup configuration are deterministic. Delivery uses one to five typed bubbles, bounded length delay, durable nonces/receipts, and cancels remaining bubbles on newer human ingress.
 
+## Ambient hardening addendum
+
+Typing is used only for the documented short-processing exception immediately before delivery; the worker must never sustain Discord typing for more than 10 seconds.
+
+Each valid appraisal first relaxes stored drive toward the 0.5 baseline after idle time. Silence requests add bounded, decaying social pressure, which scales desired drive but never deterministically mutes an explicit mention. Consecutive missed valid speak opportunities increase the effective probability with `p_eff = 1 - (1 - p)^(1 + skipStreak)`; a long speech streak halves the probability after its soft cap. Both mechanisms remain per-event probabilistic draws.
+
+Per-channel overrides live in `channel_settings.settings_json`; invalid or absent values fall back independently:
+
+| Key | Valid value | Default |
+| --- | --- | --- |
+| `ambientBudgetPerHour` | integer > 0 | `20` |
+| `ambientConfidenceFloor` | number in `[0,1]` | `0.7` |
+| `ambientIdleDecayTauMs` | integer >= `60000` | `7200000` (2h) |
+| `ambientPressureTauMs` | integer >= `60000` | `1800000` (30m) |
+| `ambientPityEnabled` | boolean | `true` |
+
 ## Live QA
 
 The bot-token QA guild/channel pair is a fixture and documentation-only live-QA target, not production configuration. Local loopback wire tests are the proof of human Discord ingress. Conditional live QA validates bot egress using synthetic durable work in a temporary DB and cleans up created bot messages.

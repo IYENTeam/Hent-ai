@@ -126,6 +126,27 @@ There is intentionally no Discord API-base environment setting. Production uses 
 
 The conditional bot-token live-QA pair is guild `1483095221460799489` and channel `1498703634098294976`. It is QA-only and not production scope, default, or hard-coded configuration. Local loopback wire tests remain the sole proof of human ingress.
 
+### Ambient tuning and calibration
+
+Set per-channel overrides in `channel_settings.settings_json`; absent or invalid keys use these defaults:
+
+| Key | Default |
+| --- | --- |
+| `ambientBudgetPerHour` | `20` |
+| `ambientConfidenceFloor` | `0.7` |
+| `ambientIdleDecayTauMs` | `7200000` (2h) |
+| `ambientPressureTauMs` | `1800000` (30m) |
+| `ambientPityEnabled` | `true` |
+
+Run the deterministic domain calibration (no provider, network, or wait) after changing ambient decision behavior:
+
+```bash
+cd service
+npx tsx scripts/replay-ambient-calibration.ts
+```
+
+The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or effective pity probability falls below its base probability.
+
 ## Deploy
 
 Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config. Current production-style setup should load this repository's `openclaw/` adapter and enable `plugins.entries.hent-ai-service-adapter` with the `hentAiService` connection config.
