@@ -16,8 +16,9 @@ const MAX_RELATIONSHIP_PROPOSALS = 3;
 export function parseAmbientAppraisalProposal(text: string | null, confidenceThreshold = 0.7): AmbientAppraisalParseResult {
   if (!text || text.trim().length === 0) return invalid("provider output must be a non-empty JSON object");
   if (containsInjectionMarker(text)) return invalid("provider output contained prompt-injection-like content");
+  const normalized = stripCodeFence(text.trim());
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch (error) { if (error instanceof SyntaxError) return invalid("provider output was not valid JSON"); throw error; }
+  try { parsed = JSON.parse(normalized); } catch (error) { if (error instanceof SyntaxError) return invalid("provider output was not valid JSON"); throw error; }
   if (!record(parsed)) return invalid("provider output must be a JSON object");
   if (!onlyAllowed(parsed, APPRAISAL_FIELDS) || !hasFields(parsed, APPRAISAL_REQUIRED_FIELDS)) return invalid("provider output contained an unknown field");
   if (parsed.schema !== ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal) return invalid(`schema must be ${ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal}`);
@@ -31,6 +32,13 @@ export function parseAmbientAppraisalProposal(text: string | null, confidenceThr
   if (!relationshipProposals) return invalid("relationshipProposals must contain only bounded relationship proposals");
   const silenceRequest = parseSilenceRequest(parsed.silenceRequest);
   return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: parsed.decision, desiredDrive: parsed.desiredDrive, confidence: parsed.confidence, chunks, relationshipProposals, silenceRequest } };
+}
+
+function stripCodeFence(text: string): string {
+  const fenceStart = /^```(?:json)?\s*\n/;
+  const fenceEnd = /\n```\s*$/;
+  if (!fenceStart.test(text) || !fenceEnd.test(text)) return text;
+  return text.replace(fenceStart, "").replace(fenceEnd, "");
 }
 
 function parseChunks(value: unknown, decision: "observe" | "speak"): readonly string[] | null {
