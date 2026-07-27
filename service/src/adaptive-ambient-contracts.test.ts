@@ -3,6 +3,7 @@ import {
   ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS,
   isDiscordParticipantScopeAllowed,
   parseAmbientAppraisalProposal,
+  readAmbientSettings,
 } from "./adaptive-ambient-contracts.js";
 import { loadConversationConfigFromEnv } from "./conversation-config.js";
 import { ServiceDatabase } from "./db.js";
@@ -111,5 +112,56 @@ describe("adaptive ambient participant startup configuration", () => {
     expect(parseAmbientAppraisalProposal(unsafeField)).toMatchObject({ kind: "invalid" });
     expect(parseAmbientAppraisalProposal(injectedChunk)).toMatchObject({ kind: "invalid" });
     expect(parseAmbientAppraisalProposal(lowConfidence)).toMatchObject({ kind: "invalid" });
+  });
+
+  it("reads only independently valid per-channel ambient settings", () => {
+    expect(readAmbientSettings(JSON.stringify({
+      ambientBudgetPerHour: 12,
+      ambientConfidenceFloor: 0.65,
+      ambientIdleDecayTauMs: 60_000,
+      ambientPressureTauMs: 120_000,
+      ambientPityEnabled: false,
+    }))).toEqual({
+      ambientBudgetPerHour: 12,
+      ambientConfidenceFloor: 0.65,
+      ambientIdleDecayTauMs: 60_000,
+      ambientPressureTauMs: 120_000,
+      ambientPityEnabled: false,
+    });
+    expect(readAmbientSettings(JSON.stringify({
+      ambientBudgetPerHour: 2.5,
+      ambientConfidenceFloor: 1.1,
+      ambientIdleDecayTauMs: 59_999,
+      ambientPressureTauMs: "120000",
+      ambientPityEnabled: "false",
+    }))).toEqual({});
+    expect(readAmbientSettings(JSON.stringify({ ambientBudgetPerHour: 3, ambientConfidenceFloor: -0.1, ambientPityEnabled: true }))).toEqual({ ambientBudgetPerHour: 3, ambientPityEnabled: true });
+  });
+
+  it("fails closed for malformed or non-object ambient settings JSON", () => {
+    for (const settingsJson of [null, "", "{", "null", "[]", "true", "\"settings\"", "42", "{\"ambientBudgetPerHour\":{}}"] as const) {
+      expect(readAmbientSettings(settingsJson)).toEqual({});
+    }
+  });
+
+  it("normalizes optional silence requests while preserving strict appraisal validation", () => {
+    const proposal = {
+      schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal,
+      decision: "observe",
+      desiredDrive: 0.8,
+      confidence: 0.9,
+      chunks: [],
+      relationshipProposals: [],
+    };
+    const parse = (silenceRequest: unknown) => parseAmbientAppraisalProposal(JSON.stringify({ ...proposal, silenceRequest }));
+
+    expect(parseAmbientAppraisalProposal(JSON.stringify(proposal))).toMatchObject({ kind: "valid", proposal: { silenceRequest: { present: false } } });
+    for (const intensity of ["mild", "strong", "moderator"]) {
+      expect(parse({ present: true, intensity })).toMatchObject({ kind: "valid", proposal: { silenceRequest: { present: true, intensity } } });
+    }
+    expect(parse({ present: false, intensity: "strong" })).toMatchObject({ kind: "valid", proposal: { silenceRequest: { present: false } } });
+    for (const silenceRequest of ["quiet", [], null, { present: true, intensity: "absolute" }]) {
+      expect(parse(silenceRequest)).toMatchObject({ kind: "valid", proposal: { silenceRequest: { present: false } } });
+    }
   });
 });

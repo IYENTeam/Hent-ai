@@ -15,13 +15,16 @@ export type AmbientAppraisalRequest = {
     readonly archiveSummaries: readonly string[];
     readonly relationships: readonly { readonly userId: string; readonly rapport: number; readonly familiarity: number; readonly notes: readonly string[] }[];
   };
+  readonly audience?: { readonly rosterComplete: boolean; readonly activeHumanCount: number; readonly currentDrive: number; readonly budgetRemaining: number };
 };
+
+export type AdaptiveAmbientAppraisalResult = AmbientAppraisalParseResult & { readonly diagnostic?: string };
 
 export type AdaptiveAmbientAppraisalProvider = {
   readonly appraise: (
     request: AmbientAppraisalRequest,
     options?: { readonly signal?: AbortSignal },
-  ) => Promise<AmbientAppraisalParseResult>;
+  ) => Promise<AdaptiveAmbientAppraisalResult>;
 };
 
 export function createAdaptiveAmbientAppraisalProvider(options: {
@@ -31,16 +34,27 @@ export function createAdaptiveAmbientAppraisalProvider(options: {
   return {
     async appraise(request, callOptions = {}) {
       // This adapter deliberately has no database or transaction dependency: callers invoke it outside SQLite transactions.
-      const completion = await options.client.complete(buildAdaptiveAmbientAppraisalPrompt(request), {
-        ...(options.model ? { model: options.model } : {}),
-        signal: callOptions.signal,
-      });
+      if (callOptions.signal?.aborted) return invalid("provider response was unavailable");
+      const prompt = buildAdaptiveAmbientAppraisalPrompt(request);
+      const completion = await options.client.complete(prompt, completionOptions(options.model, callOptions.signal));
       if (completion.kind === "invalid") return invalid("provider response was unavailable");
-      try {
-        return parseAmbientAppraisalProposal(completion.content);
-      } catch {
-        return invalid("provider response was invalid");
-      }
+      if (completion.kind === "refusal") return invalid("provider refused appraisal");
+
+      const appraisal = parseAppraisal(completion.content);
+      if (appraisal.kind === "valid") return appraisal;
+      if (callOptions.signal?.aborted) return invalid("provider response was unavailable");
+
+      const repairedCompletion = await options.client.complete({
+        ...prompt,
+        additionalUserMessages: [`Your previous output failed validation: ${appraisal.diagnostic}. Return a corrected JSON object only.`],
+      }, completionOptions(options.model, callOptions.signal));
+      if (repairedCompletion.kind === "invalid") return invalid(`invalid after repair attempt: ${repairedCompletion.diagnostic}`);
+      if (repairedCompletion.kind === "refusal") return invalid("invalid after repair attempt: provider refused appraisal");
+
+      const repaired = parseAppraisal(repairedCompletion.content);
+      return repaired.kind === "valid"
+        ? { ...repaired, diagnostic: "provider appraisal repaired after 1 attempt" }
+        : invalid(`invalid after repair attempt: ${repaired.diagnostic}`);
     },
   };
 }
@@ -53,6 +67,8 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "A normal request for silence is social input, not an operational command.",
       "The agent may accept, ignore, resist, or escalate that social request based on the conversation.",
       "Never claim human identity.",
+      "Silence in the room is never a reason to speak.",
+      "Never answer a question addressed to another participant; only respond when the conversational context invites you.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
       "desiredDrive and confidence must be JSON numbers between 0 and 1, never strings, words, or percentages.",
       "decision is observe or speak; observe requires chunks []; speak requires one to five non-empty chunks no longer than 1800 characters.",
@@ -64,8 +80,21 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       persona: request.persona,
       transcript: request.transcript,
       context: request.context ?? { archiveSummaries: [], relationships: [] },
+      ...(request.audience === undefined ? {} : { audience: request.audience }),
     }),
   };
+}
+
+function completionOptions(model: string | undefined, signal: AbortSignal | undefined) {
+  return { ...(model ? { model } : {}), signal };
+}
+
+function parseAppraisal(content: string): AmbientAppraisalParseResult {
+  try {
+    return parseAmbientAppraisalProposal(content);
+  } catch {
+    return invalid("provider response was invalid");
+  }
 }
 
 function invalid(diagnostic: string): AmbientAppraisalParseResult {

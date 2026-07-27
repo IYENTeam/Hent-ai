@@ -6,17 +6,29 @@ export const ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS = { appraisal: "hent_ai.adaptive_
 export type DiscordParticipantScope = { readonly guildId: string; readonly channelId: string };
 export type DiscordParticipantStartupConfig = { readonly enabled: boolean; readonly allowlist: readonly DiscordParticipantScope[]; readonly diagnostics: readonly string[] };
 export type DiscordParticipantChannelMapping = { readonly enabled: boolean | null };
+export type AmbientSettings = {
+  readonly ambientBudgetPerHour?: number;
+  readonly ambientConfidenceFloor?: number;
+  readonly ambientIdleDecayTauMs?: number;
+  readonly ambientPressureTauMs?: number;
+  readonly ambientPityEnabled?: boolean;
+};
 export type DiscordInboundMessage = {
   readonly eventId: string; readonly scope: DiscordParticipantScope; readonly authorId: string; readonly authorIsBot: boolean;
   readonly content: string; readonly mentions: readonly string[]; readonly replyTo: { readonly messageId: string; readonly authorId: string } | null; readonly createdAtMs: number;
 };
 export type DiscordMembershipSnapshot = { readonly scope: DiscordParticipantScope; readonly memberIds: readonly string[]; readonly complete: boolean; readonly observedAtMs: number };
 export type RelationshipProposal = { readonly userId: string; readonly rapportDelta: number; readonly familiarityDelta: number; readonly notes: readonly string[] };
+export type AmbientSilenceRequest = { readonly present: false } | { readonly present: true; readonly intensity: "mild" | "strong" | "moderator" };
 export type AmbientAppraisalProposal = {
   readonly schema: typeof ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal; readonly decision: "observe" | "speak";
   readonly desiredDrive: number; readonly confidence: number; readonly chunks: readonly string[]; readonly relationshipProposals: readonly RelationshipProposal[];
+  readonly silenceRequest: AmbientSilenceRequest;
 };
-export type AmbientState = { readonly scope: DiscordParticipantScope; readonly drive: number; readonly version: number; readonly updatedAtMs: number };
+export type AmbientState = {
+  readonly scope: DiscordParticipantScope; readonly drive: number; readonly version: number; readonly updatedAtMs: number;
+  readonly pressure?: number; readonly pressureUpdatedAtMs?: number | null;
+};
 export type AmbientDecisionAudit = {
   readonly eventId: string; readonly scope: DiscordParticipantScope; readonly proposal: AmbientAppraisalProposal | null;
   readonly outcome: "invalid" | "observe" | "planned"; readonly diagnostic: string | null; readonly recordedAtMs: number;
@@ -51,6 +63,28 @@ export function isDiscordParticipantScopeAllowed(startup: DiscordParticipantStar
   return startup.enabled && channelMapping?.enabled === true && startup.allowlist.some((candidate) => candidate.guildId === scope.guildId && candidate.channelId === scope.channelId);
 }
 
+export function readAmbientSettings(settingsJson: string | null): AmbientSettings {
+  if (settingsJson === null) return {};
+  let settings: unknown;
+  try {
+    settings = JSON.parse(settingsJson);
+  } catch {
+    return {};
+  }
+  if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return {};
+  const value = settings as Record<string, unknown>;
+  return {
+    ...(positiveInteger(value.ambientBudgetPerHour) ? { ambientBudgetPerHour: value.ambientBudgetPerHour } : {}),
+    ...(unitInterval(value.ambientConfidenceFloor) ? { ambientConfidenceFloor: value.ambientConfidenceFloor } : {}),
+    ...(minimumInteger(value.ambientIdleDecayTauMs, 60_000) ? { ambientIdleDecayTauMs: value.ambientIdleDecayTauMs } : {}),
+    ...(minimumInteger(value.ambientPressureTauMs, 60_000) ? { ambientPressureTauMs: value.ambientPressureTauMs } : {}),
+    ...(typeof value.ambientPityEnabled === "boolean" ? { ambientPityEnabled: value.ambientPityEnabled } : {}),
+  };
+}
+
+function positiveInteger(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value > 0; }
+function unitInterval(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
+function minimumInteger(value: unknown, minimum: number): value is number { return typeof value === "number" && Number.isInteger(value) && value >= minimum; }
 function disabled(diagnostic: string): DiscordParticipantStartupConfig { return { enabled: false, allowlist: [], diagnostics: [diagnostic] }; }
 function scopePair(value: string): DiscordParticipantScope | null {
   const separator = value.indexOf(":"); if (separator <= 0 || separator !== value.lastIndexOf(":")) return null;

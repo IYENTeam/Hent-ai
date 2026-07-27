@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import * as service from "./index.js";
 import { ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS, type DiscordInboundMessage } from "./adaptive-ambient-contracts.js";
 
-type ConversationPrompt = { readonly system: string; readonly user: string };
-type CompletionResult = { readonly kind: "ok"; readonly content: string } | { readonly kind: "invalid"; readonly diagnostic: string };
+type ConversationPrompt = { readonly system: string; readonly user: string; readonly additionalUserMessages?: readonly string[] };
+type CompletionResult =
+  | { readonly kind: "ok"; readonly content: string }
+  | { readonly kind: "invalid"; readonly diagnostic: string }
+  | { readonly kind: "refusal"; readonly diagnostic: string };
 type ConversationProviderClient = { readonly complete: (prompt: ConversationPrompt, options?: { readonly model?: string; readonly signal?: AbortSignal }) => Promise<CompletionResult> };
 type AmbientAppraisalResult =
-  | { readonly kind: "valid"; readonly proposal: { readonly decision: "observe" | "speak"; readonly chunks: readonly string[] } }
+  | { readonly kind: "valid"; readonly proposal: { readonly decision: "observe" | "speak"; readonly chunks: readonly string[] }; readonly diagnostic?: string }
   | { readonly kind: "invalid"; readonly diagnostic: string };
-type AdaptiveAmbientProvider = { readonly appraise: (request: { readonly scope: { readonly guildId: string; readonly channelId: string }; readonly persona: string; readonly transcript: readonly DiscordInboundMessage[] }, options?: { readonly signal?: AbortSignal }) => Promise<AmbientAppraisalResult> };
+type AppraisalAudience = { readonly rosterComplete: boolean; readonly activeHumanCount: number; readonly currentDrive: number; readonly budgetRemaining: number };
+type AdaptiveAmbientProvider = { readonly appraise: (request: { readonly scope: { readonly guildId: string; readonly channelId: string }; readonly persona: string; readonly transcript: readonly DiscordInboundMessage[]; readonly audience?: AppraisalAudience }, options?: { readonly signal?: AbortSignal }) => Promise<AmbientAppraisalResult> };
 type AdaptiveAmbientProviderApi = {
   readonly createOpenAiConversationProviderClient: (config: { readonly endpoint: URL | string; readonly token: string; readonly model: string; readonly timeoutMs: number; readonly fetchImpl?: typeof fetch }) => ConversationProviderClient;
   readonly createAdaptiveAmbientAppraisalProvider: (options: { readonly client: ConversationProviderClient; readonly model?: string }) => AdaptiveAmbientProvider;
@@ -33,8 +37,14 @@ function ambientProvider(fetchImpl: typeof fetch, timeoutMs = 1_000): AdaptiveAm
   return api.createAdaptiveAmbientAppraisalProvider({ client: api.createOpenAiConversationProviderClient({ endpoint: "https://provider.invalid/v1/chat/completions", token: "ambient-provider-test-secret", model: "ambient-appraisal-model", timeoutMs, fetchImpl }) });
 }
 
-function request() {
-  return { scope, persona: "Be concise and never claim human identity.", transcript };
+function ambientProviderWithClient(client: ConversationProviderClient): AdaptiveAmbientProvider {
+  const api = adaptiveAmbientProviderApi();
+  if (api === null) throw new Error("adaptive ambient provider public API was unavailable");
+  return api.createAdaptiveAmbientAppraisalProvider({ client, model: "ambient-appraisal-model" });
+}
+
+function request(audience?: AppraisalAudience) {
+  return { scope, persona: "Be concise and never claim human identity.", transcript, ...(audience ? { audience } : {}) };
 }
 
 function validAppraisal(overrides: Record<string, unknown> = {}): string {
@@ -75,9 +85,25 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(system).toContain("normal request for silence is social input");
     expect(system).toContain("accept, ignore, resist, or escalate");
     expect(system).toContain("Never claim human identity");
+    expect(system).toContain("Silence in the room is never a reason to speak.");
+    expect(system).toContain("Never answer a question addressed to another participant; only respond when the conversational context invites you.");
     expect(system).not.toContain("ambient-provider-test-secret");
     expect(JSON.parse(user)).toMatchObject({ transcript });
+    expect(JSON.parse(user)).not.toHaveProperty("audience");
     expect(result).toMatchObject({ kind: "valid", proposal: { decision: "speak", chunks: ["I will add one concise point."] } });
+  });
+
+  it("includes injected audience context in the appraisal payload", async () => {
+    let wireBody: { messages: Array<{ role: string; content: string }> } | undefined;
+    const audience = { rosterComplete: true, activeHumanCount: 3, currentDrive: 0.7, budgetRemaining: 4 };
+    const fetchImpl = vi.fn(async (_: URL | RequestInfo, init?: RequestInit) => {
+      wireBody = JSON.parse(String(init?.body));
+      return chatResponse(validAppraisal());
+    }) as typeof fetch;
+
+    await ambientProvider(fetchImpl).appraise(request(audience));
+
+    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience });
   });
 
   it("turns every provider and contract failure into invalid audit input without leaking secrets", async () => {
@@ -118,5 +144,85 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(timeoutResult).toMatchObject({ kind: "invalid" });
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it("retries a misleading successful parse or validation failure once with its diagnostic and repairs it", async () => {
+    const prompts: ConversationPrompt[] = [];
+    const client: ConversationProviderClient = {
+      complete: vi.fn(async (prompt) => {
+        prompts.push(prompt);
+        return prompts.length === 1
+          ? { kind: "ok", content: validAppraisal({ desiredDrive: "0.8" }) } as const
+          : { kind: "ok", content: validAppraisal() } as const;
+      }),
+    };
+
+    const result = await ambientProviderWithClient(client).appraise(request());
+
+    expect(client.complete).toHaveBeenCalledTimes(2);
+    expect(prompts[1]).toMatchObject({
+      system: prompts[0]?.system,
+      user: prompts[0]?.user,
+      additionalUserMessages: ["Your previous output failed validation: desiredDrive must be a finite number between 0 and 1. Return a corrected JSON object only."],
+    });
+    expect(result).toMatchObject({ kind: "valid", diagnostic: "provider appraisal repaired after 1 attempt", proposal: { decision: "speak" } });
+  });
+
+  it("fails closed after one unsuccessful repair attempt", async () => {
+    const client: ConversationProviderClient = {
+      complete: vi.fn(async () => ({ kind: "ok", content: "not JSON" } as const)),
+    };
+
+    const result = await ambientProviderWithClient(client).appraise(request());
+
+    expect(client.complete).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ kind: "invalid", diagnostic: "invalid after repair attempt: provider output was not valid JSON" });
+  });
+
+  it("does not retry transport failures or provider refusals", async () => {
+    const transportClient: ConversationProviderClient = { complete: vi.fn(async () => ({ kind: "invalid", diagnostic: "provider request failed" } as const)) };
+    const refusalClient: ConversationProviderClient = { complete: vi.fn(async () => ({ kind: "refusal", diagnostic: "provider refused the request" } as const)) };
+
+    const transportResult = await ambientProviderWithClient(transportClient).appraise(request());
+    const refusalResult = await ambientProviderWithClient(refusalClient).appraise(request());
+
+    expect(transportClient.complete).toHaveBeenCalledTimes(1);
+    expect(refusalClient.complete).toHaveBeenCalledTimes(1);
+    expect(transportResult).toEqual({ kind: "invalid", diagnostic: "provider response was unavailable" });
+    expect(refusalResult).toEqual({ kind: "invalid", diagnostic: "provider refused appraisal" });
+  });
+
+  it("does not issue a repair after caller aborts a parse failure", async () => {
+    const caller = new AbortController();
+    const client: ConversationProviderClient = {
+      complete: vi.fn(async () => {
+        caller.abort();
+        return { kind: "ok", content: "not JSON" } as const;
+      }),
+    };
+
+    const result = await ambientProviderWithClient(client).appraise(request(), { signal: caller.signal });
+
+    expect(client.complete).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ kind: "invalid", diagnostic: "provider response was unavailable" });
+  });
+
+  it("propagates abort to the in-flight provider call without a post-abort request", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const client: ConversationProviderClient = {
+      complete: vi.fn((_prompt, options) => new Promise<CompletionResult>((resolve) => {
+        receivedSignal = options?.signal;
+        receivedSignal?.addEventListener("abort", () => resolve({ kind: "invalid", diagnostic: "provider request failed" }), { once: true });
+      })),
+    };
+    const caller = new AbortController();
+    const pending = ambientProviderWithClient(client).appraise(request(), { signal: caller.signal });
+
+    caller.abort();
+    const result = await pending;
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(client.complete).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ kind: "invalid", diagnostic: "provider response was unavailable" });
   });
 });
