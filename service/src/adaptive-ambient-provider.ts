@@ -34,22 +34,22 @@ export function createAdaptiveAmbientAppraisalProvider(options: {
   return {
     async appraise(request, callOptions = {}) {
       // This adapter deliberately has no database or transaction dependency: callers invoke it outside SQLite transactions.
-      if (callOptions.signal?.aborted) return invalid("provider response was unavailable");
+      if (callOptions.signal?.aborted) return unavailable("provider response was unavailable");
       const prompt = buildAdaptiveAmbientAppraisalPrompt(request);
       const completion = await options.client.complete(prompt, completionOptions(options.model, callOptions.signal));
-      if (completion.kind === "invalid") return invalid("provider response was unavailable");
-      if (completion.kind === "refusal") return invalid("provider refused appraisal");
+      if (completion.kind === "invalid") return unavailable("provider response was unavailable");
+      if (completion.kind === "refusal") return unavailable("provider refused appraisal");
 
       const appraisal = parseAppraisal(completion.content);
       if (appraisal.kind === "valid") return appraisal;
-      if (callOptions.signal?.aborted) return invalid("provider response was unavailable");
+      if (callOptions.signal?.aborted) return unavailable("provider response was unavailable");
 
       const repairedCompletion = await options.client.complete({
         ...prompt,
         additionalUserMessages: [`Your previous output failed validation: ${appraisal.diagnostic}. Return a corrected JSON object only.`],
       }, completionOptions(options.model, callOptions.signal));
-      if (repairedCompletion.kind === "invalid") return invalid(`invalid after repair attempt: ${repairedCompletion.diagnostic}`);
-      if (repairedCompletion.kind === "refusal") return invalid("invalid after repair attempt: provider refused appraisal");
+      if (repairedCompletion.kind === "invalid") return unavailable("provider response was unavailable after repair attempt");
+      if (repairedCompletion.kind === "refusal") return unavailable("provider refused appraisal after repair attempt");
 
       const repaired = parseAppraisal(repairedCompletion.content);
       return repaired.kind === "valid"
@@ -96,6 +96,10 @@ function parseAppraisal(content: string): AmbientAppraisalParseResult {
   } catch {
     return invalid("provider response was invalid");
   }
+}
+
+function unavailable(diagnostic: string): AmbientAppraisalParseResult {
+  return { kind: "unavailable", diagnostic };
 }
 
 function invalid(diagnostic: string): AmbientAppraisalParseResult {

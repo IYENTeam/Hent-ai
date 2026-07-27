@@ -18,7 +18,7 @@ import { createActiveWorkClaim, type HeartbeatScheduler } from "./adaptive-ambie
 import type { DiscordParticipantStartupConfig } from "./adaptive-ambient-contracts.js";
 
 type Scope = DiscordParticipantScope;
-type RuntimeStatus = "aborted" | "disabled" | "idle" | "invalid" | "lease_unavailable" | "observe" | "planned";
+type RuntimeStatus = "aborted" | "disabled" | "idle" | "invalid" | "lease_unavailable" | "observe" | "planned" | "provider_unavailable";
 type RelationshipContext = { readonly userId: string; readonly rapport: number; readonly familiarity: number; readonly notes: readonly string[] };
 
 export type AdaptiveAmbientRuntimeOptions = {
@@ -93,11 +93,12 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           },
         }, { signal: activeWork.signal });
       } catch {
-        appraisal = { kind: "invalid", diagnostic: "provider appraisal failed" };
+        appraisal = { kind: "unavailable", diagnostic: "provider appraisal failed" };
       }
       if (!activeWork.isCurrent()) return "aborted";
       const afterProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);
       if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterProviderMapping)) return "disabled";
+      if (appraisal.kind === "unavailable") return "provider_unavailable";
       if (appraisal.kind === "valid" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? 0.7)) {
         appraisal = { kind: "invalid", diagnostic: "provider confidence was below threshold" };
       }

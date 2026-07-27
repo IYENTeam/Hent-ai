@@ -53,7 +53,7 @@ export type AmbientDecisionResult = {
   readonly shouldSpeak: boolean;
 };
 
-export function classifyAmbientAppraisal(result: AmbientAppraisalParseResult): "valid" | "invalid" {
+export function classifyAmbientAppraisal(result: AmbientAppraisalParseResult): "valid" | "invalid" | "unavailable" {
   return result.kind;
 }
 
@@ -121,6 +121,8 @@ export function evaluateAmbientDecision(input: AmbientDecisionInput): AmbientDec
   const evidenceWeight = calculateAmbientEvidenceWeight(input);
   switch (input.appraisal.kind) {
     case "invalid":
+      return invalidDecision(input, evidenceWeight, input.appraisal.diagnostic);
+    case "unavailable":
       return invalidDecision(input, evidenceWeight, input.appraisal.diagnostic);
     case "valid":
       return validDecision(input, evidenceWeight, input.appraisal.proposal);

@@ -109,6 +109,32 @@ describe("atomic adaptive ambient runtime", () => {
     invalid.db.close();
   });
 
+  it("leaves provider-unavailable work claimed for a later retry without writing an outcome", async () => {
+    let result: unknown = { kind: "unavailable", diagnostic: "provider request failed" };
+    const db = new service.ServiceDatabase();
+    db.setChannelMapping(scope.channelId, { enabled: true });
+    const store = service.createAdaptiveAmbientStore(db, () => now);
+    let fence = store.acquireLease("discord-ambient-worker", "runtime")!;
+    store.createWork({ id: "work-1", eventId: "event-1", eventDigest: "digest:event-1", scope });
+    db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?, ?, NULL, NULL, ?, 'user', 'discord-participant', ?, ?, ?, 0, ?, ?)`)
+      .run(`discord:${scope.guildId}:${scope.channelId}`, scope.channelId, "event-1", "anything", new Date(now).toISOString(), new Date(now).toISOString(), JSON.stringify({ discordAuthorId: "100000000000000004", discordAuthorBot: false, mentions: [botUserId] }), new Date(now).toISOString());
+    const calls: string[] = [];
+    const options = { serviceDb: db, store, provider: { appraise: async () => { calls.push("provider"); return result; } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() };
+    const runtime = runtimeFactory()!(options);
+
+    await expect(runtime.run({ fence, signal: new AbortController().signal })).resolves.toBe("provider_unavailable");
+    expect(store.counts()).toEqual({ audits: 0, states: 0, budgets: 0, relationships: 0, plans: 0 });
+    expect(db.db.prepare("SELECT status FROM participant_event_work WHERE id='work-1'").get()).toEqual({ status: "claimed" });
+
+    now += 30_001;
+    fence = store.acquireLease("discord-ambient-worker", "runtime")!;
+    result = appraisal();
+    await expect(runtime.run({ fence, signal: new AbortController().signal })).resolves.toBe("planned");
+    expect(calls).toHaveLength(2);
+    db.close();
+  });
+
   it("blocks provider dispatch on allowlist, channel, budget, lease, and abort gates", async () => {
     for (const options of [{ allowlisted: false }, { enabled: false }, { budgetPerHour: 0 }]) {
       const fixture = setup(options);
@@ -241,9 +267,8 @@ describe("atomic adaptive ambient runtime", () => {
     expect(lowConfidence.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 }); lowConfidence.db.close();
     const thrown = setup();
     thrown.runtime = runtimeFactory()?.({ serviceDb: thrown.db, store: thrown.store, provider: { appraise: async () => { thrown.calls.push("provider"); throw new Error("provider failure"); } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
-    await expect(thrown.runtime!.run({ fence: thrown.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
-    expect(thrown.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 });
-    expect(thrown.db.db.prepare("SELECT outcome,diagnostic FROM adaptive_ambient_audits").get()).toEqual({ outcome: "invalid", diagnostic: "provider appraisal failed" }); thrown.db.close();
+    await expect(thrown.runtime!.run({ fence: thrown.fence, signal: new AbortController().signal })).resolves.toBe("provider_unavailable");
+    expect(thrown.store.counts()).toEqual({ audits: 0, states: 0, budgets: 0, relationships: 0, plans: 0 }); thrown.db.close();
   });
 
   it("preserves only complete reply metadata in runtime transcript context", async () => {

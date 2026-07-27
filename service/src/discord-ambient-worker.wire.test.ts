@@ -71,7 +71,7 @@ describe("Discord ambient worker localhost wire QA", () => {
   it("ingests human loopback Discord message end to end", async () => {
     const root = mkdtempSync(join(tmpdir(), "hent-ambient-wire-"));
     const dbPath = join(root, "service.sqlite");
-    const now = Date.parse("2026-07-25T12:00:00.000Z");
+    let now = Date.parse("2026-07-25T12:00:00.000Z");
     const state: WireState = { providerBodies: [], discordRequests: [], sent: [], provider500: false, sendAttempts: 0, archiveRequests: 0 };
     const providerReceived = deferred();
     const archiveReceived = deferred();
@@ -133,7 +133,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       });
       const providerUrl = await listen(provider);
 
-      const timers: (() => void)[] = [];
+      const timers = new Set<() => void>();
       const archiveTimers: (() => void)[] = [];
       worker = await service.startDiscordAmbientWorker({
         HENT_AI_DISCORD_PARTICIPANT_ENABLED: "true", HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST: `${scope.guildId}:${scope.channelId}`,
@@ -144,7 +144,7 @@ describe("Discord ambient worker localhost wire QA", () => {
         createProviderClient: () => service.createOpenAiConversationProviderClient({ endpoint: `${providerUrl}/chat/completions`, token: "redacted-provider-token", model: "wire-model", timeoutMs: 1_000 }),
         createDelivery: (options) => service.createDiscordAmbientDelivery({ ...options, delay: async () => undefined }),
         createScheduler: (options) => service.createConversationArchiveScheduler({ ...options, timer: { setInterval: (callback) => { archiveTimers.push(callback); return callback; }, clearInterval: () => undefined } }),
-        timer: { setInterval: (callback) => { timers.push(callback); return callback; }, clearInterval: () => undefined },
+        timer: { setInterval: (callback) => { timers.add(callback); return callback; }, clearInterval: (handle) => timers.delete(handle as () => void) },
         clock: () => now, holderId: "wire-worker",
       });
       expect(worker.status).toBe("running");
@@ -184,13 +184,23 @@ describe("Discord ambient worker localhost wire QA", () => {
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_archive_summaries").get()).toEqual({ count: 1 });
       liveDb.close();
 
-      messages.push(message(failedProviderId, "provider failure should be audit only", humanB, new Date(now + 1).toISOString()));
+      messages.push(message(failedProviderId, "provider failure should be retried", humanB, new Date(now + 1).toISOString()));
       state.provider500 = true;
       await expect(worker.runOnce()).resolves.toBeUndefined();
-      const invalidDb = new service.ServiceDatabase(dbPath);
-      expect(invalidDb.db.prepare("SELECT outcome FROM adaptive_ambient_audits WHERE event_id=?").get(failedProviderId)).toEqual({ outcome: "invalid" });
-      expect(invalidDb.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_plans").get()).toEqual({ count: 1 });
-      invalidDb.close();
+      const unavailableDb = new service.ServiceDatabase(dbPath);
+      expect(unavailableDb.db.prepare("SELECT COUNT(*) AS count FROM adaptive_ambient_audits WHERE event_id=?").get(failedProviderId)).toEqual({ count: 0 });
+      expect(unavailableDb.db.prepare("SELECT status FROM participant_event_work WHERE event_id=?").get(failedProviderId)).toEqual({ status: "claimed" });
+      expect(unavailableDb.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_plans").get()).toEqual({ count: 1 });
+      unavailableDb.close();
+
+      for (const step of [10_000, 10_000, 10_001]) {
+        now += step;
+        for (const tick of [...timers]) tick();
+        await expect(worker.runOnce()).resolves.toBeUndefined();
+      }
+      const retriedDb = new service.ServiceDatabase(dbPath);
+      expect(retriedDb.db.prepare("SELECT COUNT(*) AS count FROM adaptive_ambient_audits WHERE event_id=?").get(failedProviderId)).toEqual({ count: 1 });
+      retriedDb.close();
 
       const appraisalRequest = state.providerBodies.find((value) => (value as { messages?: { content?: string }[] }).messages?.[0]?.content?.includes("social input")) as { messages: { content: string }[] } | undefined;
       expect(appraisalRequest?.messages[0]?.content).toContain("silence is social input");
@@ -211,7 +221,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       writeWireEvidence({
         task: 13,
         transport: "localhost node:http only",
-        assertions: ["seed cursor skipped", "human ingress", "fresh complete two-human roster", "silence-resistant provider", "two nonce chunks", "429 durable retry", "provider 500 invalid audit", "raw archive retained"],
+        assertions: ["seed cursor skipped", "human ingress", "fresh complete two-human roster", "silence-resistant provider", "two nonce chunks", "429 durable retry", "provider 500 retried without burning the event", "raw archive retained"],
         requestCounts: { discord: state.discordRequests.length, provider: state.providerBodies.length, sends: state.sent.length },
         cleanup: { ...cleanup, qaMessages: "not-created" },
       });

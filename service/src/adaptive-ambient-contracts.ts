@@ -43,7 +43,7 @@ export type ParticipantDeliveryPlan = {
   readonly chunks: readonly { readonly index: number; readonly content: string; readonly nonce: string }[]; readonly status: "pending" | "delivered" | "cancelled";
 };
 export type ChunkReceipt = { readonly planId: string; readonly chunkIndex: number; readonly nonce: string; readonly discordMessageId: string; readonly receivedAtMs: number };
-export type AmbientAppraisalParseResult = { readonly kind: "valid"; readonly proposal: AmbientAppraisalProposal } | { readonly kind: "invalid"; readonly diagnostic: string };
+export type AmbientAppraisalParseResult = { readonly kind: "valid"; readonly proposal: AmbientAppraisalProposal } | { readonly kind: "invalid"; readonly diagnostic: string } | { readonly kind: "unavailable"; readonly diagnostic: string };
 
 export function parseDiscordParticipantAllowlist(value: string | undefined): DiscordParticipantStartupConfig {
   if (value === undefined) return disabled("HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST is required");
