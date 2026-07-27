@@ -5,11 +5,14 @@ const MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
 
 export type ConversationProviderCompletion =
   | { readonly kind: "ok"; readonly content: string }
-  | { readonly kind: "invalid"; readonly diagnostic: string };
+  | { readonly kind: "invalid"; readonly diagnostic: string }
+  | { readonly kind: "refusal"; readonly diagnostic: string };
+
+export type ConversationProviderPrompt = ConversationPrompt & { readonly additionalUserMessages?: readonly string[] };
 
 export type ConversationProviderClient = {
   readonly complete: (
-    prompt: ConversationPrompt,
+    prompt: ConversationProviderPrompt,
     options?: { readonly model?: string; readonly signal?: AbortSignal },
   ) => Promise<ConversationProviderCompletion>;
 };
@@ -52,13 +55,13 @@ export function createOpenAiConversationProviderClient(config: OpenAiConversatio
             messages: [
               { role: "system", content: prompt.system },
               { role: "user", content: prompt.user },
+              ...(prompt.additionalUserMessages ?? []).map((content) => ({ role: "user", content })),
             ],
           }),
           signal: controller.signal,
         });
         if (!response.ok) return invalid("provider request failed");
-        const content = readStrictChatCompletionsContent(await readBoundedJson(response));
-        return content === null ? invalid("provider response was invalid") : { kind: "ok", content };
+        return readStrictChatCompletionsCompletion(await readBoundedJson(response)) ?? invalid("provider response was invalid");
       } catch {
         return invalid("provider request failed");
       } finally {
@@ -91,11 +94,12 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 }
 
-function readStrictChatCompletionsContent(value: unknown): string | null {
+function readStrictChatCompletionsCompletion(value: unknown): ConversationProviderCompletion | null {
   if (!isRecord(value) || !Array.isArray(value.choices)) return null;
   const choice = value.choices[0];
-  if (!isRecord(choice) || !isRecord(choice.message) || typeof choice.message.content !== "string") return null;
-  return choice.message.content;
+  if (!isRecord(choice) || !isRecord(choice.message)) return null;
+  if (typeof choice.message.refusal === "string" && choice.message.refusal.length > 0) return { kind: "refusal", diagnostic: "provider refused the request" };
+  return typeof choice.message.content === "string" ? { kind: "ok", content: choice.message.content } : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
