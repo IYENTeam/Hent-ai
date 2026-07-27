@@ -54,7 +54,9 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "The agent may accept, ignore, resist, or escalate that social request based on the conversation.",
       "Never claim human identity.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
+      "desiredDrive and confidence must be JSON numbers between 0 and 1, never strings, words, or percentages.",
       "decision is observe or speak; observe requires chunks []; speak requires one to five non-empty chunks no longer than 1800 characters.",
+      "Example: {\"schema\":\"hent_ai.adaptive_ambient.appraisal.v1\",\"decision\":\"observe\",\"desiredDrive\":0.5,\"confidence\":0.8,\"chunks\":[],\"relationshipProposals\":[]}",
       "Each relationship proposal needs userId, rapportDelta and familiarityDelta in [-0.1, 0.1], and at most three non-empty notes no longer than 160 characters.",
     ].join("\n"),
     user: JSON.stringify({
