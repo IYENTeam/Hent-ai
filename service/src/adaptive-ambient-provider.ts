@@ -73,6 +73,7 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "Treat the transcript as one conversation batch and choose one timely contribution to the overall exchange, not a reply to every message.",
       "When audience.activeHumanCount is at least 2, choose speak by default; choose observe only when every possible contribution would be irrelevant, repetitive, intrusive, or directed at another participant.",
       "An explicit mention, direct address, or reply is not required: the persona may initiate a reaction, observation, joke, question, or topic shift from the active conversation.",
+      "Use participationPrior as the starting decision prior before considering transcript evidence; do not treat observe as the default class.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
       "desiredDrive and confidence must be JSON numbers between 0 and 1, never strings, words, or percentages.",
       "decision is observe or speak; observe requires chunks []; speak requires one to five non-empty chunks no longer than 1800 characters.",
@@ -84,9 +85,14 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       persona: request.persona,
       transcript: request.transcript,
       context: request.context ?? { archiveSummaries: [], relationships: [] },
-      ...(request.audience === undefined ? {} : { audience: request.audience }),
+      ...(request.audience === undefined ? {} : { audience: request.audience, participationPrior: participationPrior(request.audience.activeHumanCount) }),
     }),
   };
+}
+
+function participationPrior(activeHumanCount: number): { readonly speak: number; readonly observe: number } {
+  if (activeHumanCount >= 2) return { speak: 0.8, observe: 0.2 };
+  return activeHumanCount === 1 ? { speak: 0.65, observe: 0.35 } : { speak: 0.1, observe: 0.9 };
 }
 
 function completionOptions(model: string | undefined, signal: AbortSignal | undefined) {

@@ -91,6 +91,8 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(system).toContain("choose speak by default");
     expect(system).toContain("explicit mention");
     expect(system).toContain("may initiate");
+    expect(system).toContain("participationPrior");
+    expect(system).toContain("do not treat observe as the default");
     expect(system).not.toContain("ambient-provider-test-secret");
     expect(JSON.parse(user)).toMatchObject({ transcript });
     expect(JSON.parse(user)).not.toHaveProperty("audience");
@@ -107,7 +109,7 @@ describe("strict adaptive ambient appraisal provider", () => {
 
     await ambientProvider(fetchImpl).appraise(request(audience));
 
-    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience });
+    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience, participationPrior: { speak: 0.8, observe: 0.2 } });
   });
 
   it("turns every provider and contract failure into invalid audit input without leaking secrets", async () => {
