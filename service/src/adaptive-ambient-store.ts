@@ -23,7 +23,7 @@ export type OutcomeInput = {
   readonly state?: { readonly drive: number; readonly version: number; readonly pressure?: number; readonly pressureUpdatedAtMs?: number | null; readonly speakStreak?: number; readonly skipStreak?: number } | null;
   readonly relationships?: readonly Relationship[]; readonly budget?: { readonly key: string; readonly count: number; readonly windowStartMs: number };
   readonly plan?: { readonly id: string; readonly workId: string; readonly chunks: readonly { readonly content: string; readonly nonce: string }[] };
-  readonly workId: string; readonly failAfterAudit?: boolean;
+  readonly workId: string; readonly batchHighWatermark?: { readonly createdAtMs: number; readonly workId: string }; readonly failAfterAudit?: boolean;
 };
 
 function auditEvidenceFor(input: OutcomeInput): {
@@ -101,9 +101,14 @@ export class AdaptiveAmbientStore {
       if (validTransition && input.budget) this.writeBudget(input, now);
       if (validTransition && input.plan) this.writePlan(input, now);
       const status = input.outcome === "planned" ? "planned" : "observe";
+      const watermark = input.batchHighWatermark ?? this.workWatermark(input.workId);
       const work = this.serviceDb.db.prepare(`UPDATE participant_event_work SET status=?,claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND claim_holder_id=? AND claim_fence_token=?
         AND claim_expires_at_ms>? AND ${this.fencedWhere()}`).run(status, now, input.workId, input.fence.holderId, input.fence.fenceToken, now, ...this.fencedArgs(input.fence, now));
       if (work.changes !== 1) throw new Error("stale fence cannot transition work");
+      this.serviceDb.db.prepare(`UPDATE participant_event_work SET status='observe',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
+        WHERE guild_id=? AND channel_id=? AND id<>? AND status IN ('pending','retryable')
+          AND (created_at_ms<? OR (created_at_ms=? AND id<=?))`)
+        .run(now, input.scope.guildId, input.scope.channelId, input.workId, watermark.createdAtMs, watermark.createdAtMs, watermark.workId);
       this.serviceDb.db.exec("COMMIT"); return "applied";
     } catch (error) { this.serviceDb.db.exec("ROLLBACK"); throw error; }
   }
@@ -138,7 +143,8 @@ export class AdaptiveAmbientStore {
 
   claimNextWork(scope: Scope, fence: Fence): string | null {
     const rows = this.serviceDb.db.prepare(`SELECT id FROM participant_event_work WHERE guild_id=? AND channel_id=?
-      AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?)) ORDER BY created_at_ms,id`).all(scope.guildId, scope.channelId, this.clock()) as { id: string }[];
+      AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?))
+      ORDER BY observe_only ASC,created_at_ms DESC,id DESC`).all(scope.guildId, scope.channelId, this.clock()) as { id: string }[];
     for (const row of rows) if (this.claimWork(row.id, fence)) return row.id;
     return null;
   }
@@ -152,10 +158,10 @@ export class AdaptiveAmbientStore {
     return this.serviceDb.db.prepare(`SELECT 1 WHERE ${this.fencedWhere()}`).get(...this.fencedArgs(fence, this.clock())) !== undefined;
   }
 
-  work(id: string): { readonly id: string; readonly eventId: string; readonly scope: Scope; readonly observeOnly: boolean; readonly status: string } | null {
-    const row = this.serviceDb.db.prepare(`SELECT id,event_id,guild_id,channel_id,observe_only,status FROM participant_event_work WHERE id=?`).get(id) as
-      { id: string; event_id: string; guild_id: string; channel_id: string; observe_only: number; status: string } | undefined;
-    return row ? { id: row.id, eventId: row.event_id, scope: { guildId: row.guild_id, channelId: row.channel_id }, observeOnly: row.observe_only === 1, status: row.status } : null;
+  work(id: string): { readonly id: string; readonly eventId: string; readonly scope: Scope; readonly observeOnly: boolean; readonly status: string; readonly createdAtMs: number } | null {
+    const row = this.serviceDb.db.prepare(`SELECT id,event_id,guild_id,channel_id,observe_only,status,created_at_ms FROM participant_event_work WHERE id=?`).get(id) as
+      { id: string; event_id: string; guild_id: string; channel_id: string; observe_only: number; status: string; created_at_ms: number } | undefined;
+    return row ? { id: row.id, eventId: row.event_id, scope: { guildId: row.guild_id, channelId: row.channel_id }, observeOnly: row.observe_only === 1, status: row.status, createdAtMs: row.created_at_ms } : null;
   }
 
   budget(scope: Scope, key: string): { readonly count: number; readonly windowStartMs: number } | null {
@@ -206,13 +212,6 @@ export class AdaptiveAmbientStore {
     } catch (error) { this.serviceDb.db.exec("ROLLBACK"); throw error; }
   }
 
-  hasNewerHumanIngress(planId: string): boolean {
-    return this.serviceDb.db.prepare(`SELECT 1 FROM participant_delivery_plans p JOIN participant_event_work w ON w.id=p.work_id
-      JOIN conversation_raw_events origin ON origin.message_id=w.event_id AND origin.author_source='discord-participant'
-      JOIN conversation_raw_events newer ON newer.scope_id=origin.scope_id AND newer.author_source='discord-participant' AND newer.author_role='user'
-        AND COALESCE(json_extract(newer.metadata_json, '$.discordAuthorBot'), 0)=0 AND newer.id>origin.id
-      WHERE p.id=? LIMIT 1`).get(planId) !== undefined;
-  }
 
   persistMembershipSnapshot(scope: Scope, memberIds: readonly string[], complete: boolean, observedAtMs: number, fence: Fence): boolean {
     const now = this.clock();
@@ -255,6 +254,11 @@ export class AdaptiveAmbientStore {
   private requireFence(fence: Fence, now: number): void { if (!this.serviceDb.db.prepare(`SELECT 1 FROM adaptive_leases WHERE ${this.fencedWhere()}`).get(...this.fencedArgs(fence, now))) throw new Error("stale fence"); }
   private fencedWhere(): string { return "EXISTS (SELECT 1 FROM adaptive_leases l WHERE l.lease_key=? AND l.holder_id=? AND l.fence_token=? AND l.expires_at_ms>?)"; }
   private fencedArgs(fence: Fence, now: number): [string, string, number, number] { return [fence.key, fence.holderId, fence.fenceToken, now]; }
+  private workWatermark(workId: string): { readonly createdAtMs: number; readonly workId: string } {
+    const row = this.serviceDb.db.prepare("SELECT created_at_ms FROM participant_event_work WHERE id=?").get(workId) as { created_at_ms: number } | undefined;
+    if (!row) throw new Error("work high-watermark is missing");
+    return { createdAtMs: row.created_at_ms, workId };
+  }
   private writeState(input: OutcomeInput, now: number): void {
     const state = input.state!;
     this.serviceDb.db.prepare(`INSERT INTO adaptive_ambient_state (guild_id,channel_id,drive,version,updated_at_ms,pressure,pressure_updated_at_ms,speak_streak,skip_streak) VALUES (?, ?, ?, ?, ?, COALESCE(?, 0), ?, COALESCE(?, 0), COALESCE(?, 0))

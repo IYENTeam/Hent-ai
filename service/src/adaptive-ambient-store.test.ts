@@ -59,6 +59,27 @@ describe("adaptive ambient persistence", () => {
     db.close();
   });
 
+  it("claims the latest actionable event as a fixed batch high-watermark", () => {
+    const fakeClock = clock(); const db = new service.ServiceDatabase(); const store = service.createAdaptiveAmbientStore(db, fakeClock.read);
+    const fence = store.acquireLease("discord-worker", "worker-a")!;
+    work(store, "work-old"); fakeClock.advance(1);
+    work(store, "work-latest");
+    expect(store.claimNextWork({ guildId: "g1", channelId: "c1" }, fence)).toBe("work-latest");
+    const watermark = store.work("work-latest")!;
+    fakeClock.advance(1); work(store, "work-next-tick");
+
+    expect(store.recordOutcome({
+      fence, eventId: "work-latest", scope: { guildId: "g1", channelId: "c1" }, outcome: "observe", workId: "work-latest",
+      batchHighWatermark: { createdAtMs: watermark.createdAtMs, workId: watermark.id }, state: { drive: 0.6, version: 1 },
+    })).toBe("applied");
+    expect(db.db.prepare("SELECT id,status FROM participant_event_work ORDER BY created_at_ms,id").all()).toEqual([
+      { id: "work-old", status: "observe" },
+      { id: "work-latest", status: "observe" },
+      { id: "work-next-tick", status: "pending" },
+    ]);
+    db.close();
+  });
+
   it("persists streak state and defaults stale null streaks to zero", () => {
     const fakeClock = clock(); const db = new service.ServiceDatabase(); const store = service.createAdaptiveAmbientStore(db, fakeClock.read);
     const fence = store.acquireLease("discord-worker", "worker-a")!;

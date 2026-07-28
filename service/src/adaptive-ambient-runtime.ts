@@ -41,7 +41,7 @@ export type AdaptiveAmbientRuntime = {
 
 const BUDGET_KEY = "ambient";
 const DEFAULT_AMBIENT_DRIVE = 0.5;
-const RECENT_CONTEXT_LIMIT = 20;
+const RECENT_CONTEXT_LIMIT = 100;
 const ROSTER_FRESHNESS_MS = 5 * 60_000;
 
 export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOptions): AdaptiveAmbientRuntime {
@@ -155,6 +155,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         ...(budget ? { budget } : {}),
         ...(planned ? { plan: planFor(work.id, options.scope, work.eventId, bubbles!) } : {}),
         workId: work.id,
+        batchHighWatermark: { createdAtMs: work.createdAtMs, workId: work.id },
       });
       if (result === "idempotent") return "idle";
       return decision.audit.outcome === "invalid" ? "invalid" : planned ? "planned" : "observe";
