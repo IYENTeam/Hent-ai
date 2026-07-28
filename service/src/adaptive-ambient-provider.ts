@@ -70,6 +70,8 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "Never claim human identity.",
       "Silence in the room is never a reason to speak.",
       "Never answer a question addressed to another participant; only respond when the conversational context invites you.",
+      "Treat the transcript as one conversation batch and choose one timely contribution to the overall exchange, not a reply to every message.",
+      "When active humans are conversing and the persona has a relevant social reaction, prefer speak; use observe only when speaking would be irrelevant, repetitive, or intrusive.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
       "desiredDrive and confidence must be JSON numbers between 0 and 1, never strings, words, or percentages.",
       "decision is observe or speak; observe requires chunks []; speak requires one to five non-empty chunks no longer than 1800 characters.",

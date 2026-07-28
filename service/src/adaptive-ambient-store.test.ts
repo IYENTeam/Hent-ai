@@ -61,8 +61,9 @@ describe("adaptive ambient persistence", () => {
 
   it("claims the latest actionable event as a fixed batch high-watermark", () => {
     const fakeClock = clock(); const db = new service.ServiceDatabase(); const store = service.createAdaptiveAmbientStore(db, fakeClock.read);
-    const fence = store.acquireLease("discord-worker", "worker-a")!;
-    work(store, "work-old"); fakeClock.advance(1);
+    let fence = store.acquireLease("discord-worker", "worker-a")!;
+    work(store, "work-old"); expect(store.claimWork("work-old", fence)).toBe(true);
+    fakeClock.advance(30_001); fence = store.acquireLease("discord-worker", "worker-a")!;
     work(store, "work-latest");
     expect(store.claimNextWork({ guildId: "g1", channelId: "c1" }, fence)).toBe("work-latest");
     const watermark = store.work("work-latest")!;

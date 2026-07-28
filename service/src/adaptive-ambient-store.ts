@@ -106,9 +106,10 @@ export class AdaptiveAmbientStore {
         AND claim_expires_at_ms>? AND ${this.fencedWhere()}`).run(status, now, input.workId, input.fence.holderId, input.fence.fenceToken, now, ...this.fencedArgs(input.fence, now));
       if (work.changes !== 1) throw new Error("stale fence cannot transition work");
       this.serviceDb.db.prepare(`UPDATE participant_event_work SET status='observe',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
-        WHERE guild_id=? AND channel_id=? AND id<>? AND status IN ('pending','retryable')
+        WHERE guild_id=? AND channel_id=? AND id<>?
+          AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?))
           AND (created_at_ms<? OR (created_at_ms=? AND id<=?))`)
-        .run(now, input.scope.guildId, input.scope.channelId, input.workId, watermark.createdAtMs, watermark.createdAtMs, watermark.workId);
+        .run(now, input.scope.guildId, input.scope.channelId, input.workId, now, watermark.createdAtMs, watermark.createdAtMs, watermark.workId);
       this.serviceDb.db.exec("COMMIT"); return "applied";
     } catch (error) { this.serviceDb.db.exec("ROLLBACK"); throw error; }
   }

@@ -87,6 +87,8 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(system).toContain("Never claim human identity");
     expect(system).toContain("Silence in the room is never a reason to speak.");
     expect(system).toContain("Never answer a question addressed to another participant; only respond when the conversational context invites you.");
+    expect(system).toContain("one conversation batch");
+    expect(system).toContain("prefer speak");
     expect(system).not.toContain("ambient-provider-test-secret");
     expect(JSON.parse(user)).toMatchObject({ transcript });
     expect(JSON.parse(user)).not.toHaveProperty("audience");
