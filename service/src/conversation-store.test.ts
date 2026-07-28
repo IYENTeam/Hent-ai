@@ -84,7 +84,7 @@ describe("conversation schema repository", () => {
       botSelfLoop: true,
     });
 
-    // When: checkpoint and summary rows are written, then raw retention runs.
+    // When: checkpoint and summary rows are written; permanent archive retention never deletes raw history.
     store.upsertCheckpoint({
       scopeId: "channel:c1:session:s1",
       channelId: "c1",
@@ -100,14 +100,10 @@ describe("conversation schema repository", () => {
       sourceEventEndId: botEvent.id,
       createdAt: "2026-06-21T00:02:00.000Z",
     });
-    const pruned = store.pruneRawEvents({
-      retentionDays: 14,
-      now: "2026-06-22T00:00:00.000Z",
-    });
 
-    // Then: the old raw row is pruned, bot self-loop marker is readable, and summaries survive.
-    expect(pruned).toBe(1);
+    // Then: permanent raw history remains available alongside derived summaries.
     expect(store.listRawEvents("channel:c1:session:s1")).toMatchObject([
+      { messageId: "m-old", authorRole: "user" },
       { messageId: "m-bot", authorRole: "assistant", botSelfLoop: true },
     ]);
     expect(store.getCheckpoint("channel:c1:session:s1")).toMatchObject({

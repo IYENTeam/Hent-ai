@@ -30,11 +30,12 @@ Equivalent package script:
 npm run release:check
 ```
 
-The gate runs the service-owned boundary check, focused service verifier/poller/worker regression tests, shared emotion contract tests, generate manifest tests, Hermes compatibility tests, and the full OpenClaw suite:
+The gate runs the service-owned boundary check, focused service verifier/poller/worker regression tests, adaptive ambient client/worker/runtime/delivery/archive/roster/wire/live regressions, shared emotion contract tests, generate manifest tests, Hermes compatibility tests, and the full OpenClaw suite:
 
 ```bash
 node scripts/service-owned-boundary-check.mjs
-cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts
+cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts src/final-response-media-sanitizer.test.ts
+cd service && npx vitest run src/adaptive-ambient-contracts.test.ts src/adaptive-ambient-provider.test.ts src/adaptive-ambient-runtime.test.ts src/adaptive-ambient-store.test.ts src/conversation-archive-scheduler.test.ts src/conversation-relationship-profile.test.ts src/discord-participant-client.test.ts src/discord-ambient-worker-core.test.ts src/discord-ambient-delivery.test.ts src/discord-ambient-worker.test.ts src/discord-ambient-worker.wire.test.ts src/discord-ambient-worker.live.test.ts src/adaptive-ambient-review-regressions.test.ts src/adaptive-ambient.redteam.test.ts src/conversation-ambient.test.ts src/discord-ambient-worker.redteam.test.ts
 cd shared && npx vitest run
 cd generate && npx vitest run src/sets.test.ts
 python3 -m unittest discover -s tests/hermes
@@ -108,6 +109,43 @@ For the community-cron workflow, `POST /v1/assets/generate` also accepts a cron 
 ```
 
 The service also exposes `GET /v1/channels/cron-enabled`, which returns the service-owned cron allowlist plus a revision token so OpenClaw can decide when to refresh its cached channel set.
+
+## Discord ambient worker
+
+The participant runs independently from the HTTP API:
+
+```bash
+cd service
+npm run start:api
+npm run start:discord-ambient-worker
+```
+
+The worker is fail-closed. Set `HENT_AI_DISCORD_PARTICIPANT_ENABLED=true`, `HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST` as comma-separated `guildId:channelId` Snowflake pairs, `HENT_AI_SERVICE_DB_PATH`, `HENT_AI_DISCORD_BOT_TOKEN`, `HENT_AI_CONVERSATION_PROVIDER_ENDPOINT`, `HENT_AI_CONVERSATION_PROVIDER_TOKEN`, and `HENT_AI_CONVERSATION_PROVIDER_MODEL`. Every allowlisted channel also needs an enabled service channel mapping. A selected profile must exist; its `soulSnippet` wins over `HENT_AI_CONVERSATION_PERSONA`, then the generic persona.
+
+There is intentionally no Discord API-base environment setting. Production uses fixed Discord v10; only tests inject a loopback client base URL. The worker validates bot identity and guild/channel ownership only after acquiring a scope lease; with no acquired scope lease it remains archive-only standby and makes no Discord request. Its independent archive owner may still call the configured provider without a participant scope lease, but only for an exact startup-allowlisted Discord scope with a currently enabled DB mapping; it never calls the Discord API. That approved archive-only topology is not a blanket ban on all network. Archive compaction rechecks this boundary immediately before claim and provider dispatch, so raw legacy, disabled, or non-allowlisted scopes never reach the provider. Scope and claimed-work leases are 30 seconds with 10-second heartbeats; appraisal rechecks current mapping, abort, fence, and work claim after roster load and immediately before provider dispatch. Stop with `SIGINT` or `SIGTERM`; it aborts active work first, then cancels timers, stops archive/core ownership, waits the active boundary, releases matching leases, and closes SQLite. Roll back by stopping only the worker process or setting `HENT_AI_DISCORD_PARTICIPANT_ENABLED` to anything other than `true`; the API remains available and durable work is retained.
+
+The conditional bot-token live-QA pair is guild `1483095221460799489` and channel `1498703634098294976`. It is QA-only and not production scope, default, or hard-coded configuration. Local loopback wire tests remain the sole proof of human ingress.
+
+### Ambient tuning and calibration
+
+Set per-channel overrides in `channel_settings.settings_json`; absent or invalid keys use these defaults:
+
+| Key | Default |
+| --- | --- |
+| `ambientBudgetPerHour` | `20` |
+| `ambientConfidenceFloor` | `0.7` |
+| `ambientIdleDecayTauMs` | `7200000` (2h) |
+| `ambientPressureTauMs` | `1800000` (30m) |
+| `ambientPityEnabled` | `true` |
+
+Run the deterministic domain calibration (no provider, network, or wait) after changing ambient decision behavior:
+
+```bash
+cd service
+npx tsx scripts/replay-ambient-calibration.ts
+```
+
+The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or effective pity probability falls below its base probability.
 
 ## Deploy
 

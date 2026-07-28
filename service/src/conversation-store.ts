@@ -1,4 +1,5 @@
 import type { ServiceDatabase } from "./db.js";
+import { listClaimableArchiveBatches, loadArchiveBatchEvents, type PersistedArchiveBatch } from "./conversation-store-archive.js";
 import {
   checkpointFromRow,
   deliveryPlanFromRow,
@@ -20,7 +21,6 @@ import type {
   ConversationSummaryInput,
   DeliveryPlan,
   DeliveryPlanInput,
-  RawRetentionInput,
 } from "./conversation-store-types.js";
 
 export type {
@@ -36,8 +36,22 @@ export type {
   ConversationSummaryInput,
   DeliveryPlan,
   DeliveryPlanInput,
-  RawRetentionInput,
 } from "./conversation-store-types.js";
+
+export type ConversationArchiveCandidateGroup = {
+  readonly scopeId: string;
+  readonly channelId: string;
+  readonly threadId: string | null;
+  readonly sessionId: string | null;
+  readonly events: readonly ConversationRawEvent[];
+};
+
+export type ConversationArchivedSummary = {
+  readonly summaryKey: string;
+  readonly batchKey: string;
+  readonly summary: string;
+  readonly createdAtMs: number;
+};
 
 export class ConversationStore {
   constructor(private readonly serviceDb: ServiceDatabase) {}
@@ -83,16 +97,45 @@ export class ConversationStore {
       .map((row) => rawEventFromRow(requireRowRecord(row, "conversation_raw_events")));
   }
 
-  listRawEventScopeIdsBefore(cutoff: string): string[] {
-    return this.serviceDb.db.prepare<[string], { scope_id: string }>(
-      "SELECT DISTINCT scope_id FROM conversation_raw_events WHERE event_ts < ? ORDER BY scope_id",
-    ).all(cutoff).map((row) => row.scope_id);
+  listActiveRawEvents(scopeId: string): ConversationRawEvent[] {
+    return this.serviceDb.db.prepare("SELECT * FROM conversation_raw_events WHERE scope_id = ? AND archived_at_ms IS NULL ORDER BY event_ts, id")
+      .all(scopeId)
+      .map((row) => rawEventFromRow(requireRowRecord(row, "conversation_raw_events")));
   }
 
-  deleteRawEventsByIds(ids: readonly number[]): number {
-    if (ids.length === 0) return 0;
-    const placeholders = ids.map(() => "?").join(", ");
-    return this.serviceDb.db.prepare(`DELETE FROM conversation_raw_events WHERE id IN (${placeholders})`).run(...ids).changes;
+  listArchiveCandidateGroups(cutoff: string): ConversationArchiveCandidateGroup[] {
+    const rows = this.serviceDb.db.prepare(`SELECT * FROM conversation_raw_events r WHERE event_ts < ? AND archived_at_ms IS NULL
+      AND NOT EXISTS (SELECT 1 FROM conversation_summaries s WHERE s.scope_id=r.scope_id AND r.id BETWEEN s.source_event_start_id AND s.source_event_end_id)
+      AND NOT EXISTS (SELECT 1 FROM conversation_archive_batches b JOIN json_each(b.source_event_ids_json) source
+        WHERE b.status <> 'completed' AND CAST(source.value AS INTEGER)=r.id)
+      ORDER BY scope_id, event_ts, id`)
+      .all(cutoff)
+      .map((row) => rawEventFromRow(requireRowRecord(row, "conversation_raw_events")));
+    const grouped = new Map<string, ConversationRawEvent[]>();
+    for (const event of rows) {
+      const events = grouped.get(event.scopeId) ?? [];
+      events.push(event);
+      grouped.set(event.scopeId, events);
+    }
+    return [...grouped.entries()].map(([scopeId, events]) => {
+      const first = events[0];
+      if (!first) throw new Error("archive group must contain an event");
+      return { scopeId, channelId: first.channelId, threadId: first.threadId, sessionId: first.sessionId, events };
+    });
+  }
+
+  listClaimableArchiveBatches(now: number): readonly PersistedArchiveBatch[] { return listClaimableArchiveBatches(this.serviceDb, now); }
+
+  loadArchiveBatchEvents(batch: PersistedArchiveBatch): readonly ConversationRawEvent[] { return loadArchiveBatchEvents(this.serviceDb, batch); }
+
+  listArchivedSummaries(scopeId: string): ConversationArchivedSummary[] {
+    return this.serviceDb.db.prepare(`SELECT s.summary_key, s.batch_key, s.summary, s.created_at_ms
+      FROM conversation_archive_summaries s JOIN conversation_archive_batches b ON b.batch_key=s.batch_key
+      WHERE b.scope_id=? AND b.status='completed' ORDER BY s.created_at_ms, s.summary_key`).all(scopeId)
+      .map((row) => {
+        const record = requireRowRecord(row, "conversation_archive_summaries");
+        return { summaryKey: String(record.summary_key), batchKey: String(record.batch_key), summary: String(record.summary), createdAtMs: Number(record.created_at_ms) };
+      });
   }
 
   upsertCheckpoint(input: ConversationCheckpointInput): ConversationCheckpoint {
@@ -161,11 +204,6 @@ export class ConversationStore {
     const row = this.serviceDb.db.prepare("SELECT * FROM conversation_gate_state WHERE scope_id = ? AND state_key = ?")
       .get(scopeId, stateKey);
     return row ? gateStateFromRow(requireRowRecord(row, "conversation_gate_state")) : null;
-  }
-
-  pruneRawEvents(input: RawRetentionInput): number {
-    const cutoff = new Date(new Date(input.now).getTime() - input.retentionDays * 24 * 60 * 60 * 1000).toISOString();
-    return this.serviceDb.db.prepare("DELETE FROM conversation_raw_events WHERE event_ts < ?").run(cutoff).changes;
   }
 
   private commitPlannedDelivery(plan: DeliveryPlan, input: CommitDeliveryInput): void {

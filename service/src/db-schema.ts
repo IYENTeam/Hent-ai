@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
+import { ADAPTIVE_SCHEMA_SQL } from "./db-schema-adaptive.js";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -192,13 +193,39 @@ function columnExists(db: Database.Database, table: string, column: string): boo
 
 export function initializeServiceSchema(db: Database.Database, appliedAt: string): void {
   db.exec(SCHEMA_SQL);
+  db.exec(ADAPTIVE_SCHEMA_SQL);
+  if (!columnExists(db, "conversation_raw_events", "archived_at_ms")) {
+    db.exec("ALTER TABLE conversation_raw_events ADD COLUMN archived_at_ms INTEGER");
+  }
   if (!columnExists(db, "channel_settings", "cron_enabled")) {
     db.exec("ALTER TABLE channel_settings ADD COLUMN cron_enabled INTEGER CHECK (cron_enabled IN (0, 1))");
   }
+  for (const migration of [
+    ["conversation_archive_batches", "source_event_ids_json", "TEXT NOT NULL DEFAULT '[]'"],
+    ["conversation_archive_batches", "provider_diagnostic", "TEXT"],
+    ["conversation_archive_batches", "next_attempt_at_ms", "INTEGER"],
+    ["adaptive_ambient_audits", "evidence_weight", "REAL"],
+    ["adaptive_ambient_audits", "probability", "REAL"],
+    ["adaptive_ambient_audits", "draw", "REAL"],
+    ["adaptive_ambient_audits", "drive_before", "REAL"],
+    ["adaptive_ambient_audits", "drive_after", "REAL"],
+    ["adaptive_ambient_audits", "active_human_count", "INTEGER"],
+    ["adaptive_ambient_audits", "roster_fresh", "INTEGER"],
+    ["adaptive_relationship_profiles", "channel_id", "TEXT NOT NULL DEFAULT ''"],
+    ["adaptive_relationship_ledger", "channel_id", "TEXT NOT NULL DEFAULT ''"],
+    ["adaptive_ambient_state", "pressure", "REAL NOT NULL DEFAULT 0"],
+    ["adaptive_ambient_state", "pressure_updated_at_ms", "INTEGER"],
+    ["adaptive_ambient_state", "speak_streak", "INTEGER NOT NULL DEFAULT 0"],
+    ["adaptive_ambient_state", "skip_streak", "INTEGER NOT NULL DEFAULT 0"],
+  ] as const) {
+    if (!columnExists(db, migration[0], migration[1])) db.exec(`ALTER TABLE ${migration[0]} ADD COLUMN ${migration[1]} ${migration[2]}`);
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_adaptive_relationship_profiles_guild_channel_user ON adaptive_relationship_profiles(guild_id, channel_id, user_id)");
   const existingVersion = db.prepare<[], { readonly version: number }>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version ?? 0;
   if (existingVersion < SCHEMA_VERSION) {
     db.prepare(
       "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
     ).run(SCHEMA_VERSION, appliedAt);
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 }

@@ -1,5 +1,9 @@
 export type ConversationAuthorRole = "user" | "assistant" | "system";
 
+export type AdaptiveFence = { readonly key: string; readonly holderId: string; readonly fenceToken: number; readonly expiresAtMs: number };
+export type AdaptiveArchiveClaim = AdaptiveFence & { readonly batchKey: string; readonly summaryKey: string };
+export type AdaptiveEventWork = { readonly id: string; readonly eventId: string; readonly eventDigest: string; readonly status: string; readonly observeOnly: boolean };
+
 export type ConversationRawEventInput = {
   readonly scopeId: string;
   readonly channelId: string;

@@ -10,6 +10,12 @@ Hent-ai's live OpenClaw integration is service-owned. After the full service ada
 - `hermes/` is a compatibility adapter. It may keep lightweight rules only where Hermes cannot call the service yet, but those rules must be treated as compatibility mirrors, not a new source of truth.
 - There is no current client surface. The former Cursor client was removed (commit `a3b4248`); if any client surface is revived it must not be documented as a canonical server/profile runtime.
 
+## Discord ambient worker gate
+
+The participant worker is service-owned and has a separate process boundary. Review any worker change for: API-only `main.ts` with no participant import/start; startup-only strict guild/channel allowlist intersected with enabled service mappings; no environment Discord API base URL; bot token and provider secrets absent from logs; scoped 30-second fenced leases and claimed-work leases with 10-second heartbeats; mapping/abort/fence rechecks after roster load and immediately before provider dispatch; zero Discord identity/verification/poll/typing/send calls when no scope lease is acquired; archive claim and provider dispatch dynamically reauthorized against the exact Discord scope plus current mapping; provider calls outside transactions; durable queue/nonce receipts; and abort-first SIGINT/SIGTERM timer-boundary-fence-DB shutdown. The archive owner has a separate lease and may call the configured provider without a participant scope lease only for exact startup-allowlisted, currently DB-enabled Discord scopes; it makes zero Discord API calls. This approved archive-only topology is not "zero all network." Require focused entrypoint tests that prove invalid configuration opens no Discord network path, scheduler-before-poll order, heartbeat loss, abort-first shutdown, and multi-scope ownership/release.
+
+The pinned bot-token live-QA pair is never a production scope. Local loopback wire tests, not live bot activity, prove human Discord ingress.
+
 ## Hard rejects
 
 Reject, close, or request redesign for changes that do any of the following without an explicit owner-approved architecture decision:

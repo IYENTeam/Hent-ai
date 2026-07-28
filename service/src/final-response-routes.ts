@@ -7,6 +7,7 @@ export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV1";
 export const VERIFIER_CACHE_POLICY_VERSION = "VerifierCachePolicyV1";
 export const ASSET_POLICY_VERSION = "ServiceAssetPolicyV1";
 const VERIFIER_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+const MEDIA_DIRECTIVE_PATTERN = /[`"']?MEDIA:\s*(?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\s`"']+)[`"']?/gi;
 
 export type ServiceMediaResponse = {
   media: {
@@ -104,8 +105,18 @@ function readBodyRecord(body: unknown): Record<string, unknown> {
 function finalResponseTextFromBody(body: unknown): string | undefined {
   const record = readBodyRecord(body);
   const context = readBodyRecord(record.context);
-  return stringField(record.finalText) ?? stringField(record.content) ?? stringField(record.text)
+  const finalText = stringField(record.finalText) ?? stringField(record.content) ?? stringField(record.text)
     ?? stringField(context.finalText) ?? stringField(context.content) ?? stringField(context.text);
+  return finalText ? sanitizeFinalResponseText(finalText) : undefined;
+}
+
+function sanitizeFinalResponseText(value: string): string | undefined {
+  const sanitized = value
+    .replace(MEDIA_DIRECTIVE_PATTERN, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\r?\n[ \t]*/g, "\n")
+    .trim();
+  return sanitized || undefined;
 }
 
 function validEmotionsFromBody(body: unknown): string[] {
