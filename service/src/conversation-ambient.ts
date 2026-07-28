@@ -10,6 +10,7 @@ import type {
 } from "./adaptive-ambient-contracts.js";
 
 const DEFAULT_DRIVE = 0.5;
+const INITIAL_DRIVE = 0.7;
 export const IDLE_DECAY_TAU_MS = 2 * 3_600_000;
 export const PRESSURE_TAU_MS = 30 * 60_000;
 const ROSTER_FRESHNESS_MS = 5 * 60 * 1000;
@@ -96,7 +97,7 @@ export function applyAmbientPressure(
 export function calculateNextAmbientDrive(previousState: AmbientState | null, desiredDrive: number): number | null {
   if (!isUnitInterval(desiredDrive)) return null;
 
-  const previousDrive = previousState === null ? DEFAULT_DRIVE : previousState.drive;
+  const previousDrive = previousState === null ? INITIAL_DRIVE : previousState.drive;
   if (!isUnitInterval(previousDrive)) return null;
   return clampUnitInterval(previousDrive * 0.75 + desiredDrive * 0.25);
 }
@@ -152,7 +153,7 @@ function validDecision(
     confidence: proposal.confidence,
     evidenceWeight,
   });
-  const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.7) && !input.observeOnly;
+  const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.6) && !input.observeOnly;
   const probability = opportunity ? applyAmbientPityBoost(baseProbability, input.state, input.ambientPityEnabled ?? true) : baseProbability;
   const draw = stableAmbientDraw(scopeId(input.roster), input.eventId);
   const shouldSpeak = probability > 0 && draw < probability;

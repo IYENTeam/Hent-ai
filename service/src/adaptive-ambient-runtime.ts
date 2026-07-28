@@ -40,7 +40,8 @@ export type AdaptiveAmbientRuntime = {
 };
 
 const BUDGET_KEY = "ambient";
-const DEFAULT_AMBIENT_DRIVE = 0.5;
+const DEFAULT_AMBIENT_DRIVE = 0.7;
+const DEFAULT_AMBIENT_CONFIDENCE_FLOOR = 0.6;
 const RECENT_CONTEXT_LIMIT = 100;
 const ROSTER_FRESHNESS_MS = 5 * 60_000;
 
@@ -88,7 +89,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           audience: {
             rosterComplete: roster.complete,
             activeHumanCount: activeHumanIds.length,
-            currentDrive: state?.drive ?? 0.5,
+            currentDrive: state?.drive ?? DEFAULT_AMBIENT_DRIVE,
             budgetRemaining: budgetRemaining(options.store, options.scope, budgetLimit, now),
           },
         }, { signal: activeWork.signal });
@@ -99,7 +100,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       const afterProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);
       if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterProviderMapping)) return "disabled";
       if (appraisal.kind === "unavailable") return "provider_unavailable";
-      if (appraisal.kind === "valid" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? 0.7)) {
+      if (appraisal.kind === "valid" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? DEFAULT_AMBIENT_CONFIDENCE_FLOOR)) {
         appraisal = { kind: "invalid", diagnostic: "provider confidence was below threshold" };
       }
       if (appraisal.kind === "valid" && !relationshipTargetsAuthorized(appraisal.proposal.relationshipProposals, context.transcript, roster)) {
@@ -117,7 +118,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         nowMs: now,
         observeOnly: work.observeOnly,
         ambientPityEnabled: ambientSettings.ambientPityEnabled ?? true,
-        confidenceFloor: ambientSettings.ambientConfidenceFloor ?? 0.7,
+        confidenceFloor: ambientSettings.ambientConfidenceFloor ?? DEFAULT_AMBIENT_CONFIDENCE_FLOOR,
         idleDecayTauMs: ambientSettings.ambientIdleDecayTauMs,
         pressureTauMs: ambientSettings.ambientPressureTauMs,
       });

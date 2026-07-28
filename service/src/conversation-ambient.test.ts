@@ -124,9 +124,9 @@ describe("adaptive ambient drive and evidence", () => {
     expect(typeof api?.evaluateAmbientDecision).toBe("function");
 
     const outcome = ambient().evaluateAmbientDecision(decisionInput());
-    expect(outcome.driveUpdate).toMatchObject({ drive: 0.575, version: 1, scope, updatedAtMs: nowMs });
+    expect(outcome.driveUpdate).toMatchObject({ drive: 0.7 * 0.75 + 0.8 * 0.25, version: 1, scope, updatedAtMs: nowMs });
     expect(outcome.evidenceWeight).toBe(1);
-    expect(outcome.probability).toBeCloseTo(0.46);
+    expect(outcome.probability).toBeCloseTo(0.58);
     expect(outcome.draw).toBeGreaterThanOrEqual(0);
     expect(outcome.draw).toBeLessThan(1);
   });
@@ -157,7 +157,7 @@ describe("adaptive ambient drive and evidence", () => {
     expect(api.applyAmbientIdleDecay(-10, nowMs - 1, nowMs, 1_000_000_000)).toBe(0);
 
     const first = api.evaluateAmbientDecision(decisionInput({ appraisal: appraisal({ desiredDrive: 0.8 }) }));
-    expect(first.driveUpdate?.drive).toBe(0.575);
+    expect(first.driveUpdate?.drive).toBe(0.7 * 0.75 + 0.8 * 0.25);
 
     const stale = api.evaluateAmbientDecision(decisionInput({
       state: { scope, drive: 0.8, version: 7, updatedAtMs: Number.NaN },
@@ -173,7 +173,7 @@ describe("adaptive ambient drive and evidence", () => {
 
     // A mild 0.7-confidence request produces pressure 0.5 * 0.7 = 0.35,
     // so the EMA receives desiredDrive 0.8 * (1 - 0.35) = 0.52.
-    expect(singleMild.driveUpdate).toMatchObject({ drive: 0.505, pressure: 0.35, pressureUpdatedAtMs: nowMs });
+    expect(singleMild.driveUpdate).toMatchObject({ drive: 0.7 * 0.75 + 0.52 * 0.25, pressure: 0.35, pressureUpdatedAtMs: nowMs });
     expect(singleMild.evidenceWeight).toBe(1);
     expect(singleMild.probability).toBeGreaterThan(0);
     expect(singleMild.shouldSpeak).toBe(true);
@@ -208,7 +208,7 @@ describe("adaptive ambient drive and evidence", () => {
     const fullState: AmbientState = { scope, drive: 1, version: 4, updatedAtMs: nowMs };
     const emptyState: AmbientState = { scope, drive: 0, version: 4, updatedAtMs: nowMs };
 
-    expect(api.calculateNextAmbientDrive(null, 0)).toBe(0.375);
+    expect(api.calculateNextAmbientDrive(null, 0)).toBe(0.7 * 0.75);
     expect(api.calculateNextAmbientDrive(fullState, 1)).toBe(1);
     expect(api.calculateNextAmbientDrive(emptyState, 0)).toBe(0);
     expect(api.calculateNextAmbientDrive(null, Number.NaN)).toBeNull();

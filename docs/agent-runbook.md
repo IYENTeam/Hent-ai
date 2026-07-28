@@ -133,7 +133,7 @@ Set per-channel overrides in `channel_settings.settings_json`; absent or invalid
 | Key | Default |
 | --- | --- |
 | `ambientBudgetPerHour` | `20` |
-| `ambientConfidenceFloor` | `0.7` |
+| `ambientConfidenceFloor` | `0.6` |
 | `ambientIdleDecayTauMs` | `7200000` (2h) |
 | `ambientPressureTauMs` | `1800000` (30m) |
 | `ambientPityEnabled` | `true` |

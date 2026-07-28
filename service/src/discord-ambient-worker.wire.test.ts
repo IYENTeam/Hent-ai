@@ -179,7 +179,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       const plan = liveDb.db.prepare("SELECT status FROM participant_delivery_plans").get();
       expect(plan).toEqual({ status: "delivered" });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 2 });
-      expect(liveDb.db.prepare("SELECT drive,version FROM adaptive_ambient_state").get()).toEqual({ drive: 0.625, version: 1 });
+      expect(liveDb.db.prepare("SELECT drive,version FROM adaptive_ambient_state").get()).toEqual({ drive: 0.7 * 0.75 + 1 * 0.25, version: 1 });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_raw_events WHERE message_id='archive-old-1' AND archived_at_ms IS NOT NULL").get()).toEqual({ count: 1 });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_archive_summaries").get()).toEqual({ count: 1 });
       liveDb.close();

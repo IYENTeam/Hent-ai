@@ -82,8 +82,8 @@ describe("atomic adaptive ambient runtime", () => {
     await expect(planned.runtime!.run({ fence: planned.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     const plannedAudit = auditEvidence(planned.db);
     expect(plannedAudit).toEqual({
-      evidenceWeight: 1, probability: 0.625, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
-      driveBefore: 0.5, driveAfter: 0.625, activeHumanCount: 1, rosterFresh: 1,
+      evidenceWeight: 1, probability: 0.7 * 0.75 + 1 * 0.25, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
+      driveBefore: 0.7, driveAfter: 0.7 * 0.75 + 1 * 0.25, activeHumanCount: 1, rosterFresh: 1,
     });
     if (plannedAudit.driveBefore === null || plannedAudit.driveAfter === null) throw new Error("planned audit must retain drive evidence");
     expect(service.calculateNextAmbientDrive({ scope, drive: plannedAudit.driveBefore, version: 0, updatedAtMs: now }, 1)).toBeCloseTo(plannedAudit.driveAfter, 12);
@@ -97,7 +97,7 @@ describe("atomic adaptive ambient runtime", () => {
     await expect(observed.runtime!.run({ fence: observed.fence, signal: new AbortController().signal })).resolves.toBe("observe");
     expect(auditEvidence(observed.db)).toEqual({
       evidenceWeight: 1, probability: 0, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
-      driveBefore: 0.5, driveAfter: 0.575, activeHumanCount: 1, rosterFresh: 1,
+      driveBefore: 0.7, driveAfter: 0.7 * 0.75 + 0.8 * 0.25, activeHumanCount: 1, rosterFresh: 1,
     });
     observed.db.close();
 
@@ -173,7 +173,7 @@ describe("atomic adaptive ambient runtime", () => {
   it("persists unchanged streaks for a valid provider observe", async () => {
     const fixture = setup({ result: appraisal({ decision: "observe", desiredDrive: 0.8, chunks: [] }) });
     await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
-    expect(fixture.store.state(scope)).toEqual({ drive: 0.575, version: 1, updatedAtMs: now, pressure: 0, pressureUpdatedAtMs: now, speakStreak: 0, skipStreak: 0 });
+    expect(fixture.store.state(scope)).toEqual({ drive: 0.7 * 0.75 + 0.8 * 0.25, version: 1, updatedAtMs: now, pressure: 0, pressureUpdatedAtMs: now, speakStreak: 0, skipStreak: 0 });
     expect(fixture.store.counts()).toEqual({ audits: 1, states: 1, budgets: 0, relationships: 1, plans: 0 });
     expect(fixture.db.db.prepare("SELECT status FROM participant_event_work WHERE id='work-1'").get()).toEqual({ status: "observe" });
     fixture.db.close();
@@ -243,8 +243,8 @@ describe("atomic adaptive ambient runtime", () => {
     fixture.db.close();
   });
 
-  it("accepts provider confidence at the scoped floor override", async () => {
-    const fixture = setup({ settings: { ambientConfidenceFloor: 0.6 }, result: appraisal({ confidence: 0.65 }) });
+  it("accepts provider confidence at the global default floor", async () => {
+    const fixture = setup({ result: appraisal({ confidence: 0.65 }) });
     await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     expect(fixture.store.counts()).toEqual({ audits: 1, states: 1, budgets: 1, relationships: 1, plans: 1 });
     fixture.db.close();
@@ -262,7 +262,7 @@ describe("atomic adaptive ambient runtime", () => {
     const invalid = setup({ result: { kind: "invalid", diagnostic: "malformed provider result" } });
     await expect(invalid.runtime!.run({ fence: invalid.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
     expect(invalid.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 }); invalid.db.close();
-    const lowConfidence = setup({ result: appraisal({ confidence: 0.69 }) });
+    const lowConfidence = setup({ result: appraisal({ confidence: 0.59 }) });
     await expect(lowConfidence.runtime!.run({ fence: lowConfidence.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
     expect(lowConfidence.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 }); lowConfidence.db.close();
     const thrown = setup();
