@@ -168,6 +168,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       expect(state.sent).toHaveLength(2);
       const firstNonce = state.sent[0]!.nonce;
       const retryNonce = state.sent[1]!.nonce;
+      expect(state.sent.every((entry) => entry.nonce.length <= 25)).toBe(true);
       expect(state.sent.map((entry) => entry.content)).toEqual(["아니야.", "내가 정할게."]);
 
       // A no-ingress cycle must drain the durable retryable plan before evaluating new work.
