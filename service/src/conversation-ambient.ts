@@ -70,8 +70,8 @@ export function calculateAmbientEvidenceWeight(input: AmbientEvidenceInput): num
   if (!isFreshCompleteRoster(input.roster, input.nowMs)) return 0;
 
   const activeHumanCount = new Set(input.activeHumanIds).size;
-  if (activeHumanCount >= 2) return 0.5;
-  return activeHumanCount === 1 ? 0.25 : 0;
+  if (activeHumanCount >= 2) return 0.8;
+  return activeHumanCount === 1 ? 0.5 : 0;
 }
 
 export function applyAmbientIdleDecay(drive: number, updatedAtMs: number, nowMs: number, tauMs: number): number {

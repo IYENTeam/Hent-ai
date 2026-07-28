@@ -137,8 +137,8 @@ describe("adaptive ambient drive and evidence", () => {
 
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [botUserId], replyTo: null } })).toBe(1);
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [], replyTo: { messageId: "reply-1", authorId: botUserId } } })).toBe(1);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"] })).toBe(0.5);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1"] })).toBe(0.25);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"] })).toBe(0.8);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1"] })).toBe(0.5);
     expect(api.calculateAmbientEvidenceWeight(base)).toBe(0);
     expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, complete: false } })).toBe(0);
     expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);

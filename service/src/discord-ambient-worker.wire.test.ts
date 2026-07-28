@@ -228,7 +228,7 @@ describe("Discord ambient worker localhost wire QA", () => {
     }
   });
 
-  it("accumulates silence pressure over a fake clock without suppressing an explicit mention", async () => {
+  it("allows spontaneous active-conversation speech under pressure without suppressing an explicit mention", async () => {
     const root = mkdtempSync(join(tmpdir(), "hent-ambient-pressure-wire-"));
     const dbPath = join(root, "service.sqlite");
     let now = Date.parse("2026-07-25T12:00:00.000Z");
@@ -318,10 +318,10 @@ describe("Discord ambient worker localhost wire QA", () => {
       liveDb.close();
 
       expect(pressure.pressure).toBeGreaterThan(0.9);
-      expect(ambientAudit).toMatchObject({ outcome: "observe" });
-      expect(ambientAudit.probability).toBeLessThan(0.1);
+      expect(ambientAudit).toMatchObject({ outcome: "planned" });
+      expect(ambientAudit.probability).toBeGreaterThan(0.1);
       expect(mentionAudit).toEqual({ outcome: "planned", evidence_weight: 1 });
-      expect(sent.map((entry) => entry.content)).toEqual(["mention reply"]);
+      expect(sent.map((entry) => entry.content)).toEqual(["ambient reply", "mention reply"]);
     } finally {
       if (worker) await worker.stop();
       if (discord) await close(discord);
