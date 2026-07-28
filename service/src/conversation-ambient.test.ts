@@ -14,7 +14,6 @@ type AmbientEvidenceInput = {
   readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
   readonly botUserId: string;
   readonly roster: DiscordMembershipSnapshot;
-  readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
 };
 
@@ -107,7 +106,6 @@ function decisionInput(overrides: Partial<AmbientDecisionInput> = {}): AmbientDe
     message: { mentions: [botUserId], replyTo: null },
     botUserId,
     roster,
-    activeHumanIds: ["100000000000000004", "100000000000000005"],
     nowMs,
     ...overrides,
   };
@@ -131,17 +129,15 @@ describe("adaptive ambient drive and evidence", () => {
     expect(outcome.draw).toBeLessThan(1);
   });
 
-  it("weights explicit mentions and replies above fresh complete roster activity", () => {
+  it("weights explicit mentions and replies above any fresh complete roster", () => {
     const api = ambient();
-    const base = { message: { mentions: [], replyTo: null }, botUserId, roster, activeHumanIds: [], nowMs };
+    const base = { message: { mentions: [], replyTo: null }, botUserId, roster, nowMs };
 
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [botUserId], replyTo: null } })).toBe(1);
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [], replyTo: { messageId: "reply-1", authorId: botUserId } } })).toBe(1);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"] })).toBe(0.8);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1"] })).toBe(0.5);
-    expect(api.calculateAmbientEvidenceWeight(base)).toBe(0);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, complete: false } })).toBe(0);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);
+    expect(api.calculateAmbientEvidenceWeight(base)).toBe(0.8);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, roster: { ...roster, complete: false } })).toBe(0);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);
   });
 
   it("relaxes ambient drive toward baseline across idle time without changing the EMA", () => {

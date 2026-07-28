@@ -11,7 +11,7 @@ type ConversationProviderClient = { readonly complete: (prompt: ConversationProm
 type AmbientAppraisalResult =
   | { readonly kind: "valid"; readonly proposal: { readonly decision: "observe" | "speak"; readonly chunks: readonly string[] }; readonly diagnostic?: string }
   | { readonly kind: "invalid"; readonly diagnostic: string };
-type AppraisalAudience = { readonly rosterComplete: boolean; readonly activeHumanCount: number; readonly currentDrive: number; readonly budgetRemaining: number };
+type AppraisalAudience = { readonly rosterComplete: boolean; readonly currentDrive: number; readonly budgetRemaining: number };
 type AdaptiveAmbientProvider = { readonly appraise: (request: { readonly scope: { readonly guildId: string; readonly channelId: string }; readonly persona: string; readonly transcript: readonly DiscordInboundMessage[]; readonly audience?: AppraisalAudience }, options?: { readonly signal?: AbortSignal }) => Promise<AmbientAppraisalResult> };
 type AdaptiveAmbientProviderApi = {
   readonly createOpenAiConversationProviderClient: (config: { readonly endpoint: URL | string; readonly token: string; readonly model: string; readonly timeoutMs: number; readonly fetchImpl?: typeof fetch }) => ConversationProviderClient;
@@ -101,7 +101,7 @@ describe("strict adaptive ambient appraisal provider", () => {
 
   it("includes injected audience context in the appraisal payload", async () => {
     let wireBody: { messages: Array<{ role: string; content: string }> } | undefined;
-    const audience = { rosterComplete: true, activeHumanCount: 3, currentDrive: 0.7, budgetRemaining: 4 };
+    const audience = { rosterComplete: true, currentDrive: 0.7, budgetRemaining: 4 };
     const fetchImpl = vi.fn(async (_: URL | RequestInfo, init?: RequestInit) => {
       wireBody = JSON.parse(String(init?.body));
       return chatResponse(validAppraisal());
@@ -110,9 +110,6 @@ describe("strict adaptive ambient appraisal provider", () => {
     await ambientProvider(fetchImpl).appraise(request(audience));
 
     expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience, participationPrior: { speak: 0.9, observe: 0.1 } });
-    const soloAudience = { ...audience, activeHumanCount: 1 };
-    await ambientProvider(fetchImpl).appraise(request(soloAudience));
-    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience: soloAudience, participationPrior: { speak: 0.85, observe: 0.15 } });
   });
 
   it("turns every provider and contract failure into invalid audit input without leaking secrets", async () => {

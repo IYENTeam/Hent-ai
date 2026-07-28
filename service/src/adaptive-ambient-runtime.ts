@@ -88,7 +88,6 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           context: { archiveSummaries: context.archiveSummaries, relationships: context.relationships },
           audience: {
             rosterComplete: roster.complete,
-            activeHumanCount: activeHumanIds.length,
             currentDrive: state?.drive ?? DEFAULT_AMBIENT_DRIVE,
             budgetRemaining: budgetRemaining(options.store, options.scope, budgetLimit, now),
           },
@@ -114,7 +113,6 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         message: context.event,
         botUserId: options.botUserId,
         roster,
-        activeHumanIds,
         nowMs: now,
         observeOnly: work.observeOnly,
         ambientPityEnabled: ambientSettings.ambientPityEnabled ?? true,

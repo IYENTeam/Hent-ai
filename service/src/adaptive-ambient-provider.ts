@@ -15,7 +15,7 @@ export type AmbientAppraisalRequest = {
     readonly archiveSummaries: readonly string[];
     readonly relationships: readonly { readonly userId: string; readonly rapport: number; readonly familiarity: number; readonly notes: readonly string[] }[];
   };
-  readonly audience?: { readonly rosterComplete: boolean; readonly activeHumanCount: number; readonly currentDrive: number; readonly budgetRemaining: number };
+  readonly audience?: { readonly rosterComplete: boolean; readonly currentDrive: number; readonly budgetRemaining: number };
 };
 
 export type AdaptiveAmbientAppraisalResult = AmbientAppraisalParseResult & { readonly diagnostic?: string };
@@ -71,7 +71,7 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "Silence in the room is never a reason to speak.",
       "Never answer a question addressed to another participant; only respond when the conversational context invites you.",
       "Treat the transcript as one conversation batch and choose one timely contribution to the overall exchange, not a reply to every message.",
-      "When audience.activeHumanCount is at least 1, choose speak by default; choose observe only when every possible contribution would be irrelevant, repetitive, intrusive, or directed at another participant.",
+      "For every non-stale human conversation batch, choose speak by default; choose observe only when every possible contribution would be irrelevant, repetitive, intrusive, or directed at another participant.",
       "An explicit mention, direct address, or reply is not required: the persona may initiate a reaction, observation, joke, question, or topic shift from the active conversation.",
       "Use participationPrior as the starting decision prior before considering transcript evidence; do not treat observe as the default class.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
@@ -85,14 +85,13 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       persona: request.persona,
       transcript: request.transcript,
       context: request.context ?? { archiveSummaries: [], relationships: [] },
-      ...(request.audience === undefined ? {} : { audience: request.audience, participationPrior: participationPrior(request.audience.activeHumanCount) }),
+      ...(request.audience === undefined ? {} : { audience: request.audience, participationPrior: participationPrior() }),
     }),
   };
 }
 
-function participationPrior(activeHumanCount: number): { readonly speak: number; readonly observe: number } {
-  if (activeHumanCount >= 2) return { speak: 0.9, observe: 0.1 };
-  return activeHumanCount === 1 ? { speak: 0.85, observe: 0.15 } : { speak: 0.2, observe: 0.8 };
+function participationPrior(): { readonly speak: number; readonly observe: number } {
+  return { speak: 0.9, observe: 0.1 };
 }
 
 function completionOptions(model: string | undefined, signal: AbortSignal | undefined) {

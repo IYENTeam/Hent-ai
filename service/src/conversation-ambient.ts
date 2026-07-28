@@ -20,7 +20,6 @@ export type AmbientEvidenceInput = {
   readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
   readonly botUserId: string;
   readonly roster: DiscordMembershipSnapshot;
-  readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
 };
 
@@ -69,9 +68,7 @@ export function calculateAmbientEvidenceWeight(input: AmbientEvidenceInput): num
   if (isExplicitAmbientAddress(input.message, input.botUserId)) return 1;
   if (!isFreshCompleteRoster(input.roster, input.nowMs)) return 0;
 
-  const activeHumanCount = new Set(input.activeHumanIds).size;
-  if (activeHumanCount >= 2) return 0.8;
-  return activeHumanCount === 1 ? 0.5 : 0;
+  return 0.8;
 }
 
 export function applyAmbientIdleDecay(drive: number, updatedAtMs: number, nowMs: number, tauMs: number): number {

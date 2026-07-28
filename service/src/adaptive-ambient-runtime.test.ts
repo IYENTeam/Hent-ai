@@ -166,7 +166,7 @@ describe("atomic adaptive ambient runtime", () => {
     } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
 
     await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
-    expect(audience).toEqual({ rosterComplete: true, activeHumanCount: 1, currentDrive: 0.8, budgetRemaining: 1 });
+    expect(audience).toEqual({ rosterComplete: true, currentDrive: 0.8, budgetRemaining: 1 });
     fixture.db.close();
   });
 
