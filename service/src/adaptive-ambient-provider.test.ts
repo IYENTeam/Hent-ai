@@ -109,7 +109,7 @@ describe("strict adaptive ambient appraisal provider", () => {
 
     await ambientProvider(fetchImpl).appraise(request(audience));
 
-    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience, participationPrior: { speak: 0.9, observe: 0.1 } });
+    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience, participationPrior: { speak: 0.98, observe: 0.02 } });
   });
 
   it("turns every provider and contract failure into invalid audit input without leaking secrets", async () => {

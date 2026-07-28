@@ -91,7 +91,7 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
 }
 
 function participationPrior(): { readonly speak: number; readonly observe: number } {
-  return { speak: 0.9, observe: 0.1 };
+  return { speak: 0.98, observe: 0.02 };
 }
 
 function completionOptions(model: string | undefined, signal: AbortSignal | undefined) {
