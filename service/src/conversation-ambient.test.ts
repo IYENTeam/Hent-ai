@@ -124,7 +124,7 @@ describe("adaptive ambient drive and evidence", () => {
     const outcome = ambient().evaluateAmbientDecision(decisionInput());
     expect(outcome.driveUpdate).toMatchObject({ drive: 0.7 * 0.75 + 0.8 * 0.25, version: 1, scope, updatedAtMs: nowMs });
     expect(outcome.evidenceWeight).toBe(1);
-    expect(outcome.probability).toBeCloseTo(0.58);
+    expect(outcome.probability).toBe(1);
     expect(outcome.draw).toBeGreaterThanOrEqual(0);
     expect(outcome.draw).toBeLessThan(1);
   });
@@ -249,7 +249,7 @@ describe("adaptive ambient drive and evidence", () => {
     }
   });
 
-  it("boosts probability after quiet streaks without forcing a decision", () => {
+  it("treats a valid provider speech decision as authoritative", () => {
     const api = ambient();
     const baseState = { scope, drive: 0, version: 1, updatedAtMs: nowMs };
     const baseInput = {
@@ -263,13 +263,13 @@ describe("adaptive ambient drive and evidence", () => {
     const capped = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 10 } }));
     const disabled = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 }, ambientPityEnabled: false }));
 
-    expect(base.probability).toBeCloseTo(0.1);
-    expect(boosted.probability).toBeCloseTo(1 - 0.9 ** 5);
-    expect(capped.probability).toBeCloseTo(0.05);
-    expect(disabled.probability).toBeCloseTo(0.1);
-    expect(boosted.shouldSpeak).toBe(false);
-    expect(boosted.shouldSpeak).toBe(boosted.draw! < boosted.probability);
-    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 0, skipStreak: 5 });
+    expect(base.probability).toBe(1);
+    expect(boosted.probability).toBe(1);
+    expect(capped.probability).toBe(1);
+    expect(disabled.probability).toBe(1);
+    expect(base.shouldSpeak).toBe(true);
+    expect(boosted.shouldSpeak).toBe(true);
+    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 1, skipStreak: 0 });
 
     const speech = api.evaluateAmbientDecision(decisionInput({
       ...baseInput,

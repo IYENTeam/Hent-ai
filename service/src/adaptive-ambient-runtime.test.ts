@@ -82,7 +82,7 @@ describe("atomic adaptive ambient runtime", () => {
     await expect(planned.runtime!.run({ fence: planned.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     const plannedAudit = auditEvidence(planned.db);
     expect(plannedAudit).toEqual({
-      evidenceWeight: 1, probability: 0.7 * 0.75 + 1 * 0.25, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
+      evidenceWeight: 1, probability: 1, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
       driveBefore: 0.7, driveAfter: 0.7 * 0.75 + 1 * 0.25, activeHumanCount: 1, rosterFresh: 1,
     });
     if (plannedAudit.driveBefore === null || plannedAudit.driveAfter === null) throw new Error("planned audit must retain drive evidence");
@@ -198,17 +198,17 @@ describe("atomic adaptive ambient runtime", () => {
     fixture.db.close();
   });
 
-  it("honors scoped decay, pressure, and disabled pity settings end-to-end", async () => {
+  it("honors scoped decay and pressure settings end-to-end", async () => {
     const eventId = Array.from({ length: 100 }, (_, index) => `settings-${index}`).find((candidate) => {
       const draw = service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, candidate);
       return draw > 0.6 && draw < 0.9;
     });
     if (!eventId) throw new Error("could not select a deterministic ambient draw");
-    const fixture = setup({ eventId, settings: { ambientIdleDecayTauMs: 60_000, ambientPressureTauMs: 60_000, ambientPityEnabled: false }, result: appraisal({ desiredDrive: 0.1 }) });
+    const fixture = setup({ eventId, settings: { ambientIdleDecayTauMs: 60_000, ambientPressureTauMs: 60_000 }, result: appraisal({ desiredDrive: 0.1 }) });
     fixture.db.db.prepare(`INSERT INTO adaptive_ambient_state (guild_id,channel_id,drive,version,updated_at_ms,pressure,pressure_updated_at_ms,speak_streak,skip_streak)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(scope.guildId, scope.channelId, 1, 4, now - 60_000, 0.5, now - 60_000, 0, 4);
 
-    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     const decayedDrive = 0.5 + 0.5 * Math.exp(-1);
     const decayedPressure = 0.5 * Math.exp(-1);
     expect(fixture.store.state(scope)).toEqual({
@@ -217,8 +217,8 @@ describe("atomic adaptive ambient runtime", () => {
       updatedAtMs: now,
       pressure: decayedPressure,
       pressureUpdatedAtMs: now,
-      speakStreak: 0,
-      skipStreak: 5,
+      speakStreak: 1,
+      skipStreak: 0,
     });
     fixture.db.close();
   });

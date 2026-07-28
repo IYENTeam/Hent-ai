@@ -151,9 +151,9 @@ function validDecision(
     evidenceWeight,
   });
   const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.6) && !input.observeOnly;
-  const probability = opportunity ? applyAmbientPityBoost(baseProbability, input.state, input.ambientPityEnabled ?? true) : baseProbability;
+  const probability = opportunity ? 1 : baseProbability;
   const draw = stableAmbientDraw(scopeId(input.roster), input.eventId);
-  const shouldSpeak = probability > 0 && draw < probability;
+  const shouldSpeak = opportunity;
   const streaks = nextAmbientStreaks(input.state, opportunity, shouldSpeak);
   const driveUpdate: AmbientStateWithStreaks = {
     scope: input.roster.scope,
