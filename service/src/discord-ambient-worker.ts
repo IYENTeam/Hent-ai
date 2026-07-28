@@ -200,7 +200,19 @@ function leaseKey(scope: DiscordParticipantScope): string { return `discord-ambi
 function compareScope(a: DiscordParticipantScope, b: DiscordParticipantScope): number { return `${a.guildId}:${a.channelId}`.localeCompare(`${b.guildId}:${b.channelId}`); }
 function scopeFields(scope: DiscordParticipantScope, reason: string): Record<string, string> { return { guildId: scope.guildId, channelId: scope.channelId, reason }; }
 function required(value: string | undefined, reason: string, diagnostics: string[]): string | undefined { const normalized = value?.trim(); if (!normalized) diagnostics.push(`missing_${reason}`); return normalized; }
-function endpoint(value: string | undefined, diagnostics: string[]): string | undefined { const normalized = required(value, "provider_endpoint", diagnostics); if (!normalized) return undefined; try { const parsed = new URL(normalized); if (parsed.protocol !== "https:") throw new Error(); return parsed.toString(); } catch { diagnostics.push("invalid_provider_endpoint"); return undefined; } }
+function endpoint(value: string | undefined, diagnostics: string[]): string | undefined {
+  const normalized = required(value, "provider_endpoint", diagnostics);
+  if (!normalized) return undefined;
+  try {
+    const parsed = new URL(normalized);
+    const loopbackHttp = parsed.protocol === "http:" && ["127.0.0.1", "::1", "localhost"].includes(parsed.hostname);
+    if (parsed.protocol !== "https:" && !loopbackHttp) throw new Error();
+    return parsed.toString();
+  } catch {
+    diagnostics.push("invalid_provider_endpoint");
+    return undefined;
+  }
+}
 function positive(value: string | undefined, fallback: number, diagnostics: string[]): number { if (!value?.trim()) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1000) { diagnostics.push("invalid_poll_interval"); return fallback; } return parsed; }
 function disabled(): DiscordAmbientWorker { return { status: "disabled", runOnce: async () => undefined, stop: async () => undefined }; }
 const nativeTimer: Timer = { setInterval: (callback, ms) => setInterval(callback, ms), clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout) };

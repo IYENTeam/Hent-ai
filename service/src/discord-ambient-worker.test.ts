@@ -31,6 +31,7 @@ describe("Discord ambient worker entrypoint", () => {
   it("fails closed before opening a database or Discord client", async () => {
     expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST: "malformed" }).config).toBeUndefined();
     expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "http://provider.example" }).config).toBeUndefined();
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "http://127.0.0.1:9742/v1/chat/completions" }).config?.providerEndpoint).toBe("http://127.0.0.1:9742/v1/chat/completions");
     let opened = 0; let clientCreated = 0; const events: unknown[] = [];
     const worker = await service.startDiscordAmbientWorker({}, {
       createDatabase: () => { opened += 1; throw new Error("must not open"); }, createClient: () => { clientCreated += 1; throw new Error("must not connect"); },
