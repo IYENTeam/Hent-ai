@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
+import { GENERIC_CONVERSATION_PERSONA } from "./conversation-speech-policy.js";
 
 export const CONVERSATION_PARTICIPANT_SELECTOR_VERSION = "hent_ai.conversation_participant.selector.v2";
 export const CONVERSATION_PARTICIPANT_PERSONA_VERSION = "hent_ai.conversation_participation.persona.v1";
-const PARTICIPANT_GENERIC_PERSONA = "You are a thoughtful participant in this conversation. Be concise, kind, and honest about uncertainty.";
 export const MAX_PARTICIPANT_TURNS = 120;
 export const MAX_PARTICIPANT_SNAPSHOT_BYTES = 49_152;
 export const MAX_PARTICIPANT_TURN_BYTES = 8_192;
@@ -75,7 +75,7 @@ export function validUnicodeScalars(value: string): boolean {
 export function resolveConversationParticipantPersona(input: ConversationParticipantPersonaInput): ConversationParticipantPersona | null {
   const profileText = normalizedNonempty(input.profile?.soulSnippet);
   const globalText = normalizedNonempty(input.configuredGlobalPersona);
-  const genericText = normalizedNonempty(input.genericPersona ?? PARTICIPANT_GENERIC_PERSONA);
+  const genericText = normalizedNonempty(input.genericPersona ?? GENERIC_CONVERSATION_PERSONA);
   const source: ParticipantPersonaSource = profileText ? "channel_profile" : globalText ? "configured_global" : "generic";
   const text = profileText ?? globalText ?? genericText;
   if (!text) return null;
@@ -88,23 +88,20 @@ export function resolveConversationParticipantPersona(input: ConversationPartici
 }
 
 export function materializeConversationParticipantContext(scopeId: string, rows: readonly ConversationParticipantRawEvent[], anchorMessageId?: string): ConversationParticipantContextResult {
-  const inScope = rows.filter((row) => row.scopeId === scopeId && Number.isSafeInteger(row.id) && row.id >= 0);
-  if (inScope.length === 0) return corrupt("scope has no raw events");
-  const highWatermarkId = Math.max(...inScope.map((row) => row.id));
-  const canonicalRows = inScope.filter((row) => row.id <= highWatermarkId && row.authorSource === "discord-participant");
+  const canonicalRows = rows.filter((row) => row.scopeId === scopeId && Number.isSafeInteger(row.id) && row.id >= 0 && row.authorSource === "discord-participant");
+  if (canonicalRows.length === 0) return corrupt("scope has no canonical raw events");
+  const highWatermarkId = Math.max(...canonicalRows.map((row) => row.id));
   const byIdentity = new Map<string, ConversationParticipantRawEvent>();
-  const byMessageId = new Map<string, ConversationParticipantRawEvent>();
   for (const row of canonicalRows) {
     const key = identity(row);
-    if (byIdentity.has(key) || byMessageId.has(row.messageId)) return corrupt("duplicate canonical source-qualified identity");
+    if (byIdentity.has(key)) return corrupt("duplicate canonical source-qualified identity");
     if (toTurn(row) === null) return corrupt("canonical row has malformed metadata or Unicode");
     byIdentity.set(key, row);
-    byMessageId.set(row.messageId, row);
   }
   const orderedNewest = [...canonicalRows].sort((left, right) => right.id - left.id || right.messageId.localeCompare(left.messageId));
   const anchor = anchorMessageId === undefined
     ? orderedNewest.find(eligibleAnchor)
-    : byMessageId.get(anchorMessageId);
+    : byIdentity.get(canonicalIdentity(scopeId, anchorMessageId));
   if (!anchor || !eligibleAnchor(anchor)) return corrupt("no eligible canonical anchor");
   const selected = new Map<string, ConversationParticipantRawEvent>([[identity(anchor), anchor]]);
   const queue: { row: ConversationParticipantRawEvent; depth: number }[] = [{ row: anchor, depth: 0 }];
@@ -121,7 +118,7 @@ export function materializeConversationParticipantContext(scopeId: string, rows:
     const reply = replyMetadata(row.metadataJson);
     if (reply.kind === "malformed") return corrupt("reply metadata is malformed");
     if (reply.kind === "valid") {
-      const parent = byMessageId.get(reply.reply.messageId);
+      const parent = byIdentity.get(canonicalIdentity(scopeId, reply.reply.messageId));
       if (!parent || parent.scopeId !== scopeId) return corrupt("reply parent is not a canonical source");
       neighbors.push(parent);
     }
@@ -162,6 +159,7 @@ function canonicalize(value: unknown): unknown {
   throw new Error("unsupported canonical JSON value");
 }
 function identity(row: ConversationParticipantRawEvent): string { return `${row.scopeId}\u0000${row.messageId}\u0000${row.authorSource}`; }
+function canonicalIdentity(scopeId: string, messageId: string): string { return `${scopeId}\u0000${messageId}\u0000discord-participant`; }
 function normalizedNonempty(value: string | null | undefined): string | null { if (typeof value !== "string" || !validUnicodeScalars(value)) return null; const normalized = value.normalize("NFC").trim(); return normalized.length > 0 ? normalized : null; }
 type ReplyMetadata = { readonly kind: "absent" } | { readonly kind: "malformed" } | { readonly kind: "valid"; readonly reply: { readonly messageId: string; readonly authorId: string } };
 function replyMetadata(value: string): ReplyMetadata {

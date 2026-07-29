@@ -384,6 +384,38 @@ describe("atomic adaptive ambient runtime", () => {
     expect(priors).toEqual([0, 0.05]);
     fixture.db.close();
   });
+  it("keeps shadow calibration running when the apply delivery budget is exhausted", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "shadow" } });
+    fixture.db.db.prepare("INSERT INTO adaptive_budgets (scope_key,budget_key,count,window_start_ms,updated_at_ms) VALUES (?, 'ambient', 2, ?, ?)").run(`${scope.guildId}:${scope.channelId}`, Math.floor(now / 3_600_000) * 3_600_000, now);
+    let primaryCalls = 0;
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls),
+      primary: { decide: async () => {
+        primaryCalls += 1;
+        return { kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: "observe" as const, baselineDecision: "observe" as const, judgmentClass: "definitive" as const, semanticMargin: 1, priorApplied: false, confidence: 1, chunks: [] } };
+      } },
+      validator: { validate: async () => ({ kind: "unavailable" as const, diagnostic: "unused" }) },
+      primaryModel: "primary-model", validatorModel: "validator-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("idle");
+    expect(primaryCalls).toBe(1);
+    expect(fixture.db.db.prepare("SELECT status FROM conversation_participation_ticks").get()).toEqual({ status: "decided" });
+    fixture.db.close();
+  });
+  it("reports observe when a speak result loses the result-time budget race", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls),
+      primary: { decide: async () => {
+        fixture.db.db.prepare("INSERT INTO adaptive_budgets (scope_key,budget_key,count,window_start_ms,updated_at_ms) VALUES (?, 'ambient', 2, ?, ?)").run(`${scope.guildId}:${scope.channelId}`, Math.floor(now / 3_600_000) * 3_600_000, now);
+        return { kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: "speak" as const, baselineDecision: "speak" as const, judgmentClass: "definitive" as const, semanticMargin: 1, priorApplied: false, confidence: 1, chunks: ["race loser"] } };
+      } },
+      validator: { validate: async () => ({ kind: "unavailable" as const, diagnostic: "unused" }) },
+      primaryModel: "primary-model", validatorModel: "validator-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
+    expect(fixture.db.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_plans WHERE decision_version='v2'").get()).toEqual({ count: 0 });
+    expect(fixture.db.db.prepare("SELECT delivery_disposition AS disposition FROM conversation_participation_ticks").get()).toEqual({ disposition: "not_applicable" });
+    fixture.db.close();
+  });
   it("anchors an apply tick to the eligible work rather than a newer unworked event", async () => {
     const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
     fixture.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
@@ -396,7 +428,37 @@ describe("atomic adaptive ambient runtime", () => {
       startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
     await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
     expect(fixture.db.db.prepare("SELECT anchor_work_id FROM conversation_participation_ticks").get()).toEqual({ anchor_work_id: "work-1" });
-    expect(fixture.db.db.prepare("SELECT snapshot_high_watermark_id AS highWatermark FROM conversation_participation_ticks").get()).toEqual({ highWatermark: 2 });
+    expect(fixture.db.db.prepare("SELECT snapshot_high_watermark_id AS highWatermark FROM conversation_participation_ticks").get()).toEqual({ highWatermark: 1 });
+    fixture.db.close();
+  });
+  it("keeps canonical context intact under other-source flooding and fetches a reply ancestor beyond the seed", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
+    const scopeId = `discord:${scope.guildId}:${scope.channelId}`;
+    const insert = fixture.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?, ?, NULL, NULL, ?, 'user', ?, ?, ?, ?, 0, ?, ?)`);
+    const stamp = new Date(now).toISOString();
+    insert.run(scopeId, scope.channelId, "ancestor", "discord-participant", "ancestor", stamp, stamp, JSON.stringify({ discordAuthorId: "100000000000000004", discordAuthorBot: false }), stamp);
+    for (let index = 0; index < 97; index += 1) {
+      insert.run(scopeId, scope.channelId, `seed-${index}`, "discord-participant", `seed ${index}`, stamp, stamp, JSON.stringify({ discordAuthorId: "100000000000000004", discordAuthorBot: false }), stamp);
+    }
+    fixture.store.createWork({ id: "work-2", eventId: "child", eventDigest: "digest:child", scope });
+    insert.run(scopeId, scope.channelId, "child", "discord-participant", "child", stamp, stamp, JSON.stringify({ discordAuthorId: "100000000000000004", discordAuthorBot: false, replyTo: { messageId: "ancestor", authorId: "100000000000000004" } }), stamp);
+    for (let index = 0; index < 120; index += 1) {
+      insert.run(scopeId, scope.channelId, `flood-${index}`, "other-source", "flood", stamp, stamp, JSON.stringify({ discordAuthorId: "attacker", discordAuthorBot: false }), stamp);
+    }
+    let turns: readonly { readonly messageId: string }[] = [];
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls),
+      primary: { decide: async (request: { readonly turns: readonly { readonly messageId: string }[] }) => {
+        turns = request.turns;
+        return { kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: "observe" as const, baselineDecision: "observe" as const, judgmentClass: "definitive" as const, semanticMargin: 1, priorApplied: false, confidence: 1, chunks: [] } };
+      } },
+      validator: { validate: async () => ({ kind: "unavailable" as const, diagnostic: "unused" }) },
+      primaryModel: "primary-model", validatorModel: "validator-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
+    expect(turns.map((turn) => turn.messageId)).toContain("ancestor");
+    expect(turns.map((turn) => turn.messageId)).not.toContain("flood-119");
+    expect(fixture.db.db.prepare("SELECT snapshot_high_watermark_id AS highWatermark FROM conversation_participation_ticks").get()).toEqual({ highWatermark: 100 });
     fixture.db.close();
   });
   it("fails closed for apply when configured primary and validator models match", async () => {

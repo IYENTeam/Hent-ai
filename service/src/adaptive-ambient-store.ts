@@ -197,7 +197,7 @@ export class AdaptiveAmbientStore {
       this.requireFence(input.fence, now);
       const scopeId = `discord:${input.scope.guildId}:${input.scope.channelId}`;
       const watermark = db.prepare(`SELECT MAX(id) AS id FROM conversation_raw_events
-        WHERE scope_id=?`).get(scopeId) as { id: number | null };
+        WHERE scope_id=? AND author_source='discord-participant'`).get(scopeId) as { id: number | null };
       if (watermark.id === null || input.snapshot.highWatermarkId !== watermark.id) { db.exec("COMMIT"); return false; }
       const watermarkId = watermark.id;
       const candidates = db.prepare(`SELECT w.id FROM participant_event_work w JOIN conversation_raw_events r ON r.message_id=w.event_id
@@ -225,10 +225,26 @@ export class AdaptiveAmbientStore {
       db.exec("COMMIT"); return true;
     } catch (error) { db.exec("ROLLBACK"); throw error; }
   }
-  claimParticipationPrimary(tickId: string, fence: Fence): boolean {
+  claimParticipationPrimary(tickId: string, fence: Fence, budget?: { readonly key: string; readonly limit: number; readonly windowStartMs: number }): boolean {
     const now=this.clock(); const db=this.serviceDb.db; db.exec("BEGIN IMMEDIATE");
     try {
       this.requireFence(fence,now);
+      if (budget) {
+        const tick=db.prepare("SELECT guild_id,channel_id FROM conversation_participation_ticks WHERE id=?").get(tickId) as {guild_id:string;channel_id:string}|undefined;
+        if (!tick) { db.exec("COMMIT"); return false; }
+        const available=this.budgetAvailable({ guildId:tick.guild_id,channelId:tick.channel_id },budget);
+        if (!available) {
+          db.prepare(`UPDATE conversation_participation_ticks SET status='budget_wait',primary_claim_holder_id=NULL,primary_claim_fence_token=NULL,primary_claim_expires_at_ms=NULL,updated_at_ms=?
+            WHERE id=? AND status IN ('bound','primary_retry_wait') AND ${this.fencedWhere()}`).run(now,tickId,...this.fencedArgs(fence,now));
+          db.prepare(`UPDATE participant_event_work SET status='observe',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
+            WHERE id=(SELECT anchor_work_id FROM conversation_participation_ticks WHERE id=?) AND status IN ('retryable','claimed') AND ${this.fencedWhere()}`).run(now,tickId,...this.fencedArgs(fence,now));
+          db.exec("COMMIT"); return false;
+        }
+        const recovered=db.prepare(`UPDATE conversation_participation_ticks SET status='bound',updated_at_ms=?
+          WHERE id=? AND status='budget_wait' AND ${this.fencedWhere()}`).run(now,tickId,...this.fencedArgs(fence,now));
+        if (recovered.changes === 1) db.prepare(`UPDATE participant_event_work SET status='retryable',updated_at_ms=?
+          WHERE id=(SELECT anchor_work_id FROM conversation_participation_ticks WHERE id=?) AND status='observe' AND ${this.fencedWhere()}`).run(now,tickId,...this.fencedArgs(fence,now));
+      }
       const changed=db.prepare(`UPDATE conversation_participation_ticks SET status='primary_claimed',primary_claim_holder_id=?,primary_claim_fence_token=?,primary_claim_expires_at_ms=?,primary_attempt_count=primary_attempt_count+1,updated_at_ms=? WHERE id=? AND status IN ('bound','primary_retry_wait') AND primary_attempt_count<3 AND ${this.fencedWhere()}`).run(fence.holderId,fence.fenceToken,now+PARTICIPATION_CLAIM_TTL_MS,now,tickId,...this.fencedArgs(fence,now));
       if (!changed.changes) { db.exec("COMMIT"); return false; }
       db.prepare(`UPDATE participant_event_work SET status='claimed',claim_holder_id=?,claim_fence_token=?,claim_expires_at_ms=?,updated_at_ms=? WHERE participation_tick_id=? AND id=(SELECT anchor_work_id FROM conversation_participation_ticks WHERE id=?)`).run(fence.holderId,fence.fenceToken,now+PARTICIPATION_CLAIM_TTL_MS,now,tickId,tickId);
@@ -293,11 +309,11 @@ export class AdaptiveAmbientStore {
       this.requireFence(fence,now);
       const corruptTickIds=this.corruptParticipationTickIds(scope);
       for (const tickId of corruptTickIds) {
-        db.prepare(`UPDATE conversation_participation_ticks SET status='corrupt',primary_claim_holder_id=NULL,primary_claim_fence_token=NULL,primary_claim_expires_at_ms=NULL,updated_at_ms=?
-          WHERE id=? AND guild_id=? AND channel_id=? AND status NOT IN ('validated','validation_unavailable','corrupt','aborted') AND ${this.fencedWhere()}`)
+        db.prepare(`UPDATE conversation_participation_ticks SET status='snapshot_corrupt',primary_claim_holder_id=NULL,primary_claim_fence_token=NULL,primary_claim_expires_at_ms=NULL,updated_at_ms=?
+          WHERE id=? AND guild_id=? AND channel_id=? AND status NOT IN ('validated','validation_unavailable','snapshot_corrupt','aborted') AND ${this.fencedWhere()}`)
           .run(now,tickId,scope.guildId,scope.channelId,...this.fencedArgs(fence,now));
-        db.prepare(`UPDATE conversation_participation_validations SET status='corrupt',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
-          WHERE tick_id=? AND status NOT IN ('applied','accepted_shadow','unavailable','corrupt')`).run(now,tickId);
+        db.prepare(`UPDATE conversation_participation_validations SET status='unavailable',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
+          WHERE tick_id=? AND status NOT IN ('applied','accepted_shadow','unavailable')`).run(now,tickId);
         db.prepare(`UPDATE participant_event_work SET status='observe',claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=?
           WHERE id=(SELECT anchor_work_id FROM conversation_participation_ticks WHERE id=? AND guild_id=? AND channel_id=?) AND status='claimed' AND ${this.fencedWhere()}`)
           .run(now,tickId,scope.guildId,scope.channelId,...this.fencedArgs(fence,now));
@@ -322,12 +338,13 @@ export class AdaptiveAmbientStore {
       const result = verifyCanonicalContent(input.resultJson, input.resultUtf8Bytes, input.resultDigest, 1, PRIMARY_RESULT_BYTES_MAX, "primary result");
       const chunks = input.chunks?.map((content) => ({ content, ...verifyCanonicalContent(content, Buffer.byteLength(content, "utf8"), createHash("sha256").update(content, "utf8").digest("hex"), 1, PRIMARY_CHUNK_BYTES_MAX, "primary chunk") }));
       const needsPlan=tick.mode==="apply"&&input.decision==="speak";
-      if (needsPlan && (!chunks?.length || !input.workId || !input.scope || input.workId!==tick.anchor_work_id || input.scope.guildId!==tick.guild_id || input.scope.channelId!==tick.channel_id)) throw new Error("apply speak requires bound plan input");
-      const changed=db.prepare(`UPDATE conversation_participation_ticks SET status='decided',primary_result_json=?,primary_result_utf8_bytes=?,primary_result_digest=?,delivery_disposition=?,primary_claim_holder_id=NULL,primary_claim_fence_token=NULL,primary_claim_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND status='primary_claimed' AND primary_claim_holder_id=? AND primary_claim_fence_token=? AND primary_claim_expires_at_ms>? AND ${this.fencedWhere()}`).run(input.resultJson,result.utf8Bytes,result.digest,needsPlan?"pending":"not_applicable",now,input.tickId,input.fence.holderId,input.fence.fenceToken,now,...this.fencedArgs(input.fence,now));
-      if (!changed.changes) { db.exec("COMMIT"); return false; }
-      if (input.budget && !this.admitBudget({ scope:{guildId:tick.guild_id,channelId:tick.channel_id}, budget:input.budget },now)) { db.exec("ROLLBACK"); return false; }
+      if (needsPlan && (!chunks?.length || !input.workId || !input.scope || !input.budget || input.workId!==tick.anchor_work_id || input.scope.guildId!==tick.guild_id || input.scope.channelId!==tick.channel_id)) throw new Error("apply speak requires bound plan and budget input");
+      const budgetExhausted=needsPlan && !this.admitBudget({ scope:{guildId:tick.guild_id,channelId:tick.channel_id}, budget:input.budget! },now);
+      const changed=db.prepare(`UPDATE conversation_participation_ticks SET status='decided',primary_result_json=?,primary_result_utf8_bytes=?,primary_result_digest=?,delivery_disposition=?,primary_claim_holder_id=NULL,primary_claim_fence_token=NULL,primary_claim_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND status='primary_claimed' AND primary_claim_holder_id=? AND primary_claim_fence_token=? AND primary_claim_expires_at_ms>? AND ${this.fencedWhere()}`).run(input.resultJson,result.utf8Bytes,result.digest,needsPlan&&!budgetExhausted?"pending":"not_applicable",now,input.tickId,input.fence.holderId,input.fence.fenceToken,now,...this.fencedArgs(input.fence,now));
+      if (!changed.changes) { db.exec("ROLLBACK"); return false; }
+      if (budgetExhausted) recordUnfencedDiagnostic(db,now,input.fence,"budget_exhausted");
       db.prepare("INSERT INTO conversation_participation_validations (tick_id,status,schema_version,model,created_at_ms,updated_at_ms) VALUES (?,'pending',?,?,?,?)").run(input.tickId,input.validationSchemaVersion,input.validatorModel,now,now);
-      if (needsPlan) {
+      if (needsPlan && !budgetExhausted) {
         const planId=`participation:${input.tickId}`;
         db.prepare("INSERT INTO participant_delivery_plans (id,work_id,guild_id,channel_id,status,created_at_ms,updated_at_ms,decision_version,tick_id) VALUES (?,?,?,?, 'pending',?,?, 'v2',?)").run(planId,tick.anchor_work_id,tick.guild_id,tick.channel_id,now,now,input.tickId);
         for (const [index,chunk] of chunks!.entries()) {
@@ -336,7 +353,7 @@ export class AdaptiveAmbientStore {
         }
       }
       if (tick.mode === "apply") {
-        const work=db.prepare(`UPDATE participant_event_work SET status=?,claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND status='claimed' AND claim_holder_id=? AND claim_fence_token=?`).run(needsPlan?"planned":"observe",now,tick.anchor_work_id,input.fence.holderId,input.fence.fenceToken);
+        const work=db.prepare(`UPDATE participant_event_work SET status=?,claim_holder_id=NULL,claim_fence_token=NULL,claim_expires_at_ms=NULL,updated_at_ms=? WHERE id=? AND status='claimed' AND claim_holder_id=? AND claim_fence_token=?`).run(needsPlan&&!budgetExhausted?"planned":"observe",now,tick.anchor_work_id,input.fence.holderId,input.fence.fenceToken);
         if (work.changes!==1) throw new Error("stale primary work claim");
       }
       db.exec("COMMIT"); return true;
@@ -389,7 +406,7 @@ export class AdaptiveAmbientStore {
     } catch (error) { db.exec("ROLLBACK"); throw error; }
   }
   participationTick(scope: Scope): { readonly id: string; readonly mode: ParticipationMode; readonly status: string; readonly snapshotJson: string; readonly personaText: string; readonly personaRevision: string; readonly primaryResultJson: string | null; readonly deliveryDisposition: "pending" | "delivered" | "retryable" | "cancelled" | "not_applicable" | null } | null {
-    const row = this.serviceDb.db.prepare(`SELECT id,mode,status,snapshot_json,persona_text,persona_revision,primary_result_json,delivery_disposition FROM conversation_participation_ticks WHERE guild_id=? AND channel_id=? AND status NOT IN ('primary_invalid','primary_unavailable','context_truncated','snapshot_corrupt','validated','validation_unavailable','corrupt','aborted') ORDER BY created_at_ms,id LIMIT 1`).get(scope.guildId, scope.channelId) as { id:string; mode:ParticipationMode; status:string; snapshot_json:string; persona_text:string; persona_revision:string; primary_result_json:string|null; delivery_disposition:"pending"|"delivered"|"retryable"|"cancelled"|"not_applicable"|null } | undefined;
+    const row = this.serviceDb.db.prepare(`SELECT id,mode,status,snapshot_json,persona_text,persona_revision,primary_result_json,delivery_disposition FROM conversation_participation_ticks WHERE guild_id=? AND channel_id=? AND status NOT IN ('primary_invalid','primary_unavailable','context_truncated','snapshot_corrupt','validated','validation_unavailable','aborted') ORDER BY created_at_ms,id LIMIT 1`).get(scope.guildId, scope.channelId) as { id:string; mode:ParticipationMode; status:string; snapshot_json:string; persona_text:string; persona_revision:string; primary_result_json:string|null; delivery_disposition:"pending"|"delivered"|"retryable"|"cancelled"|"not_applicable"|null } | undefined;
     return row ? { id:row.id, mode:row.mode, status:row.status, snapshotJson:row.snapshot_json, personaText:row.persona_text, personaRevision:row.persona_revision, primaryResultJson:row.primary_result_json, deliveryDisposition:row.delivery_disposition } : null;
   }
   participationPrior(scope: Scope, personaRevision: string, primaryContractVersion: string): number {
@@ -526,7 +543,7 @@ export class AdaptiveAmbientStore {
   private corruptParticipationTickIds(scope: Scope): readonly string[] {
     const ticks=this.serviceDb.db.prepare(`SELECT id,snapshot_json,snapshot_utf8_bytes,snapshot_digest,persona_text,persona_utf8_bytes,persona_digest,
       primary_result_json,primary_result_utf8_bytes,primary_result_digest FROM conversation_participation_ticks
-      WHERE guild_id=? AND channel_id=? AND status NOT IN ('validated','validation_unavailable','corrupt','aborted')`)
+      WHERE guild_id=? AND channel_id=? AND status NOT IN ('validated','validation_unavailable','snapshot_corrupt','aborted')`)
       .all(scope.guildId,scope.channelId) as {id:string;snapshot_json:string;snapshot_utf8_bytes:number;snapshot_digest:string;persona_text:string;persona_utf8_bytes:number;persona_digest:string;primary_result_json:string|null;primary_result_utf8_bytes:number|null;primary_result_digest:string|null}[];
     const corrupt: string[]=[];
     for (const tick of ticks) try {
@@ -572,6 +589,13 @@ export class AdaptiveAmbientStore {
       WHERE adaptive_relationship_profiles.channel_id=excluded.channel_id`)
       .run(input.scope.guildId, input.scope.channelId, relation.userId, merged.rapport, merged.familiarity, JSON.stringify(merged.notes), now);
   } }
+  private budgetAvailable(scope: Scope, budget: { readonly key: string; readonly limit: number; readonly windowStartMs: number }): boolean {
+    if (!Number.isSafeInteger(budget.limit) || budget.limit < 1 || !Number.isSafeInteger(budget.windowStartMs)) return false;
+    const current=this.serviceDb.db.prepare("SELECT count,window_start_ms FROM adaptive_budgets WHERE scope_key=? AND budget_key=?")
+      .get(`${scope.guildId}:${scope.channelId}`,budget.key) as {count:number;window_start_ms:number}|undefined;
+    const count=current?.window_start_ms === budget.windowStartMs ? current.count : 0;
+    return Number.isSafeInteger(count) && count < budget.limit;
+  }
   private admitBudget(input: { readonly scope: Scope; readonly budget: { readonly key: string; readonly count: number; readonly windowStartMs: number; readonly limit: number } }, now: number): boolean {
     const { budget } = input;
     if (!Number.isSafeInteger(budget.limit) || budget.limit < 1 || !Number.isSafeInteger(budget.windowStartMs)) return false;

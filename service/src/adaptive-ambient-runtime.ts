@@ -48,6 +48,9 @@ export type AdaptiveAmbientRuntime = {
 };
 
 const BUDGET_KEY = "ambient";
+const PARTICIPANT_CONTEXT_SEED_ROWS = 97;
+const PARTICIPANT_REPLY_ANCESTOR_DEPTH = 12;
+const PARTICIPANT_REPLY_ANCESTOR_ROWS = 24;
 const DEFAULT_AMBIENT_DRIVE = 0.7;
 const DEFAULT_AMBIENT_CONFIDENCE_FLOOR = 0.6;
 const RECENT_CONTEXT_LIMIT = 50;
@@ -194,27 +197,23 @@ async function runParticipationV2(options: AdaptiveAmbientRuntimeOptions, input:
   const primaryModel = options.primaryModel?.trim();
   const validatorModel = options.validatorModel?.trim();
   if (!primaryModel || !validatorModel || (mode === "apply" && primaryModel === validatorModel)) return "provider_unavailable";
+  const budgetLimit = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId)).ambientBudgetPerHour ?? options.budgetPerHour;
   options.store.recoverExpiredParticipationClaims(options.scope, input.fence);
   let tick = options.store.participationTick(options.scope);
   if (tick?.status === "decided") return validateParticipation(options, input, tick.id, tick.snapshotJson, tick.primaryResultJson, tick.deliveryDisposition);
   if (!tick) {
     const scopeId = `discord:${options.scope.guildId}:${options.scope.channelId}`;
-    const highWatermark = options.serviceDb.db.prepare("SELECT MAX(id) AS id FROM conversation_raw_events WHERE scope_id=?").get(scopeId) as { id: number | null };
+    const highWatermark = options.serviceDb.db.prepare("SELECT MAX(id) AS id FROM conversation_raw_events WHERE scope_id=? AND author_source='discord-participant'").get(scopeId) as { id: number | null };
     if (highWatermark.id !== null) options.store.terminalizeParticipationObserveOnly(options.scope, highWatermark.id, input.fence);
-    if (mode === "apply") {
-      const budgetLimit = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId)).ambientBudgetPerHour ?? options.budgetPerHour;
-      if (!budgetAvailable(options.store, options.scope, budgetLimit, clock())) return "idle";
-    }
-    const rows = options.serviceDb.db.prepare(`SELECT w.id,w.event_id AS eventId FROM participant_event_work w JOIN conversation_raw_events r ON r.message_id=w.event_id
+    const rows = options.serviceDb.db.prepare(`SELECT w.id,w.event_id AS eventId FROM participant_event_work w JOIN conversation_raw_events r
+      ON r.scope_id=? AND r.message_id=w.event_id AND r.author_source='discord-participant'
       WHERE w.guild_id=? AND w.channel_id=? AND w.participation_tick_id IS NULL
         AND (w.status IN ('pending','retryable') OR (w.status='claimed' AND w.claim_expires_at_ms<=?))
-        AND w.observe_only=0 AND r.scope_id=? AND r.author_source='discord-participant' AND r.author_role='user'
+        AND w.observe_only=0 AND r.author_role='user'
         AND NOT EXISTS (SELECT 1 FROM conversation_participation_coverage c WHERE c.work_id=w.id AND c.coverage_kind=?)
-      ORDER BY w.created_at_ms DESC,w.id DESC LIMIT 120`).all(options.scope.guildId, options.scope.channelId, clock(), scopeId, mode) as { id:string; eventId:string }[];
+      ORDER BY w.created_at_ms DESC,w.id DESC LIMIT 120`).all(scopeId, options.scope.guildId, options.scope.channelId, clock(), mode) as { id:string; eventId:string }[];
     if (!rows.length) return "idle";
-    const raw = options.serviceDb.db.prepare(`SELECT * FROM (SELECT id,scope_id AS scopeId,message_id AS messageId,author_source AS authorSource,
-      author_role AS authorRole,text,event_ts AS eventTs,metadata_json AS metadataJson FROM conversation_raw_events
-      WHERE scope_id=? ORDER BY id DESC LIMIT 97) ORDER BY id`).all(scopeId) as ConversationParticipantRawEvent[];
+    const raw = loadParticipantContextRows(options.serviceDb, scopeId, rows[0]!.eventId);
     const anchorWork = rows[0]!;
     const materialized = materializeConversationParticipantContext(scopeId, raw, anchorWork.eventId);
     if (materialized.kind !== "valid") {
@@ -233,7 +232,7 @@ async function runParticipationV2(options: AdaptiveAmbientRuntimeOptions, input:
     options.store.abortParticipationTick(tick.id, "explicit_predecision", input.fence);
     return "aborted";
   }
-  if (!options.store.claimParticipationPrimary(tick.id, input.fence)) return "idle";
+  if (!options.store.claimParticipationPrimary(tick.id, input.fence, mode === "apply" ? { key: BUDGET_KEY, limit: budgetLimit, windowStartMs: hourStart(clock()) } : undefined)) return "idle";
   const snapshot = JSON.parse(tick.snapshotJson) as { turns: import("./conversation-participant-context.js").ConversationParticipantTurn[] };
   let response;
   try { response = await options.primary.decide({ persona: tick.personaText, turns: snapshot.turns, prior: { speak: options.store.participationPrior(options.scope, tick.personaRevision, ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary), observe: 0 } }, { signal: input.signal }); }
@@ -250,7 +249,6 @@ async function runParticipationV2(options: AdaptiveAmbientRuntimeOptions, input:
   const bytes = json === null ? null : canonicalUtf8Bytes(json);
   const digest = json === null ? null : sha256Utf8(json);
   const now = clock();
-  const budgetLimit = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId)).ambientBudgetPerHour ?? options.budgetPerHour;
   const currentBudget = options.store.budget(options.scope, BUDGET_KEY);
   const windowStartMs = hourStart(now);
   const budget = mode === "apply" && response.proposal.decision === "speak"
@@ -276,7 +274,8 @@ async function runParticipationV2(options: AdaptiveAmbientRuntimeOptions, input:
     ...(budget ? { budget } : {}),
   });
   if (!persisted) return "idle";
-  return response.proposal.decision === "speak" ? "planned" : "observe";
+  const persistedTick = options.store.participationTick(options.scope);
+  return mode === "apply" && response.proposal.decision === "speak" && persistedTick?.id === tick.id && persistedTick.deliveryDisposition === "pending" ? "planned" : "observe";
 }
 async function validateParticipation(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }, tickId: string, snapshotJson: string, primaryJson: string | null, disposition: "pending" | "delivered" | "retryable" | "cancelled" | "not_applicable" | null): Promise<RuntimeStatus> {
   if (!options.validator || !primaryJson || disposition === "pending" || !isPostdecisionCurrent(options, input) || !options.store.claimParticipationValidation(tickId, input.fence)) return "idle";
@@ -314,6 +313,40 @@ function isParticipationCurrent(options: AdaptiveAmbientRuntimeOptions, input: {
 }
 function isPostdecisionCurrent(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }): boolean {
   return !input.signal.aborted && options.store.isFenceCurrent(input.fence);
+}
+function loadParticipantContextRows(db: ServiceDatabase, scopeId: string, anchorMessageId: string): ConversationParticipantRawEvent[] {
+  const select = `SELECT id,scope_id AS scopeId,message_id AS messageId,author_source AS authorSource,
+    author_role AS authorRole,text,event_ts AS eventTs,metadata_json AS metadataJson FROM conversation_raw_events`;
+  const seeds = db.db.prepare(`SELECT * FROM (${select}
+    WHERE scope_id=? AND author_source='discord-participant' ORDER BY id DESC LIMIT ?) ORDER BY id`)
+    .all(scopeId, PARTICIPANT_CONTEXT_SEED_ROWS) as ConversationParticipantRawEvent[];
+  const anchor = seeds.find((row) => row.messageId === anchorMessageId)
+    ?? db.db.prepare(`${select} WHERE scope_id=? AND message_id=? AND author_source='discord-participant'`).get(scopeId, anchorMessageId) as ConversationParticipantRawEvent | undefined;
+  const rows = anchor && !seeds.some((row) => row.id === anchor.id) ? [...seeds, anchor] : [...seeds];
+  const seen = new Set(rows.map((row) => `${row.scopeId}\u0000${row.messageId}\u0000${row.authorSource}`));
+  let ancestors = 0;
+  const walkParents = (start: ConversationParticipantRawEvent): void => {
+    let row = start;
+    for (let depth = 0; depth < PARTICIPANT_REPLY_ANCESTOR_DEPTH && ancestors < PARTICIPANT_REPLY_ANCESTOR_ROWS; depth += 1) {
+      const reply = parseRecord(row.metadataJson).replyTo;
+      if (!isReplyMetadata(reply)) return;
+      const parent = db.db.prepare(`${select} WHERE scope_id=? AND message_id=? AND author_source='discord-participant'`)
+        .get(scopeId, reply.messageId) as ConversationParticipantRawEvent | undefined;
+      if (!parent) return;
+      const key = `${parent.scopeId}\u0000${parent.messageId}\u0000${parent.authorSource}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push(parent);
+      ancestors += 1;
+      row = parent;
+    }
+  };
+  if (anchor) walkParents(anchor);
+  for (const seed of [...seeds].sort((left, right) => right.id - left.id)) {
+    if (ancestors >= PARTICIPANT_REPLY_ANCESTOR_ROWS) break;
+    if (seed.id !== anchor?.id) walkParents(seed);
+  }
+  return rows;
 }
 function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: number): { transcript: readonly DiscordInboundMessage[]; event: DiscordInboundMessage; archiveSummaries: readonly string[]; relationships: readonly RelationshipContext[] } {
   const scopeId = `discord:${scope.guildId}:${scope.channelId}`;
