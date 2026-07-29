@@ -178,8 +178,9 @@ export class AdaptiveAmbientStore {
         AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?))
         AND EXISTS (SELECT 1 FROM conversation_raw_events r
           WHERE r.message_id=participant_event_work.event_id
-            AND r.scope_id=? AND r.author_source='discord-participant' AND r.id<=?)`)
-      .run(now, scope.guildId, scope.channelId, now, `discord:${scope.guildId}:${scope.channelId}`, highWatermarkId).changes;
+            AND r.scope_id=? AND r.author_source='discord-participant' AND r.id<=?)
+        AND ${this.fencedWhere()}`)
+      .run(now, scope.guildId, scope.channelId, now, `discord:${scope.guildId}:${scope.channelId}`, highWatermarkId, ...this.fencedArgs(fence, now)).changes;
   }
   terminalizeParticipationInvalidContext(scope: Scope, workId: string, reason: "context_truncated" | "snapshot_corrupt", fence: Fence): boolean {
     const now = this.clock();

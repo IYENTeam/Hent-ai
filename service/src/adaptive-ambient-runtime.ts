@@ -327,6 +327,7 @@ function loadParticipantContextRows(db: ServiceDatabase, scopeId: string, anchor
   let ancestors = 0;
   const walkParents = (start: ConversationParticipantRawEvent): void => {
     let row = start;
+    const traversed = new Set([`${row.scopeId}\u0000${row.messageId}\u0000${row.authorSource}`]);
     for (let depth = 0; depth < PARTICIPANT_REPLY_ANCESTOR_DEPTH && ancestors < PARTICIPANT_REPLY_ANCESTOR_ROWS; depth += 1) {
       const reply = parseRecord(row.metadataJson).replyTo;
       if (!isReplyMetadata(reply)) return;
@@ -334,10 +335,13 @@ function loadParticipantContextRows(db: ServiceDatabase, scopeId: string, anchor
         .get(scopeId, reply.messageId) as ConversationParticipantRawEvent | undefined;
       if (!parent) return;
       const key = `${parent.scopeId}\u0000${parent.messageId}\u0000${parent.authorSource}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      rows.push(parent);
-      ancestors += 1;
+      if (traversed.has(key)) return;
+      traversed.add(key);
+      if (!seen.has(key)) {
+        seen.add(key);
+        rows.push(parent);
+        ancestors += 1;
+      }
       row = parent;
     }
   };
