@@ -345,4 +345,70 @@ describe("atomic adaptive ambient runtime", () => {
     expect(lost.store.counts()).toEqual({ audits: 0, states: 0, budgets: 0, relationships: 0, plans: 0 });
     lost.db.close();
   });
+  it("keeps validator failure independent and feeds an applied prior to the immediate next V2 primary", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
+    const priors: number[] = [];
+    const primary = { decide: async (request: { readonly prior: { readonly speak: number } }) => {
+      priors.push(request.prior.speak);
+      return { kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: "speak" as const,
+        baselineDecision: "speak" as const, judgmentClass: "definitive" as const, semanticMargin: 1, priorApplied: false, confidence: 1, chunks: ["v2 reply"] } };
+    } };
+    let validatorAvailable = false;
+    const validator = { validate: async () => validatorAvailable
+      ? { kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationValidator, missedOpportunity: 0, interruption: 0, confidence: 1, priorDelta: 0.05, rationale: "good" } }
+      : { kind: "unavailable" as const, diagnostic: "validator unavailable" } };
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls), primary, validator,
+      primaryModel: "primary-model", validatorModel: "validator-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
+    const firstPlan = fixture.db.db.prepare("SELECT id FROM participant_delivery_plans WHERE decision_version='v2'").get() as { id: string };
+    expect(fixture.store.cancelDelivery(firstPlan.id, fixture.fence)).toBe(true);
+    fixture.db.db.prepare("UPDATE adaptive_budgets SET count=2 WHERE scope_key=? AND budget_key='ambient'").run(`${scope.guildId}:${scope.channelId}`);
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("provider_unavailable");
+    expect(fixture.db.db.prepare("SELECT model FROM conversation_participation_validations").get()).toEqual({ model: "validator-model" });
+    const firstTick = fixture.db.db.prepare("SELECT id,persona_revision FROM conversation_participation_ticks").get() as { id: string; persona_revision: string };
+    expect(fixture.store.participationPrior(scope, firstTick.persona_revision, ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary)).toBe(0);
+    now += 30_001;
+    const recoveredFence = fixture.store.acquireLease("discord-ambient-worker", "runtime")!;
+    validatorAvailable = true;
+    await expect(fixture.runtime!.run({ fence: recoveredFence, signal: new AbortController().signal })).resolves.toBe("observe");
+    const prior = fixture.db.db.prepare("SELECT value FROM conversation_participation_priors").get() as { value: number };
+    expect(prior.value).toBe(0.05);
+
+    fixture.store.createWork({ id: "work-2", eventId: "event-2", eventDigest: "digest:event-2", scope });
+    fixture.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?, ?, NULL, NULL, ?, 'user', 'discord-participant', ?, ?, ?, 0, ?, ?)`)
+      .run(`discord:${scope.guildId}:${scope.channelId}`, scope.channelId, "event-2", "new turn", new Date(now).toISOString(), new Date(now).toISOString(), JSON.stringify({ discordAuthorId: "100000000000000004", discordAuthorBot: false, mentions: [] }), new Date(now).toISOString());
+    fixture.db.db.prepare("UPDATE adaptive_budgets SET count=0 WHERE scope_key=? AND budget_key='ambient'").run(`${scope.guildId}:${scope.channelId}`);
+    await expect(fixture.runtime!.run({ fence: recoveredFence, signal: new AbortController().signal })).resolves.toBe("planned");
+    expect(priors).toEqual([0, 0.05]);
+    fixture.db.close();
+  });
+  it("anchors an apply tick to the eligible work rather than a newer unworked event", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
+    fixture.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?, ?, NULL, NULL, 'newer-unworked', 'user', 'discord', 'newer', ?, ?, 0, ?, ?)`)
+      .run(`discord:${scope.guildId}:${scope.channelId}`, scope.channelId, new Date(now + 1).toISOString(), new Date(now + 1).toISOString(), JSON.stringify({ discordAuthorId: "100000000000000005", discordAuthorBot: false }), new Date(now + 1).toISOString());
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls),
+      primary: { decide: async () => ({ kind: "valid" as const, proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: "observe" as const, baselineDecision: "observe" as const, judgmentClass: "definitive" as const, semanticMargin: 1, priorApplied: false, confidence: 1, chunks: [] } }) },
+      validator: { validate: async () => ({ kind: "unavailable" as const, diagnostic: "unused" }) },
+      primaryModel: "primary-model", validatorModel: "validator-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
+    expect(fixture.db.db.prepare("SELECT anchor_work_id FROM conversation_participation_ticks").get()).toEqual({ anchor_work_id: "work-1" });
+    expect(fixture.db.db.prepare("SELECT snapshot_high_watermark_id AS highWatermark FROM conversation_participation_ticks").get()).toEqual({ highWatermark: 2 });
+    fixture.db.close();
+  });
+  it("fails closed for apply when configured primary and validator models match", async () => {
+    const fixture = setup({ settings: { conversationParticipationMode: "apply" } });
+    let primaryCalls = 0;
+    fixture.runtime = runtimeFactory()?.({ serviceDb: fixture.db, store: fixture.store, provider: provider(appraisal(), fixture.calls),
+      primary: { decide: async () => { primaryCalls += 1; return { kind: "unavailable" as const, diagnostic: "unexpected" }; } },
+      validator: { validate: async () => ({ kind: "unavailable" as const, diagnostic: "unexpected" }) },
+      primaryModel: "same-model", validatorModel: "same-model",
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("provider_unavailable");
+    expect(primaryCalls).toBe(0);
+    fixture.db.close();
+  });
 });

@@ -145,7 +145,20 @@ cd service
 npx tsx scripts/replay-ambient-calibration.ts
 ```
 
-The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or effective pity probability falls below its base probability.
+The script exits nonzero when any deterministic V2 calibration invariant fails.
+V2 calibration is deterministic: it exercises selected-anchor/high-watermark immutability, post-high-watermark deferral, bounded reply ancestry, canonical UTF-8/digest checks, and multibyte parser caps. Store, cleanup, delivery, and legacy V1 regressions are covered by the release-gate test suites rather than duplicated in this script.
+
+### V2 operation, diagnostics, and rollback
+
+Set `HENT_AI_CONVERSATION_PARTICIPATION_DEFAULT_MODE` to `off`, `shadow`, or `apply` to select the fallback for channels without `channel_settings.settings_json.conversationParticipationMode`; an explicit valid per-channel setting takes precedence. Invalid defaults and malformed/invalid per-channel modes emit `participation_mode_invalid` and resolve V2 to `off` while preserving V1 processing. `off` performs no V2 participant ingress or delivery. `shadow` binds an immutable diagnostic tick and records `coverage_kind='shadow'` without changing `participant_event_work` assignment/status or delivering. `apply` binds work coverage, creates a plan, and delivers. Promote a channel from `off` to `shadow`, wait for a persisted validated shadow tick, then set it to `apply`; direct `off`→`apply` is rejected. Rollback through `apply`→`shadow`→`off` is allowed, and emergency `apply`→`off` prevents subsequent V2 sends. Do not manually delete durable state during rollback.
+
+The V2 validator is service-owned and uses `gpt-4.1-mini` by default at the validator boundary; its model must differ from the primary model in apply mode. Delivery records its immutable first disposition before validation. A missing, malformed, unavailable, timed-out, or schema-invalid validator response is fail-closed for prior learning and next-primary admission, is retried under the durable validator claim policy, and never retroactively authorizes or retracts the recorded delivery disposition. OpenClaw neither calls the validator nor owns participant decisions, ticks, plans, receipts, diagnostics, or cleanup; it consumes the service API only.
+
+Ingress is immutable at a tick boundary: the selected anchor and raw-event high-watermark are snapshotted before appraisal. Posts/ticks arriving after that high-watermark remain pending for a later tick and neither alter nor cancel the current plan. Cleanup retains every protected/nonterminal tick anchor, high-watermark, snapshot raw row, linked work, and pending/retryable plan. Complete terminal aggregates older than seven days are deleted in FK-safe phases; only then may their now-unreferenced terminal work and bounded raw ingress be pruned.
+
+### Approved ambient-memory cleanup
+
+The cleanup is an explicit service SQLite maintenance operation, never an OpenClaw operation. It is limited to the two approved guild/channel pairs in `AMBIENT_MEMORY_CLEANUP_SCOPES`, requires `ambientMemoryMode: "external"` for both, refuses claimed work or claimed archive batches, verifies a distinct non-symlink SQLite backup and its full fingerprint, and runs in one immediate transaction. Take a verified backup first; use dry-run inventory, then apply only during a quiet maintenance window. Preserve the inventory, backup fingerprint, deleted-row counts, and diagnostics with the change record. Do not place database paths, tokens, backup contents, or other secrets in commands, docs, or logs.
 
 ## Deploy
 

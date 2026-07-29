@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { ADAPTIVE_SCHEMA_SQL } from "./db-schema-adaptive.js";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -192,6 +192,7 @@ function columnExists(db: Database.Database, table: string, column: string): boo
 }
 
 export function initializeServiceSchema(db: Database.Database, appliedAt: string): void {
+  db.pragma("foreign_keys = ON");
   db.exec(SCHEMA_SQL);
   db.exec(ADAPTIVE_SCHEMA_SQL);
   if (!columnExists(db, "conversation_raw_events", "archived_at_ms")) {
@@ -220,6 +221,14 @@ export function initializeServiceSchema(db: Database.Database, appliedAt: string
   ] as const) {
     if (!columnExists(db, migration[0], migration[1])) db.exec(`ALTER TABLE ${migration[0]} ADD COLUMN ${migration[1]} ${migration[2]}`);
   }
+  for (const migration of [
+    ["participant_event_work", "participation_tick_id", "TEXT REFERENCES conversation_participation_ticks(id)"],
+    ["participant_delivery_plans", "decision_version", "TEXT NOT NULL DEFAULT 'v1' CHECK(decision_version IN ('v1','v2'))"],
+    ["participant_delivery_plans", "tick_id", "TEXT REFERENCES conversation_participation_ticks(id)"],
+  ] as const) {
+    if (!columnExists(db, migration[0], migration[1])) db.exec(`ALTER TABLE ${migration[0]} ADD COLUMN ${migration[1]} ${migration[2]}`);
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_participant_work_generic_claim ON participant_event_work(guild_id,channel_id,status,created_at_ms,id) WHERE participation_tick_id IS NULL");
   db.exec("CREATE INDEX IF NOT EXISTS idx_adaptive_relationship_profiles_guild_channel_user ON adaptive_relationship_profiles(guild_id, channel_id, user_id)");
   const existingVersion = db.prepare<[], { readonly version: number }>("SELECT MAX(version) AS version FROM schema_migrations").get()?.version ?? 0;
   if (existingVersion < SCHEMA_VERSION) {

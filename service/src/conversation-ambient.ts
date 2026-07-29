@@ -5,6 +5,7 @@ import type {
   AmbientAppraisalProposal,
   AmbientDecisionAudit,
   AmbientState,
+  ConversationParticipationPrimaryParseResult,
   DiscordInboundMessage,
   DiscordMembershipSnapshot,
 } from "./adaptive-ambient-contracts.js";
@@ -52,6 +53,47 @@ export type AmbientDecisionResult = {
   readonly draw: number | null;
   readonly shouldSpeak: boolean;
 };
+
+export type ConversationParticipationDecisionResult = {
+  readonly decision: "observe" | "speak";
+  readonly shouldSpeak: boolean;
+  readonly baselineDecision: "observe" | "speak" | null;
+  readonly judgmentClass: "definitive" | "borderline" | null;
+  readonly semanticMargin: number | null;
+  readonly priorApplied: boolean | null;
+  readonly diagnostic: string | null;
+};
+
+/**
+ * V2 parser-valid primary decisions are authoritative. Unlike V1, this path
+ * intentionally has no draw, drive, pressure, pity, or confidence reversal.
+ */
+export function evaluateConversationParticipationPrimary(
+  primary: ConversationParticipationPrimaryParseResult,
+): ConversationParticipationDecisionResult {
+  if (primary.kind !== "valid") {
+    return {
+      decision: "observe",
+      shouldSpeak: false,
+      baselineDecision: null,
+      judgmentClass: null,
+      semanticMargin: null,
+      priorApplied: null,
+      diagnostic: primary.diagnostic,
+    };
+  }
+
+  const proposal = primary.proposal;
+  return {
+    decision: proposal.decision,
+    shouldSpeak: proposal.decision === "speak",
+    baselineDecision: proposal.baselineDecision,
+    judgmentClass: proposal.judgmentClass,
+    semanticMargin: proposal.semanticMargin,
+    priorApplied: proposal.priorApplied,
+    diagnostic: null,
+  };
+}
 
 export function classifyAmbientAppraisal(result: AmbientAppraisalParseResult): "valid" | "invalid" | "unavailable" {
   return result.kind;

@@ -77,6 +77,15 @@ describe("nonce-fenced ambient delivery", () => {
     expect(fixture.db.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 0 }); fixture.db.close();
   });
 
+  it("rechecks authorization before typing and message side effects", async () => {
+    const fixture = setup(["single bubble"]); const calls: string[] = []; let authorizations = 0;
+    const delivery = factory()({ store: fixture.store, delay: async () => { calls.push("delay"); }, isAuthorized: () => ++authorizations < 3, client: {
+      sendTyping: async () => { calls.push("typing"); }, createMessage: async () => { calls.push("send"); return { id: "message" }; },
+    } });
+    await expect(delivery.deliver({ planId: "plan", fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("cancelled");
+    expect({ authorizations, calls }).toEqual({ authorizations: 3, calls: ["typing", "delay"] });
+    fixture.db.close();
+  });
   it("fails closed for unsafe bubble normalization and stale fences while preserving the tick boundary", async () => {
     const normalize = Reflect.get(service, "normalizeDiscordAmbientBubbles") as (chunks: readonly string[]) => readonly string[] | null;
     expect(normalize(["a".repeat(700)])).toHaveLength(5);

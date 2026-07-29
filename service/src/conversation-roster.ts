@@ -32,7 +32,7 @@ export async function accumulateDiscordRoster(
     } catch {
       return incomplete(scope, members, observedAtMs, pageNumber, "page_failure");
     }
-    const validation = validatePage(page, seen);
+    const validation = validatePage(page, seen, after);
     if (validation !== null) return incomplete(scope, members, observedAtMs, pageNumber + 1, validation);
     for (const member of page) {
       seen.add(member.userId);
@@ -64,8 +64,8 @@ export function deriveActiveHumanIds(
     .map((event) => event.authorId))].sort();
 }
 
-function validatePage(page: readonly DiscordRosterMember[], seen: ReadonlySet<string>): "duplicate" | "non_increasing" | null {
-  let previous: bigint | null = null;
+function validatePage(page: readonly DiscordRosterMember[], seen: ReadonlySet<string>, after?: string): "duplicate" | "non_increasing" | null {
+  let previous: bigint | null = after === undefined ? null : BigInt(after);
   const pageIds = new Set<string>();
   for (const member of page) {
     let current: bigint;
@@ -74,8 +74,8 @@ function validatePage(page: readonly DiscordRosterMember[], seen: ReadonlySet<st
     } catch {
       return "non_increasing";
     }
-    if (current < 1n || (previous !== null && current <= previous)) return "non_increasing";
     if (seen.has(member.userId) || pageIds.has(member.userId)) return "duplicate";
+    if (current < 1n || (previous !== null && current <= previous)) return "non_increasing";
     previous = current;
     pageIds.add(member.userId);
   }

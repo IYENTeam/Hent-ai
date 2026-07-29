@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { isDiscordParticipantScopeAllowed, parseDiscordParticipantAllowlist, readAmbientSettings, type DiscordParticipantScope } from "./adaptive-ambient-contracts.js";
-import { createAdaptiveAmbientAppraisalProvider } from "./adaptive-ambient-provider.js";
+import { createAdaptiveAmbientAppraisalProvider, createConversationParticipationPrimaryProvider } from "./adaptive-ambient-provider.js";
+import { createConversationParticipationValidator } from "./conversation-participation-validator.js";
 import { createAdaptiveAmbientRuntime } from "./adaptive-ambient-runtime.js";
 import { createAdaptiveAmbientStore, type AdaptiveAmbientStore } from "./adaptive-ambient-store.js";
 import { createConversationArchiveScheduler } from "./conversation-archive-scheduler.js";
@@ -16,12 +17,14 @@ import { createDiscordParticipantClient, type DiscordParticipantClient } from ".
 
 const POLL_INTERVAL_MS = 10_000;
 const DEFAULT_AMBIENT_BUDGET_PER_HOUR = 20;
+const VALIDATOR_MODELS = new Set(["gpt-4.1-mini", "gpt-4o-mini"]);
 type Env = Readonly<Record<string, string | undefined>>;
 type Timer = { readonly setInterval: (callback: () => void, ms: number) => unknown; readonly clearInterval: (handle: unknown) => void };
 export type WorkerLogLevel = "info" | "warn" | "error";
 export type WorkerLogger = { readonly log: (level: WorkerLogLevel, event: string, fields: Readonly<Record<string, string | number | boolean>>) => void };
 export type DiscordAmbientWorkerConfig = {
   readonly dbPath: string; readonly botToken: string; readonly providerEndpoint: string; readonly providerToken: string; readonly providerModel: string;
+  readonly validatorModel: string; readonly validatorTimeoutMs: number; readonly defaultMode: "off" | "shadow" | "apply";
   readonly globalPersona?: string; readonly scopes: readonly DiscordParticipantScope[]; readonly pollIntervalMs: number;
 };
 export type DiscordAmbientWorker = { readonly status: "disabled" | "running"; readonly stop: () => Promise<void>; readonly runOnce: () => Promise<void> };
@@ -51,9 +54,13 @@ export function loadDiscordAmbientWorkerConfig(env: Env = process.env): { readon
   const providerEndpoint = endpoint(env.HENT_AI_CONVERSATION_PROVIDER_ENDPOINT, diagnostics);
   const providerToken = required(env.HENT_AI_CONVERSATION_PROVIDER_TOKEN, "provider_token", diagnostics);
   const providerModel = required(env.HENT_AI_CONVERSATION_PROVIDER_MODEL, "provider_model", diagnostics);
+  const validatorModel = env.HENT_AI_CONVERSATION_VALIDATOR_MODEL?.trim() || "gpt-4.1-mini";
+  if (!VALIDATOR_MODELS.has(validatorModel)) diagnostics.push("invalid_validator_model");
+  const validatorTimeoutMs = boundedTimeout(env.HENT_AI_CONVERSATION_VALIDATOR_TIMEOUT_MS, diagnostics);
+  const defaultMode = participationDefaultMode(env.HENT_AI_CONVERSATION_PARTICIPATION_DEFAULT_MODE, diagnostics);
   const pollIntervalMs = positive(env.HENT_AI_DISCORD_PARTICIPANT_POLL_INTERVAL_MS, POLL_INTERVAL_MS, diagnostics);
   if (diagnostics.length > 0 || !startup.enabled || !dbPath || !botToken || !providerEndpoint || !providerToken || !providerModel) return { diagnostics };
-  return { config: { dbPath, botToken, providerEndpoint, providerToken, providerModel, globalPersona: env.HENT_AI_CONVERSATION_PERSONA?.trim() || undefined, scopes: startup.allowlist, pollIntervalMs }, diagnostics };
+  return { config: { dbPath, botToken, providerEndpoint, providerToken, providerModel, validatorModel, validatorTimeoutMs, defaultMode, globalPersona: env.HENT_AI_CONVERSATION_PERSONA?.trim() || undefined, scopes: startup.allowlist, pollIntervalMs }, diagnostics };
 }
 
 export async function startDiscordAmbientWorker(env: Env = process.env, dependencies: DiscordAmbientWorkerDependencies = {}): Promise<DiscordAmbientWorker> {
@@ -64,14 +71,21 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   const clock = dependencies.clock ?? Date.now;
   const timer = dependencies.timer ?? nativeTimer;
   const db = (dependencies.createDatabase ?? ((path) => new ServiceDatabase(path)))(config.dbPath);
-  const eligible = config.scopes.filter((scope) => validScope(db, scope));
-  for (const scope of config.scopes) if (!eligible.includes(scope)) logger.log("warn", "discord_ambient_scope_skipped", scopeFields(scope, "mapping_or_profile_invalid"));
+  const eligible = config.scopes.filter((scope) => validScope(db, scope) && (participationModeForScope(db, scope, config.defaultMode).mode !== "apply" || config.providerModel !== config.validatorModel));
+  for (const scope of config.scopes) {
+    const participation = participationModeForScope(db, scope, config.defaultMode);
+    if (!participation.valid) logger.log("warn", "discord_ambient_scope_mode_invalid", scopeFields(scope, "participation_mode_invalid"));
+    if (!eligible.includes(scope)) logger.log("warn", "discord_ambient_scope_skipped", scopeFields(scope, !validScope(db, scope) ? "mapping_or_profile_invalid" : "apply_validator_model_must_differ"));
+  }
   if (eligible.length === 0) { db.close(); logger.log("warn", "discord_ambient_worker_disabled", { reasons: "no_enabled_scopes" }); return disabled(); }
   const store = createAdaptiveAmbientStore(db, clock);
   const holder = dependencies.holderId ?? randomUUID();
   const startupController = new AbortController();
   const providerClient = (dependencies.createProviderClient ?? createOpenAiConversationProviderClient)({ endpoint: config.providerEndpoint, token: config.providerToken, model: config.providerModel, timeoutMs: 10_000 });
+  const validatorClient = (dependencies.createProviderClient ?? createOpenAiConversationProviderClient)({ endpoint: config.providerEndpoint, token: config.providerToken, model: config.validatorModel, timeoutMs: config.validatorTimeoutMs });
   const provider = createAdaptiveAmbientAppraisalProvider({ client: providerClient, model: config.providerModel });
+  const primary = createConversationParticipationPrimaryProvider({ client: providerClient, model: config.providerModel });
+  const validator = createConversationParticipationValidator({ client: validatorClient, model: config.validatorModel });
   const archiveOwner = createDiscordAmbientArchiveOwner({
     store, holderId: holder, timer,
     createScheduler: (fence, signal) => (dependencies.createScheduler ?? createConversationArchiveScheduler)({ store: new ConversationStore(db), archiveStore: store,
@@ -83,6 +97,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   });
   const scopeFences = new Map<string, import("./adaptive-ambient-store.js").Fence>();
   const scopeHeartbeats = new Map<string, unknown>();
+  let rejectedParticipationTransition = false;
   const cancelStartupHeartbeats = (): void => {
     for (const heartbeat of scopeHeartbeats.values()) timer.clearInterval(heartbeat);
     scopeHeartbeats.clear();
@@ -97,6 +112,13 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   for (const scope of [...eligible].sort(compareScope)) {
     const key = leaseKey(scope); const fence = store.acquireLease(key, holder);
     if (!fence) { logger.log("warn", "discord_ambient_scope_skipped", scopeFields(scope, "lease_unavailable")); continue; }
+    const participation = participationModeForScope(db, scope, config.defaultMode);
+    if (!persistParticipationMode(db, scope, participation.mode, fence, clock())) {
+      store.releaseLease(fence);
+      logger.log("warn", "discord_ambient_scope_skipped", scopeFields(scope, "direct_off_to_apply_requires_shadow_promotion"));
+      rejectedParticipationTransition = true;
+      continue;
+    }
     scopeFences.set(key, fence);
     scopeHeartbeats.set(key, timer.setInterval(() => {
       const current = scopeFences.get(key);
@@ -116,6 +138,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     logger.log("error", "discord_ambient_archive_startup_failed", { reason: "archive_startup_failed" });
     return false;
   };
+  if (scopeFences.size === 0 && rejectedParticipationTransition) { db.close(); return disabled(); }
   if (scopeFences.size === 0) {
     if (!await startArchive()) return disabled();
     return standby(archiveOwner.stop, db.close.bind(db));
@@ -146,11 +169,14 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     const startupHeartbeat = scopeHeartbeats.get(key);
     if (startupHeartbeat !== undefined) timer.clearInterval(startupHeartbeat);
     scopeHeartbeats.delete(key);
-    const runtime = createRuntime({ serviceDb: db, store, provider, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: ambientBudgetPerHour(db, scope),
-      globalPersona: config.globalPersona, clock, scheduleHeartbeat: (callback, ms) => { const handle = timer.setInterval(callback, ms); return () => timer.clearInterval(handle); },
+    const runtime = createRuntime({ serviceDb: db, store, provider, primary, validator, primaryModel: config.providerModel, validatorModel: config.validatorModel,
+      startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: ambientBudgetPerHour(db, scope),
+      defaultMode: config.defaultMode, globalPersona: config.globalPersona, clock, scheduleHeartbeat: (callback, ms) => { const handle = timer.setInterval(callback, ms); return () => timer.clearInterval(handle); },
       loadRoster: async (current, signal) => (await accumulateDiscordRoster(current, ({ after }) => client.fetchGuildMembers(current.guildId, after, signal).then((members) => members.map((member) => ({ userId: member.userId, bot: member.bot }))), clock())).roster });
-    const delivery = (dependencies.createDelivery ?? createDiscordAmbientDelivery)({ store, client, isAuthorized: (channelId) => channelId === scope.channelId && isDiscordParticipantScopeAllowed({ enabled: true, allowlist: [scope], diagnostics: [] }, scope, db.getChannelMapping(channelId)) });
+    const delivery = (dependencies.createDelivery ?? createDiscordAmbientDelivery)({ store, client, isAuthorized: (channelId, planId) => deliveryAuthorized(config, db, scope, channelId, planId) });
     const core = (dependencies.createCore ?? createDiscordAmbientWorkerCore)({ store, client, scope, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, channelMapping: () => db.getChannelMapping(scope.channelId), holderId: holder, initialFence: fence, selfUserId: botUserId, leaseKey: leaseKey(scope), clock, scheduleHeartbeat: (callback, ms) => { const handle = timer.setInterval(callback, ms); return () => timer.clearInterval(handle); }, runWork: async ({ fence: currentFence, signal }) => {
+      const participation = participationModeForScope(db, scope, config.defaultMode);
+      if (!persistParticipationMode(db, scope, participation.mode, currentFence, clock())) return;
       for (const planId of pendingPlanIds(store, scope)) await delivery.deliver({ planId, fence: currentFence, signal });
       const result = await runtime.run({ fence: currentFence, signal });
       if (result === "planned") for (const planId of pendingPlanIds(store, scope)) await delivery.deliver({ planId, fence: currentFence, signal });
@@ -182,6 +208,46 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   return { status: "running", runOnce, stop };
 }
 
+type ParticipationMode = "off" | "shadow" | "apply";
+type ParticipationModeRead = { readonly valid: true; readonly mode: ParticipationMode } | { readonly valid: false; readonly mode: "off" };
+
+function participationModeForScope(db: ServiceDatabase, scope: DiscordParticipantScope, defaultMode: ParticipationMode = "off"): ParticipationModeRead {
+  const row = db.db.prepare("SELECT settings_json FROM channel_settings WHERE channel_id=?").get(scope.channelId) as { readonly settings_json: string | null } | undefined;
+  try {
+    const settings = JSON.parse(row?.settings_json ?? "{}") as { conversationParticipationMode?: unknown };
+    if (settings.conversationParticipationMode === undefined) return { valid: true, mode: defaultMode };
+    return settings.conversationParticipationMode === "off" || settings.conversationParticipationMode === "shadow" || settings.conversationParticipationMode === "apply"
+      ? { valid: true, mode: settings.conversationParticipationMode }
+      : { valid: false, mode: "off" };
+  } catch { return { valid: false, mode: "off" }; }
+}
+
+function persistParticipationMode(db: ServiceDatabase, scope: DiscordParticipantScope, mode: ParticipationMode, fence: import("./adaptive-ambient-store.js").Fence, now: number): boolean {
+  const sql = db.db;
+  sql.exec("BEGIN IMMEDIATE");
+  try {
+    const current = sql.prepare("SELECT mode,changed_at_ms FROM conversation_participation_mode_state WHERE guild_id=? AND channel_id=?")
+      .get(scope.guildId, scope.channelId) as { readonly mode: ParticipationMode; readonly changed_at_ms: number } | undefined;
+    const fenced = sql.prepare("SELECT 1 FROM adaptive_leases WHERE lease_key=? AND holder_id=? AND fence_token=? AND expires_at_ms>?")
+      .get(fence.key, fence.holderId, fence.fenceToken, now) !== undefined;
+    if (!fenced) throw new Error("stale fence");
+    const promoted = current?.mode === "shadow" && sql.prepare(`SELECT 1 FROM conversation_participation_ticks t
+      JOIN conversation_participation_validations v ON v.tick_id=t.id
+      WHERE t.guild_id=? AND t.channel_id=? AND t.mode='shadow' AND t.status='validated'
+        AND v.status='accepted_shadow' AND v.updated_at_ms>=? LIMIT 1`).get(scope.guildId, scope.channelId, current.changed_at_ms) !== undefined;
+    const allowed = mode === "off" || (mode === "shadow" && (current === undefined || current.mode === "off" || current.mode === "shadow" || current.mode === "apply")) || (mode === "apply" && (current?.mode === "apply" || promoted));
+    if (!allowed) { sql.exec("ROLLBACK"); return false; }
+    if (current === undefined) sql.prepare("INSERT INTO conversation_participation_mode_state (guild_id,channel_id,mode,changed_at_ms) VALUES (?,?,?,?)").run(scope.guildId, scope.channelId, mode, now);
+    else if (current.mode !== mode) sql.prepare("UPDATE conversation_participation_mode_state SET mode=?,changed_at_ms=? WHERE guild_id=? AND channel_id=?").run(mode, now, scope.guildId, scope.channelId);
+    sql.exec("COMMIT");
+    return true;
+  } catch (error) { sql.exec("ROLLBACK"); throw error; }
+}
+function participationApplyAuthorized(db: ServiceDatabase, scope: DiscordParticipantScope): boolean {
+  return db.db.prepare("SELECT 1 FROM conversation_participation_mode_state WHERE guild_id=? AND channel_id=? AND mode='apply'")
+    .get(scope.guildId, scope.channelId) !== undefined;
+}
+
 function validScope(db: ServiceDatabase, scope: DiscordParticipantScope): boolean { const mapping = db.getChannelMapping(scope.channelId); return mapping?.enabled === true && (!mapping.profileId || db.getProfile(mapping.profileId) !== null); }
 function ambientBudgetPerHour(db: ServiceDatabase, scope: DiscordParticipantScope): number {
   const row = db.db.prepare("SELECT settings_json FROM channel_settings WHERE channel_id=?").get(scope.channelId) as { readonly settings_json: string | null } | undefined;
@@ -190,6 +256,12 @@ function ambientBudgetPerHour(db: ServiceDatabase, scope: DiscordParticipantScop
 function archiveScopeAuthorized(config: DiscordAmbientWorkerConfig, db: ServiceDatabase, scopeId: string): boolean {
   const scope = config.scopes.find((candidate) => scopeId === `discord:${candidate.guildId}:${candidate.channelId}`);
   return scope !== undefined && isDiscordParticipantScopeAllowed({ enabled: true, allowlist: config.scopes, diagnostics: [] }, scope, db.getChannelMapping(scope.channelId));
+}
+function deliveryAuthorized(config: DiscordAmbientWorkerConfig, db: ServiceDatabase, scope: DiscordParticipantScope, channelId: string, planId: string): boolean {
+  if (channelId !== scope.channelId || !isDiscordParticipantScopeAllowed({ enabled: true, allowlist: [scope], diagnostics: [] }, scope, db.getChannelMapping(channelId))) return false;
+  const plan = db.db.prepare("SELECT decision_version FROM participant_delivery_plans WHERE id=?").get(planId) as { readonly decision_version: string } | undefined;
+  if (!plan) return false;
+  return plan.decision_version === "v1" || (plan.decision_version === "v2" && participationModeForScope(db, scope, config.defaultMode).mode === "apply" && participationApplyAuthorized(db, scope) && config.providerModel !== config.validatorModel);
 }
 function standby(stopArchive: () => void, closeDb: () => void): DiscordAmbientWorker {
   let stopped = false;
@@ -214,6 +286,21 @@ function endpoint(value: string | undefined, diagnostics: string[]): string | un
   }
 }
 function positive(value: string | undefined, fallback: number, diagnostics: string[]): number { if (!value?.trim()) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1000) { diagnostics.push("invalid_poll_interval"); return fallback; } return parsed; }
+function participationDefaultMode(value: string | undefined, diagnostics: string[]): "off" | "shadow" | "apply" {
+  if (!value?.trim()) return "off";
+  if (value === "off" || value === "shadow" || value === "apply") return value;
+  diagnostics.push("participation_mode_invalid");
+  return "off";
+}
+function boundedTimeout(value: string | undefined, diagnostics: string[]): number {
+  if (!value?.trim()) return 5_000;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1_000 || parsed > 10_000) {
+    diagnostics.push("invalid_validator_timeout");
+    return 5_000;
+  }
+  return parsed;
+}
 function disabled(): DiscordAmbientWorker { return { status: "disabled", runOnce: async () => undefined, stop: async () => undefined }; }
 const nativeTimer: Timer = { setInterval: (callback, ms) => setInterval(callback, ms), clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout) };
 const jsonLogger: WorkerLogger = { log: (level, event, fields) => console[level](JSON.stringify({ event, ...fields })) };

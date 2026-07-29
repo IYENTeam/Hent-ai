@@ -7,7 +7,10 @@ import {
   type DiscordMembershipSnapshot,
   type DiscordParticipantScope,
 } from "./adaptive-ambient-contracts.js";
-import type { AdaptiveAmbientAppraisalProvider } from "./adaptive-ambient-provider.js";
+import type { AdaptiveAmbientAppraisalProvider, ConversationParticipationPrimaryProvider } from "./adaptive-ambient-provider.js";
+import type { ConversationParticipationValidator } from "./conversation-participation-validator.js";
+import { ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS } from "./adaptive-ambient-contracts.js";
+import { canonicalUtf8Bytes, materializeConversationParticipantContext, resolveConversationParticipantPersona, sha256Utf8, stableCanonicalJson, type ConversationParticipantRawEvent } from "./conversation-participant-context.js";
 import { applyAmbientIdleDecay, evaluateAmbientDecision, IDLE_DECAY_TAU_MS } from "./conversation-ambient.js";
 import { normalizeDiscordAmbientBubbles } from "./discord-ambient-delivery.js";
 import { GENERIC_CONVERSATION_PERSONA } from "./conversation-speech-policy.js";
@@ -25,6 +28,11 @@ export type AdaptiveAmbientRuntimeOptions = {
   readonly serviceDb: ServiceDatabase;
   readonly store: AdaptiveAmbientStore;
   readonly provider: AdaptiveAmbientAppraisalProvider;
+  readonly primary?: ConversationParticipationPrimaryProvider;
+  readonly validator?: ConversationParticipationValidator;
+  readonly primaryModel?: string;
+  readonly validatorModel?: string;
+  readonly defaultMode?: "off" | "shadow" | "apply";
   readonly startup: DiscordParticipantStartupConfig;
   readonly scope: Scope;
   readonly botUserId: string;
@@ -53,6 +61,20 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
     const mapping = options.serviceDb.getChannelMapping(options.scope.channelId);
     if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, mapping)) return "disabled";
     const ambientSettings = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId));
+    const v2Mode = participationMode(channelSettingsJson(options.serviceDb, options.scope.channelId), options.defaultMode);
+    if (v2Mode === "apply") return runParticipationV2(options, input, v2Mode, clock);
+    if (v2Mode === "shadow") {
+      try { await runParticipationV2(options, input, v2Mode, clock); }
+      catch { options.store.recordUnfencedDiagnostic(input.fence, "participation shadow runtime failure"); }
+    }
+    if (v2Mode === "off") {
+      if (!options.store.isFenceCurrent(input.fence)) return "lease_unavailable";
+      options.store.recoverExpiredParticipationClaims(options.scope, input.fence);
+      const tick = options.store.participationTick(options.scope);
+      if (tick?.status === "decided") return validateParticipation(options, input, tick.id, tick.snapshotJson, tick.primaryResultJson, tick.deliveryDisposition);
+    }
+    if (input.signal.aborted) return "aborted";
+    if (!options.store.isFenceCurrent(input.fence)) return "lease_unavailable";
     const budgetLimit = ambientSettings.ambientBudgetPerHour ?? options.budgetPerHour;
     if (input.signal.aborted) return "aborted";
     if (!options.store.isFenceCurrent(input.fence)) return "lease_unavailable";
@@ -167,6 +189,132 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
   return { run };
 }
 
+async function runParticipationV2(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }, mode: "apply" | "shadow", clock: ServiceClock): Promise<RuntimeStatus> {
+  if (!options.primary || !options.validator || input.signal.aborted || !options.store.isFenceCurrent(input.fence)) return input.signal.aborted ? "aborted" : "provider_unavailable";
+  const primaryModel = options.primaryModel?.trim();
+  const validatorModel = options.validatorModel?.trim();
+  if (!primaryModel || !validatorModel || (mode === "apply" && primaryModel === validatorModel)) return "provider_unavailable";
+  options.store.recoverExpiredParticipationClaims(options.scope, input.fence);
+  let tick = options.store.participationTick(options.scope);
+  if (tick?.status === "decided") return validateParticipation(options, input, tick.id, tick.snapshotJson, tick.primaryResultJson, tick.deliveryDisposition);
+  if (!tick) {
+    const scopeId = `discord:${options.scope.guildId}:${options.scope.channelId}`;
+    const highWatermark = options.serviceDb.db.prepare("SELECT MAX(id) AS id FROM conversation_raw_events WHERE scope_id=?").get(scopeId) as { id: number | null };
+    if (highWatermark.id !== null) options.store.terminalizeParticipationObserveOnly(options.scope, highWatermark.id, input.fence);
+    if (mode === "apply") {
+      const budgetLimit = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId)).ambientBudgetPerHour ?? options.budgetPerHour;
+      if (!budgetAvailable(options.store, options.scope, budgetLimit, clock())) return "idle";
+    }
+    const rows = options.serviceDb.db.prepare(`SELECT w.id,w.event_id AS eventId FROM participant_event_work w JOIN conversation_raw_events r ON r.message_id=w.event_id
+      WHERE w.guild_id=? AND w.channel_id=? AND w.participation_tick_id IS NULL
+        AND (w.status IN ('pending','retryable') OR (w.status='claimed' AND w.claim_expires_at_ms<=?))
+        AND w.observe_only=0 AND r.scope_id=? AND r.author_source='discord-participant' AND r.author_role='user'
+        AND NOT EXISTS (SELECT 1 FROM conversation_participation_coverage c WHERE c.work_id=w.id AND c.coverage_kind=?)
+      ORDER BY w.created_at_ms DESC,w.id DESC LIMIT 120`).all(options.scope.guildId, options.scope.channelId, clock(), scopeId, mode) as { id:string; eventId:string }[];
+    if (!rows.length) return "idle";
+    const raw = options.serviceDb.db.prepare(`SELECT * FROM (SELECT id,scope_id AS scopeId,message_id AS messageId,author_source AS authorSource,
+      author_role AS authorRole,text,event_ts AS eventTs,metadata_json AS metadataJson FROM conversation_raw_events
+      WHERE scope_id=? ORDER BY id DESC LIMIT 97) ORDER BY id`).all(scopeId) as ConversationParticipantRawEvent[];
+    const anchorWork = rows[0]!;
+    const materialized = materializeConversationParticipantContext(scopeId, raw, anchorWork.eventId);
+    if (materialized.kind !== "valid") {
+      options.store.terminalizeParticipationInvalidContext(options.scope, anchorWork.id, materialized.kind, input.fence);
+      return "invalid";
+    }
+    const mapping = options.serviceDb.getChannelMapping(options.scope.channelId);
+    const persona = resolveConversationParticipantPersona({ profile: mapping?.profileId ? options.serviceDb.getProfile(mapping.profileId) ?? null : null, configuredGlobalPersona: options.globalPersona });
+    if (!persona || !isParticipationCurrent(options, input, mode)) return "invalid";
+    const id = `participation:${options.scope.guildId}:${options.scope.channelId}:${materialized.snapshot.digest}`;
+    if (!options.store.bindParticipationTick({ id, scope: options.scope, mode, primaryContractVersion: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, anchorWorkId: anchorWork.id, snapshot: { highWatermarkId: materialized.snapshot.highWatermarkId, json: materialized.snapshot.canonicalJson, utf8Bytes: materialized.snapshot.utf8Bytes, digest: materialized.snapshot.digest, turns: materialized.snapshot.turns.map((turn) => ({ rawEventId: turn.id, content: turn.text, utf8Bytes: Buffer.byteLength(turn.text), digest: sha256Utf8(turn.text)! })) }, persona, coverageWorkIds: rows.map((row) => row.id), fence: input.fence })) return "idle";
+    tick = options.store.participationTick(options.scope);
+    if (!tick) return "idle";
+  }
+  if (!isParticipationCurrent(options, input, mode)) {
+    options.store.abortParticipationTick(tick.id, "explicit_predecision", input.fence);
+    return "aborted";
+  }
+  if (!options.store.claimParticipationPrimary(tick.id, input.fence)) return "idle";
+  const snapshot = JSON.parse(tick.snapshotJson) as { turns: import("./conversation-participant-context.js").ConversationParticipantTurn[] };
+  let response;
+  try { response = await options.primary.decide({ persona: tick.personaText, turns: snapshot.turns, prior: { speak: options.store.participationPrior(options.scope, tick.personaRevision, ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary), observe: 0 } }, { signal: input.signal }); }
+  catch { response = { kind: "unavailable", diagnostic: "primary provider failed" } as const; }
+  if (!isParticipationCurrent(options, input, mode)) {
+    options.store.abortParticipationTick(tick.id, "explicit_predecision", input.fence);
+    return "aborted";
+  }
+  if (response.kind !== "valid") {
+    options.store.failParticipationPrimary(tick.id, response.kind === "invalid" ? "invalid" : "unavailable", input.fence);
+    return "invalid";
+  }
+  const json = stableCanonicalJson(response.proposal);
+  const bytes = json === null ? null : canonicalUtf8Bytes(json);
+  const digest = json === null ? null : sha256Utf8(json);
+  const now = clock();
+  const budgetLimit = readAmbientSettings(channelSettingsJson(options.serviceDb, options.scope.channelId)).ambientBudgetPerHour ?? options.budgetPerHour;
+  const currentBudget = options.store.budget(options.scope, BUDGET_KEY);
+  const windowStartMs = hourStart(now);
+  const budget = mode === "apply" && response.proposal.decision === "speak"
+    ? { key: BUDGET_KEY, count: currentBudget?.windowStartMs === windowStartMs ? currentBudget.count + 1 : 1, windowStartMs, limit: budgetLimit }
+    : undefined;
+  const anchorWorkId = (options.serviceDb.db.prepare("SELECT anchor_work_id FROM conversation_participation_ticks WHERE id=?").get(tick.id) as { anchor_work_id: string }).anchor_work_id;
+  if (json === null || bytes === null || digest === null) {
+    options.store.failParticipationPrimary(tick.id, "invalid", input.fence);
+    return "invalid";
+  }
+  const persisted = options.store.persistParticipationPrimary({
+    tickId: tick.id,
+    fence: input.fence,
+    resultJson: json,
+    resultUtf8Bytes: bytes,
+    resultDigest: digest,
+    decision: response.proposal.decision,
+    validationSchemaVersion: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationValidator,
+    validatorModel: validatorModel!,
+    chunks: response.proposal.chunks,
+    workId: anchorWorkId,
+    scope: options.scope,
+    ...(budget ? { budget } : {}),
+  });
+  if (!persisted) return "idle";
+  return response.proposal.decision === "speak" ? "planned" : "observe";
+}
+async function validateParticipation(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }, tickId: string, snapshotJson: string, primaryJson: string | null, disposition: "pending" | "delivered" | "retryable" | "cancelled" | "not_applicable" | null): Promise<RuntimeStatus> {
+  if (!options.validator || !primaryJson || disposition === "pending" || !isPostdecisionCurrent(options, input) || !options.store.claimParticipationValidation(tickId, input.fence)) return "idle";
+  const snapshot = JSON.parse(snapshotJson) as { turns: import("./conversation-participant-context.js").ConversationParticipantTurn[] };
+  let result;
+  try { result = await options.validator.validate({ turns: snapshot.turns, primary: JSON.parse(primaryJson), firstDeliveryDisposition: disposition ?? "not_applicable" }, { signal: input.signal }); }
+  catch {
+    options.store.retryParticipationValidation(tickId, input.fence);
+    return "provider_unavailable";
+  }
+  if (!isPostdecisionCurrent(options, input)) return "aborted";
+  if (result.kind !== "valid") {
+    options.store.retryParticipationValidation(tickId, input.fence);
+    return "provider_unavailable";
+  }
+  const rationaleUtf8Bytes = canonicalUtf8Bytes(result.proposal.rationale);
+  if (rationaleUtf8Bytes === null || !isPostdecisionCurrent(options, input)) return "invalid";
+  options.store.completeParticipationValidation(tickId, { ...result.proposal, rationaleUtf8Bytes }, input.fence);
+  return "observe";
+}
+function participationMode(settings: string | null, fallback: "off" | "shadow" | "apply" = "off"): "off" | "shadow" | "apply" {
+  try {
+    const value = JSON.parse(settings ?? "{}") as Record<string, unknown>;
+    if (!Object.hasOwn(value, "conversationParticipationMode")) return fallback;
+    return value.conversationParticipationMode === "off" || value.conversationParticipationMode === "shadow" || value.conversationParticipationMode === "apply"
+      ? value.conversationParticipationMode
+      : "off";
+  } catch { return "off"; }
+}
+function isParticipationCurrent(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }, mode?: "apply" | "shadow"): boolean {
+  return !input.signal.aborted
+    && options.store.isFenceCurrent(input.fence)
+    && isDiscordParticipantScopeAllowed(options.startup, options.scope, options.serviceDb.getChannelMapping(options.scope.channelId))
+    && (mode === undefined || participationMode(channelSettingsJson(options.serviceDb, options.scope.channelId), options.defaultMode) === mode);
+}
+function isPostdecisionCurrent(options: AdaptiveAmbientRuntimeOptions, input: { readonly fence: Fence; readonly signal: AbortSignal }): boolean {
+  return !input.signal.aborted && options.store.isFenceCurrent(input.fence);
+}
 function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: number): { transcript: readonly DiscordInboundMessage[]; event: DiscordInboundMessage; archiveSummaries: readonly string[]; relationships: readonly RelationshipContext[] } {
   const scopeId = `discord:${scope.guildId}:${scope.channelId}`;
   const rows = db.db.prepare(`WITH target AS (

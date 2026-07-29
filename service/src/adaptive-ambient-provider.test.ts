@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import * as service from "./index.js";
 import { ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS, type DiscordInboundMessage } from "./adaptive-ambient-contracts.js";
+import { createConversationParticipationPrimaryProvider } from "./adaptive-ambient-provider.js";
+import { evaluateConversationParticipationPrimary } from "./conversation-ambient.js";
+import type { ConversationParticipantTurn } from "./conversation-participant-context.js";
 
 type ConversationPrompt = { readonly system: string; readonly user: string; readonly additionalUserMessages?: readonly string[] };
 type CompletionResult =
@@ -233,5 +236,51 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(receivedSignal?.aborted).toBe(true);
     expect(client.complete).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ kind: "unavailable", diagnostic: "provider response was unavailable" });
+  });
+});
+
+describe("V2 participation primary provider", () => {
+  it("keeps a parser-valid borderline prior decision authoritative without a V1 reversal", async () => {
+    const client: ConversationProviderClient = {
+      complete: vi.fn(async () => ({
+        kind: "ok" as const,
+        content: JSON.stringify({
+          schema: "hent_ai.conversation_participation.primary.v2",
+          decision: "speak",
+          baselineDecision: "observe",
+          judgmentClass: "borderline",
+          semanticMargin: 0.1,
+          priorApplied: true,
+          confidence: 0.8,
+          chunks: ["A grounded contribution."],
+        }),
+      })),
+    };
+    const turns: readonly ConversationParticipantTurn[] = [{
+      id: 1,
+      scopeId: "100000000000000001:100000000000000002",
+      messageId: "100000000000000003",
+      authorSource: "discord-participant",
+      authorId: "100000000000000004",
+      authorIsBot: false,
+      text: "What do you think?",
+      eventTs: "2026-01-01T00:00:00.000Z",
+      replyTo: null,
+    }];
+
+    const primary = await createConversationParticipationPrimaryProvider({ client }).decide({
+      persona: "Be concise.",
+      turns,
+      prior: { speak: 0.55, observe: 0.45 },
+    });
+
+    expect(evaluateConversationParticipationPrimary(primary)).toMatchObject({
+      decision: "speak",
+      shouldSpeak: true,
+      baselineDecision: "observe",
+      judgmentClass: "borderline",
+      priorApplied: true,
+    });
+    expect(client.complete).toHaveBeenCalledTimes(1);
   });
 });

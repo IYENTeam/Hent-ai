@@ -22,7 +22,7 @@ const checks = [
     label: "adaptive ambient participant regression",
     cwd: "service",
     command: "npx",
-    args: ["vitest", "run", "src/adaptive-ambient-contracts.test.ts", "src/adaptive-ambient-provider.test.ts", "src/adaptive-ambient-runtime.test.ts", "src/adaptive-ambient-store.test.ts", "src/conversation-archive-scheduler.test.ts", "src/conversation-relationship-profile.test.ts", "src/discord-participant-client.test.ts", "src/discord-ambient-worker-core.test.ts", "src/discord-ambient-delivery.test.ts", "src/discord-ambient-worker.test.ts", "src/discord-ambient-worker.wire.test.ts", "src/discord-ambient-worker.live.test.ts", "src/adaptive-ambient-review-regressions.test.ts", "src/adaptive-ambient.redteam.test.ts", "src/conversation-ambient.test.ts", "src/discord-ambient-worker.redteam.test.ts"],
+    args: ["vitest", "run", "src/adaptive-ambient-contracts.test.ts", "src/adaptive-ambient-proposal-parser.test.ts", "src/adaptive-ambient-provider.test.ts", "src/adaptive-ambient-runtime.test.ts", "src/adaptive-ambient-store.test.ts", "src/conversation-archive-scheduler.test.ts", "src/conversation-participant-context.test.ts", "src/conversation-participation-validator.test.ts", "src/conversation-relationship-profile.test.ts", "src/ambient-memory-cleanup.test.ts", "src/discord-participant-client.test.ts", "src/discord-ambient-worker-core.test.ts", "src/discord-ambient-delivery.test.ts", "src/discord-ambient-worker.test.ts", "src/discord-ambient-worker.wire.test.ts", "src/discord-ambient-worker.live.test.ts", "src/adaptive-ambient-review-regressions.test.ts", "src/adaptive-ambient.redteam.test.ts", "src/conversation-ambient.test.ts", "src/discord-ambient-worker.redteam.test.ts"],
   },
   {
     label: "shared emotion contract",

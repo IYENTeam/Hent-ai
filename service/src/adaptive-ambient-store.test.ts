@@ -178,8 +178,8 @@ describe("adaptive ambient persistence", () => {
     legacy.close();
 
     const upgraded = new service.ServiceDatabase(path);
-    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 4 });
-    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(4);
+    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 6 });
+    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(6);
     for (const [table, columns] of [
       ["adaptive_ambient_audits", ["evidence_weight", "probability", "draw", "drive_before", "drive_after", "active_human_count", "roster_fresh"]],
       ["adaptive_relationship_profiles", ["channel_id"]],
@@ -209,7 +209,7 @@ describe("adaptive ambient persistence", () => {
     ]);
 
     expect(() => upgraded.initialize()).not.toThrow();
-    expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 4").get()).toEqual({ count: 1 });
+    expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 6").get()).toEqual({ count: 1 });
     expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM pragma_index_list('adaptive_relationship_profiles') WHERE name = 'idx_adaptive_relationship_profiles_guild_channel_user'").get()).toEqual({ count: 1 });
     upgraded.close();
   });
@@ -222,7 +222,7 @@ describe("adaptive ambient persistence", () => {
     expect(firstDb.db.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(firstDb.db.pragma("synchronous", { simple: true })).toBe(1);
     expect(firstDb.db.pragma("busy_timeout", { simple: true })).toBe(5000);
-    expect(firstDb.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 4 });
+    expect(firstDb.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 6 });
     const fenceA = first.acquireLease("archive", "worker-a")!;
     expect(first.claimArchiveBatch({ batchKey: "g1:c1:1:2", summaryKey: "summary:g1:c1:1:2", scopeId: "g1:c1", sourceStartId: 1, sourceEndId: 2, fence: fenceA })).toBe(true);
     fakeClock.advance(30_001);
@@ -237,5 +237,68 @@ describe("adaptive ambient persistence", () => {
     expect(second.completeArchiveBatch("g1:c1:1:2", "permanent summary", renewedFenceB)).toBe(true);
     expect(secondDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_archive_summaries").get()).toEqual({ count: 1 });
     firstDb.close(); secondDb.close();
+  });
+  it("persists V5 participation invariants, apply coalescing, and shadow isolation in a real database", () => {
+    const fakeClock = clock(); const db = new service.ServiceDatabase(); const store = service.createAdaptiveAmbientStore(db, fakeClock.read);
+    const fence = store.acquireLease("discord-ambient-worker", "v5-store")!;
+    const snapshot = { highWatermarkId: 1, json: '{"turns":[]}', utf8Bytes: 12, digest: "d5fb095584e9f878eda4919412601f834c18fc24b3310d16ce21830a025a95f8", turns: [] as const };
+    const persona = { source: "generic" as const, text: "persona", utf8Bytes: 7, digest: "5e815286bca594454b291f3b0350ec22aab6de20b6d9efeec67d604f6bce65ee", revision: "c".repeat(64) };
+    db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?, ?, ?, 'user', 'discord-participant', ?, ?, ?, 0, '{}', ?)`)
+      .run("discord:g1:c1", "c1", "raw-1", "source is immutable", new Date(fakeClock.now).toISOString(), new Date(fakeClock.now).toISOString(), new Date(fakeClock.now).toISOString());
+    const rawId = Number((db.db.prepare("SELECT id FROM conversation_raw_events WHERE message_id='raw-1'").get() as { id: number }).id);
+    const bound = { ...snapshot, highWatermarkId: rawId };
+    expect(store.bindParticipationTick({ id: "forged-tick", scope: { guildId: "g1", channelId: "c1" }, mode: "shadow", primaryContractVersion: "v2",
+      anchorWorkId: "forged-anchor", snapshot: { ...bound, utf8Bytes: 11 }, persona, coverageWorkIds: [], fence })).toBe(false);
+    expect(store.bindParticipationTick({ id: "multibyte-tick", scope: { guildId: "g1", channelId: "c1" }, mode: "shadow", primaryContractVersion: "v2",
+      anchorWorkId: "multibyte-anchor", snapshot: bound, persona: { ...persona, text: "é".repeat(4_097), utf8Bytes: 4_097 }, coverageWorkIds: [], fence })).toBe(false);
+    for (const id of ["apply-anchor", "apply-covered"]) db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES ('discord:g1:c1','c1',NULL,NULL,?,'user','discord-participant',?, ?, ?,0,?,?)`).run(id,id,new Date(fakeClock.now).toISOString(),new Date(fakeClock.now).toISOString(),JSON.stringify({ discordAuthorId: id, discordAuthorBot: false }),new Date(fakeClock.now).toISOString());
+    work(store, "apply-covered"); fakeClock.advance(1); work(store, "apply-anchor");
+    const applyBound = { ...bound, highWatermarkId: Number((db.db.prepare("SELECT MAX(id) AS id FROM conversation_raw_events").get() as { id: number }).id) };
+    expect(store.bindParticipationTick({ id: "apply-tick", scope: { guildId: "g1", channelId: "c1" }, mode: "apply", primaryContractVersion: "v2",
+      anchorWorkId: "apply-anchor", snapshot: applyBound, persona, coverageWorkIds: ["apply-anchor", "apply-covered"], fence })).toBe(true);
+    expect(db.db.prepare("SELECT id,status,participation_tick_id FROM participant_event_work ORDER BY id").all()).toEqual([
+      { id: "apply-anchor", status: "retryable", participation_tick_id: "apply-tick" },
+      { id: "apply-covered", status: "covered", participation_tick_id: "apply-tick" },
+    ]);
+    expect(store.claimParticipationPrimary("apply-tick", fence)).toBe(true);
+    expect(store.persistParticipationPrimary({ tickId: "apply-tick", fence, resultJson: '{"decision":"speak"}', resultUtf8Bytes: 20, resultDigest: "80e08356443a55bc10677213dfd8121a10cab2d735c574f691f1ed6534d0dbf4",
+      decision: "speak", validationSchemaVersion: "validator-v2", validatorModel: "mock", chunks: ["one"], workId: "apply-anchor",
+      scope: { guildId: "g1", channelId: "c1" } })).toBe(true);
+    const planId = "participation:apply-tick";
+    expect(store.cancelDelivery(planId, fence)).toBe(true);
+    expect(db.db.prepare("SELECT status FROM participant_event_work WHERE id='apply-anchor'").get()).toEqual({ status: "observe" });
+    expect(store.claimParticipationValidation("apply-tick", fence)).toBe(true);
+    expect(store.completeParticipationValidation("apply-tick", { missedOpportunity: 0, interruption: 0, confidence: 1, priorDelta: 0.05, rationale: "validated", rationaleUtf8Bytes: 9 }, fence)).toBe("applied");
+    expect(store.completeParticipationValidation("apply-tick", { missedOpportunity: 1, interruption: 1, confidence: 0, priorDelta: 0.05, rationale: "replay", rationaleUtf8Bytes: 6 }, fence)).toBe("idempotent");
+    expect(store.participationPrior({ guildId: "g1", channelId: "c1" }, persona.revision, "v2")).toBe(0.05);
+    expect(db.db.prepare("SELECT text FROM conversation_raw_events WHERE id=?").get(rawId)).toEqual({ text: "source is immutable" });
+    expect(db.db.prepare("SELECT snapshot_digest,persona_digest,primary_result_digest FROM conversation_participation_ticks WHERE id='apply-tick'").get()).toEqual({
+      snapshot_digest: "d5fb095584e9f878eda4919412601f834c18fc24b3310d16ce21830a025a95f8", persona_digest: "5e815286bca594454b291f3b0350ec22aab6de20b6d9efeec67d604f6bce65ee", primary_result_digest: "80e08356443a55bc10677213dfd8121a10cab2d735c574f691f1ed6534d0dbf4",
+    });
+
+    db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES ('discord:g1:c1','c1',NULL,NULL,'shadow-anchor','user','discord-participant','shadow', ?, ?,0,?,?)`).run(new Date(fakeClock.now).toISOString(),new Date(fakeClock.now).toISOString(),JSON.stringify({ discordAuthorId: "shadow", discordAuthorBot: false }),new Date(fakeClock.now).toISOString());
+    work(store, "shadow-anchor");
+    const shadowBound = { ...bound, highWatermarkId: Number((db.db.prepare("SELECT MAX(id) AS id FROM conversation_raw_events").get() as { id: number }).id) };
+    expect(store.bindParticipationTick({ id: "shadow-tick", scope: { guildId: "g1", channelId: "c1" }, mode: "shadow", primaryContractVersion: "v2",
+      anchorWorkId: "shadow-anchor", snapshot: shadowBound, persona, coverageWorkIds: ["shadow-anchor"], fence })).toBe(true);
+    expect(db.db.prepare("SELECT status,participation_tick_id FROM participant_event_work WHERE id='shadow-anchor'").get()).toEqual({ status: "pending", participation_tick_id: null });
+    expect(store.claimParticipationPrimary("shadow-tick", fence)).toBe(true);
+    expect(store.persistParticipationPrimary({ tickId: "shadow-tick", fence, resultJson: '{"decision":"speak"}', resultUtf8Bytes: 20, resultDigest: "80e08356443a55bc10677213dfd8121a10cab2d735c574f691f1ed6534d0dbf4",
+      decision: "speak", validationSchemaVersion: "validator-v2", validatorModel: "mock" })).toBe(true);
+    expect(store.claimParticipationValidation("shadow-tick", fence)).toBe(true);
+    expect(store.completeParticipationValidation("shadow-tick", { missedOpportunity: 1, interruption: 0, confidence: 1, priorDelta: 0.05, rationale: "shadow", rationaleUtf8Bytes: 6 }, fence)).toBe("accepted_shadow");
+    expect(store.participationPrior({ guildId: "g1", channelId: "c1" }, persona.revision, "v2")).toBe(0.05);
+    expect(db.db.prepare("SELECT status FROM participant_event_work WHERE id='shadow-anchor'").get()).toEqual({ status: "pending" });
+    work(store, "v1-work"); expect(store.claimWork("v1-work", fence)).toBe(true);
+    expect(store.recordOutcome({ fence, eventId: "v1-work", scope: { guildId: "g1", channelId: "c1" }, outcome: "planned", workId: "v1-work",
+      state: { drive: 0.7, version: 1 }, plan: { id: "v1-plan", workId: "v1-work", chunks: [{ content: "legacy", nonce: "v1-nonce" }] } })).toBe("applied");
+    expect(store.cancelDelivery("v1-plan", fence)).toBe(true);
+    expect(db.db.prepare("SELECT status FROM participant_event_work WHERE id='v1-work'").get()).toEqual({ status: "observe" });
+    expect(() => db.db.prepare(`INSERT INTO conversation_participation_ticks (id,guild_id,channel_id,mode,primary_contract_version,status,anchor_work_id,snapshot_high_watermark_id,snapshot_json,snapshot_utf8_bytes,snapshot_digest,persona_source,persona_text,persona_utf8_bytes,persona_digest,persona_revision,created_at_ms,updated_at_ms)
+      VALUES ('bad','g1','c1','apply','v2','primary_claimed','apply-anchor',?,'{}',2,?,'generic','p',1,?,?,?,?)`).run(rawId, "a".repeat(64), "b".repeat(64), "c".repeat(64), fakeClock.now, fakeClock.now)).toThrow();
+    db.close();
   });
 });

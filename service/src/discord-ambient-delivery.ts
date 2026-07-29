@@ -15,7 +15,7 @@ export type DiscordAmbientDeliveryOptions = {
   readonly clock?: ServiceClock;
   readonly delay?: Delay;
   /** Re-evaluated immediately before every Discord side effect. */
-  readonly isAuthorized?: (channelId: string) => boolean;
+  readonly isAuthorized?: (channelId: string, planId: string) => boolean;
 };
 
 export type DiscordAmbientDelivery = {
@@ -36,18 +36,18 @@ export function createDiscordAmbientDelivery(options: DiscordAmbientDeliveryOpti
     for (const chunk of plan.chunks) {
       if (chunk.receipt) continue;
       if (!current(options.store, input.fence, input.signal)) return "aborted";
-      if (!isAuthorized(plan.channelId)) {
+      if (!isAuthorized(plan.channelId, plan.id)) {
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         try { return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted"; } catch (error) { if (!current(options.store, input.fence, input.signal)) return "aborted"; throw error; }
       }
       try {
         if (!current(options.store, input.fence, input.signal)) return "aborted";
-        if (!isAuthorized(plan.channelId)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
+        if (!isAuthorized(plan.channelId, plan.id)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
         await options.client.sendTyping(plan.channelId, input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         await delay(delayForBubble(chunk.content), input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
-        if (!isAuthorized(plan.channelId)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
+        if (!isAuthorized(plan.channelId, plan.id)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
         const message = await options.client.createMessage(plan.channelId, chunk.content, chunk.nonce, input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         if (!options.store.recordReceipt(plan.id, chunk.index, chunk.nonce, message.id, input.fence)) return "aborted";
