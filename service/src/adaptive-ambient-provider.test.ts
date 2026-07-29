@@ -93,6 +93,9 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(system).toContain("may initiate");
     expect(system).toContain("participationPrior");
     expect(system).toContain("do not treat observe as the default");
+    expect(system).toContain("authorIsBot true");
+    expect(system).toContain("never imitate");
+    expect(system).toContain("short social reaction or question");
     expect(system).not.toContain("ambient-provider-test-secret");
     expect(JSON.parse(user)).toMatchObject({ transcript });
     expect(JSON.parse(user)).not.toHaveProperty("audience");

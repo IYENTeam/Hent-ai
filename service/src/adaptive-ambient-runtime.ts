@@ -42,7 +42,8 @@ export type AdaptiveAmbientRuntime = {
 const BUDGET_KEY = "ambient";
 const DEFAULT_AMBIENT_DRIVE = 0.7;
 const DEFAULT_AMBIENT_CONFIDENCE_FLOOR = 0.6;
-const RECENT_CONTEXT_LIMIT = 100;
+const RECENT_CONTEXT_LIMIT = 50;
+const RECENT_CONTEXT_LOOKBACK_DAYS = 15 / (24 * 60);
 const ROSTER_FRESHNESS_MS = 5 * 60_000;
 
 export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOptions): AdaptiveAmbientRuntime {
@@ -168,8 +169,12 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
 
 function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: number): { transcript: readonly DiscordInboundMessage[]; event: DiscordInboundMessage; archiveSummaries: readonly string[]; relationships: readonly RelationshipContext[] } {
   const scopeId = `discord:${scope.guildId}:${scope.channelId}`;
-  const rows = db.db.prepare(`SELECT message_id,text,event_ts,author_role,metadata_json FROM conversation_raw_events
-    WHERE scope_id=? ORDER BY event_ts DESC,id DESC LIMIT ?`).all(scopeId, RECENT_CONTEXT_LIMIT) as RawRow[];
+  const rows = db.db.prepare(`WITH target AS (
+      SELECT julianday(event_ts) AS event_jd FROM conversation_raw_events WHERE scope_id=? AND message_id=? LIMIT 1
+    )
+    SELECT r.message_id,r.text,r.event_ts,r.author_role,r.metadata_json FROM conversation_raw_events r,target
+    WHERE r.scope_id=? AND julianday(r.event_ts) BETWEEN target.event_jd-? AND target.event_jd
+    ORDER BY r.event_ts DESC,r.id DESC LIMIT ?`).all(scopeId, eventId, scopeId, RECENT_CONTEXT_LOOKBACK_DAYS, RECENT_CONTEXT_LIMIT) as RawRow[];
   const transcript = rows.reverse().map((row) => inbound(row, scope));
   const event = transcript.find((entry) => entry.eventId === eventId) ?? { eventId, scope, authorId: "unknown", authorIsBot: false, content: "", mentions: [], replyTo: null, createdAtMs: now };
   const archiveSummaries = db.db.prepare(`SELECT s.summary FROM conversation_archive_summaries s JOIN conversation_archive_batches b ON b.batch_key=s.batch_key

@@ -74,6 +74,8 @@ function buildAdaptiveAmbientAppraisalPrompt(request: AmbientAppraisalRequest): 
       "For every non-stale human conversation batch, choose speak by default; choose observe only when every possible contribution would be irrelevant, repetitive, intrusive, or directed at another participant.",
       "An explicit mention, direct address, or reply is not required: the persona may initiate a reaction, observation, joke, question, or topic shift from the active conversation.",
       "Use participationPrior as the starting decision prior before considering transcript evidence; do not treat observe as the default class.",
+      "Messages with authorIsBot true are context only: never imitate their voice, role, task commitments, status reports, or technical conclusions.",
+      "Speak as the supplied persona to the humans in the room. If there is not enough grounded context, make a short social reaction or question instead of inventing a technical summary.",
       "Required fields: schema, decision, desiredDrive, confidence, chunks, relationshipProposals.",
       "desiredDrive and confidence must be JSON numbers between 0 and 1, never strings, words, or percentages.",
       "decision is observe or speak; observe requires chunks []; speak requires one to five non-empty chunks no longer than 1800 characters.",
