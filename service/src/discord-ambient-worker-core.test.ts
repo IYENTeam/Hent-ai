@@ -33,13 +33,13 @@ describe("fenced Discord ambient worker core", () => {
     expect(db.db.prepare("SELECT message_id FROM participant_poll_cursors").get()).toEqual({ message_id: "3" });
     await first.stop();
 
-    const second = worker({ store, client: client(async (after) => { expect(after).toBe("3"); return [message("6", fake.now, { bot: true, authorId: "999" }), message("5", fake.now - 600_001), message("4", fake.now - 600_000)]; }), scope, startup, channelMapping: () => ({ enabled: true }), selfUserId: "999", holderId: "second", clock: () => fake.now });
+    const second = worker({ store, client: client(async (after) => { expect(after).toBe("3"); return [message("7", fake.now, { bot: true, authorId: "888" }), message("6", fake.now, { bot: true, authorId: "999" }), message("5", fake.now - 600_001), message("4", fake.now - 600_000)]; }), scope, startup, channelMapping: () => ({ enabled: true }), selfUserId: "999", holderId: "second", clock: () => fake.now });
     expect(await second.runOnce()).toBe("ingested");
     expect(db.db.prepare("SELECT message_id,author_role,bot_self_loop FROM conversation_raw_events ORDER BY message_id").all()).toEqual([
-      { message_id: "4", author_role: "user", bot_self_loop: 0 }, { message_id: "5", author_role: "user", bot_self_loop: 0 }, { message_id: "6", author_role: "assistant", bot_self_loop: 1 },
+      { message_id: "4", author_role: "user", bot_self_loop: 0 }, { message_id: "5", author_role: "user", bot_self_loop: 0 }, { message_id: "6", author_role: "assistant", bot_self_loop: 1 }, { message_id: "7", author_role: "user", bot_self_loop: 0 },
     ]);
     expect(db.db.prepare("SELECT event_id,observe_only FROM participant_event_work ORDER BY event_id").all()).toEqual([{ event_id: "4", observe_only: 0 }, { event_id: "5", observe_only: 1 }]);
-    expect(db.db.prepare("SELECT message_id FROM participant_poll_cursors").get()).toEqual({ message_id: "6" });
+    expect(db.db.prepare("SELECT message_id FROM participant_poll_cursors").get()).toEqual({ message_id: "7" });
     expect(second.claimNextWork()).toBe("discord:100:200:4");
     fake.advance(30_001); await second.stop();
     const recovery = worker({ store, client: client(async () => []), scope, startup, channelMapping: () => ({ enabled: true }), holderId: "recovery", clock: () => fake.now });

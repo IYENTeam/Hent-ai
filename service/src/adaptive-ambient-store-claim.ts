@@ -16,7 +16,7 @@ export function claimParticipantWork(
 ): boolean {
   const now = clock();
   return db.prepare(`UPDATE participant_event_work SET status='claimed',claim_holder_id=?,claim_fence_token=?,claim_expires_at_ms=?,updated_at_ms=?
-    WHERE id=? AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?)) AND ${fencedWhere}`)
+    WHERE id=? AND participation_tick_id IS NULL AND (status IN ('pending','retryable') OR (status='claimed' AND claim_expires_at_ms<=?)) AND ${fencedWhere}`)
     .run(fence.holderId, fence.fenceToken, now + CLAIM_TTL_MS, now, workId, now, ...fencedArgs(fence, now)).changes === 1;
 }
 

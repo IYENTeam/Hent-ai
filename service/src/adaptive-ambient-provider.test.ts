@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import * as service from "./index.js";
 import { ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS, type DiscordInboundMessage } from "./adaptive-ambient-contracts.js";
+import { createConversationParticipationPrimaryProvider } from "./adaptive-ambient-provider.js";
+import { evaluateConversationParticipationPrimary } from "./conversation-ambient.js";
+import type { ConversationParticipantTurn } from "./conversation-participant-context.js";
 
 type ConversationPrompt = { readonly system: string; readonly user: string; readonly additionalUserMessages?: readonly string[] };
 type CompletionResult =
@@ -11,7 +14,7 @@ type ConversationProviderClient = { readonly complete: (prompt: ConversationProm
 type AmbientAppraisalResult =
   | { readonly kind: "valid"; readonly proposal: { readonly decision: "observe" | "speak"; readonly chunks: readonly string[] }; readonly diagnostic?: string }
   | { readonly kind: "invalid"; readonly diagnostic: string };
-type AppraisalAudience = { readonly rosterComplete: boolean; readonly activeHumanCount: number; readonly currentDrive: number; readonly budgetRemaining: number };
+type AppraisalAudience = { readonly rosterComplete: boolean; readonly currentDrive: number; readonly budgetRemaining: number };
 type AdaptiveAmbientProvider = { readonly appraise: (request: { readonly scope: { readonly guildId: string; readonly channelId: string }; readonly persona: string; readonly transcript: readonly DiscordInboundMessage[]; readonly audience?: AppraisalAudience }, options?: { readonly signal?: AbortSignal }) => Promise<AmbientAppraisalResult> };
 type AdaptiveAmbientProviderApi = {
   readonly createOpenAiConversationProviderClient: (config: { readonly endpoint: URL | string; readonly token: string; readonly model: string; readonly timeoutMs: number; readonly fetchImpl?: typeof fetch }) => ConversationProviderClient;
@@ -87,6 +90,15 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(system).toContain("Never claim human identity");
     expect(system).toContain("Silence in the room is never a reason to speak.");
     expect(system).toContain("Never answer a question addressed to another participant; only respond when the conversational context invites you.");
+    expect(system).toContain("one conversation batch");
+    expect(system).toContain("choose speak by default");
+    expect(system).toContain("explicit mention");
+    expect(system).toContain("may initiate");
+    expect(system).toContain("participationPrior");
+    expect(system).toContain("do not treat observe as the default");
+    expect(system).toContain("authorIsBot true");
+    expect(system).toContain("never imitate");
+    expect(system).toContain("short social reaction or question");
     expect(system).not.toContain("ambient-provider-test-secret");
     expect(JSON.parse(user)).toMatchObject({ transcript });
     expect(JSON.parse(user)).not.toHaveProperty("audience");
@@ -95,7 +107,7 @@ describe("strict adaptive ambient appraisal provider", () => {
 
   it("includes injected audience context in the appraisal payload", async () => {
     let wireBody: { messages: Array<{ role: string; content: string }> } | undefined;
-    const audience = { rosterComplete: true, activeHumanCount: 3, currentDrive: 0.7, budgetRemaining: 4 };
+    const audience = { rosterComplete: true, currentDrive: 0.7, budgetRemaining: 4 };
     const fetchImpl = vi.fn(async (_: URL | RequestInfo, init?: RequestInit) => {
       wireBody = JSON.parse(String(init?.body));
       return chatResponse(validAppraisal());
@@ -103,7 +115,7 @@ describe("strict adaptive ambient appraisal provider", () => {
 
     await ambientProvider(fetchImpl).appraise(request(audience));
 
-    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience });
+    expect(JSON.parse(wireBody?.messages[1]?.content ?? "{}")).toMatchObject({ audience, participationPrior: { speak: 0.98, observe: 0.02 } });
   });
 
   it("turns every provider and contract failure into invalid audit input without leaking secrets", async () => {
@@ -224,5 +236,51 @@ describe("strict adaptive ambient appraisal provider", () => {
     expect(receivedSignal?.aborted).toBe(true);
     expect(client.complete).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ kind: "unavailable", diagnostic: "provider response was unavailable" });
+  });
+});
+
+describe("V2 participation primary provider", () => {
+  it("keeps a parser-valid borderline prior decision authoritative without a V1 reversal", async () => {
+    const client: ConversationProviderClient = {
+      complete: vi.fn(async () => ({
+        kind: "ok" as const,
+        content: JSON.stringify({
+          schema: "hent_ai.conversation_participation.primary.v2",
+          decision: "speak",
+          baselineDecision: "observe",
+          judgmentClass: "borderline",
+          semanticMargin: 0.1,
+          priorApplied: true,
+          confidence: 0.8,
+          chunks: ["A grounded contribution."],
+        }),
+      })),
+    };
+    const turns: readonly ConversationParticipantTurn[] = [{
+      id: 1,
+      scopeId: "100000000000000001:100000000000000002",
+      messageId: "100000000000000003",
+      authorSource: "discord-participant",
+      authorId: "100000000000000004",
+      authorIsBot: false,
+      text: "What do you think?",
+      eventTs: "2026-01-01T00:00:00.000Z",
+      replyTo: null,
+    }];
+
+    const primary = await createConversationParticipationPrimaryProvider({ client }).decide({
+      persona: "Be concise.",
+      turns,
+      prior: { speak: 0.55, observe: 0.45 },
+    });
+
+    expect(evaluateConversationParticipationPrimary(primary)).toMatchObject({
+      decision: "speak",
+      shouldSpeak: true,
+      baselineDecision: "observe",
+      judgmentClass: "borderline",
+      priorApplied: true,
+    });
+    expect(client.complete).toHaveBeenCalledTimes(1);
   });
 });

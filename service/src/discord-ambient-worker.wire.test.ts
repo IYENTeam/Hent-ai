@@ -168,6 +168,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       expect(state.sent).toHaveLength(2);
       const firstNonce = state.sent[0]!.nonce;
       const retryNonce = state.sent[1]!.nonce;
+      expect(state.sent.every((entry) => entry.nonce.length <= 25)).toBe(true);
       expect(state.sent.map((entry) => entry.content)).toEqual(["아니야.", "내가 정할게."]);
 
       // A no-ingress cycle must drain the durable retryable plan before evaluating new work.
@@ -179,7 +180,7 @@ describe("Discord ambient worker localhost wire QA", () => {
       const plan = liveDb.db.prepare("SELECT status FROM participant_delivery_plans").get();
       expect(plan).toEqual({ status: "delivered" });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 2 });
-      expect(liveDb.db.prepare("SELECT drive,version FROM adaptive_ambient_state").get()).toEqual({ drive: 0.625, version: 1 });
+      expect(liveDb.db.prepare("SELECT drive,version FROM adaptive_ambient_state").get()).toEqual({ drive: 0.7 * 0.75 + 1 * 0.25, version: 1 });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_raw_events WHERE message_id='archive-old-1' AND archived_at_ms IS NOT NULL").get()).toEqual({ count: 1 });
       expect(liveDb.db.prepare("SELECT COUNT(*) AS count FROM conversation_archive_summaries").get()).toEqual({ count: 1 });
       liveDb.close();
@@ -228,7 +229,7 @@ describe("Discord ambient worker localhost wire QA", () => {
     }
   });
 
-  it("accumulates silence pressure over a fake clock without suppressing an explicit mention", async () => {
+  it("allows spontaneous active-conversation speech under pressure without suppressing an explicit mention", async () => {
     const root = mkdtempSync(join(tmpdir(), "hent-ambient-pressure-wire-"));
     const dbPath = join(root, "service.sqlite");
     let now = Date.parse("2026-07-25T12:00:00.000Z");
@@ -318,10 +319,10 @@ describe("Discord ambient worker localhost wire QA", () => {
       liveDb.close();
 
       expect(pressure.pressure).toBeGreaterThan(0.9);
-      expect(ambientAudit).toMatchObject({ outcome: "observe" });
-      expect(ambientAudit.probability).toBeLessThan(0.1);
+      expect(ambientAudit).toMatchObject({ outcome: "planned" });
+      expect(ambientAudit.probability).toBeGreaterThan(0.1);
       expect(mentionAudit).toEqual({ outcome: "planned", evidence_weight: 1 });
-      expect(sent.map((entry) => entry.content)).toEqual(["mention reply"]);
+      expect(sent.map((entry) => entry.content)).toEqual(["ambient reply", "mention reply"]);
     } finally {
       if (worker) await worker.stop();
       if (discord) await close(discord);

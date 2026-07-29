@@ -14,9 +14,8 @@ export type DiscordAmbientDeliveryOptions = {
   readonly client: Pick<DiscordParticipantClient, "sendTyping" | "createMessage">;
   readonly clock?: ServiceClock;
   readonly delay?: Delay;
-  readonly hasNewerHumanIngress?: (planId: string) => boolean;
   /** Re-evaluated immediately before every Discord side effect. */
-  readonly isAuthorized?: (channelId: string) => boolean;
+  readonly isAuthorized?: (channelId: string, planId: string) => boolean;
 };
 
 export type DiscordAmbientDelivery = {
@@ -25,7 +24,6 @@ export type DiscordAmbientDelivery = {
 
 export function createDiscordAmbientDelivery(options: DiscordAmbientDeliveryOptions): DiscordAmbientDelivery {
   const delay = options.delay ?? delayWithAbort;
-  const hasNewerHumanIngress = options.hasNewerHumanIngress ?? ((planId) => options.store.hasNewerHumanIngress(planId));
   const isAuthorized = options.isAuthorized ?? (() => true);
 
   async function deliver(input: { readonly planId: string; readonly fence: Fence; readonly signal: AbortSignal }): Promise<DeliveryStatus> {
@@ -38,18 +36,18 @@ export function createDiscordAmbientDelivery(options: DiscordAmbientDeliveryOpti
     for (const chunk of plan.chunks) {
       if (chunk.receipt) continue;
       if (!current(options.store, input.fence, input.signal)) return "aborted";
-      if (!isAuthorized(plan.channelId) || hasNewerHumanIngress(plan.id)) {
+      if (!isAuthorized(plan.channelId, plan.id)) {
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         try { return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted"; } catch (error) { if (!current(options.store, input.fence, input.signal)) return "aborted"; throw error; }
       }
       try {
         if (!current(options.store, input.fence, input.signal)) return "aborted";
-        if (!isAuthorized(plan.channelId)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
+        if (!isAuthorized(plan.channelId, plan.id)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
         await options.client.sendTyping(plan.channelId, input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         await delay(delayForBubble(chunk.content), input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
-        if (!isAuthorized(plan.channelId) || hasNewerHumanIngress(plan.id)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
+        if (!isAuthorized(plan.channelId, plan.id)) return options.store.cancelDelivery(plan.id, input.fence) ? "cancelled" : "aborted";
         const message = await options.client.createMessage(plan.channelId, chunk.content, chunk.nonce, input.signal);
         if (!current(options.store, input.fence, input.signal)) return "aborted";
         if (!options.store.recordReceipt(plan.id, chunk.index, chunk.nonce, message.id, input.fence)) return "aborted";

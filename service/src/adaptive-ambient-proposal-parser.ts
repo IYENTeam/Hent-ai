@@ -3,8 +3,11 @@ import {
   ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS,
   type AmbientAppraisalParseResult,
   type AmbientSilenceRequest,
+  type ConversationParticipationPrimaryParseResult,
+  type ConversationParticipationValidatorParseResult,
   type RelationshipProposal,
 } from "./adaptive-ambient-contracts.js";
+import { canonicalUtf8Bytes, validUnicodeScalars } from "./conversation-participant-context.js";
 
 const APPRAISAL_REQUIRED_FIELDS = ["schema", "decision", "desiredDrive", "confidence", "chunks", "relationshipProposals"] as const;
 const APPRAISAL_FIELDS = [...APPRAISAL_REQUIRED_FIELDS, "silenceRequest"] as const;
@@ -32,6 +35,28 @@ export function parseAmbientAppraisalProposal(text: string | null, confidenceThr
   if (!relationshipProposals) return invalid("relationshipProposals must contain only bounded relationship proposals");
   const silenceRequest = parseSilenceRequest(parsed.silenceRequest);
   return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: parsed.decision, desiredDrive: parsed.desiredDrive, confidence: parsed.confidence, chunks, relationshipProposals, silenceRequest } };
+}
+export function parseConversationParticipationPrimary(text: string | null): ConversationParticipationPrimaryParseResult {
+  const parsed = parseStrictObject(text, ["schema", "decision", "baselineDecision", "judgmentClass", "semanticMargin", "priorApplied", "confidence", "chunks"]);
+  if (parsed === null) return primaryInvalid("provider output must be a strict JSON object without injection markers");
+  if (parsed.schema !== ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary) return primaryInvalid("primary schema is invalid");
+  if (!decision(parsed.decision) || !decision(parsed.baselineDecision) || (parsed.judgmentClass !== "definitive" && parsed.judgmentClass !== "borderline")) return primaryInvalid("primary decision fields are invalid");
+  if (typeof parsed.semanticMargin !== "number" || !Number.isFinite(parsed.semanticMargin) || typeof parsed.priorApplied !== "boolean" || !unit(parsed.confidence)) return primaryInvalid("primary scalar fields are invalid");
+  const borderline = Math.abs(parsed.semanticMargin) < 0.20;
+  if ((parsed.judgmentClass === "borderline") !== borderline) return primaryInvalid("judgmentClass must match semanticMargin");
+  if ((parsed.judgmentClass === "definitive" || !parsed.priorApplied) && parsed.decision !== parsed.baselineDecision) return primaryInvalid("only prior-applied borderline decisions may differ from baseline");
+  const chunks = parseV2Chunks(parsed.chunks, parsed.decision);
+  if (chunks === null) return primaryInvalid("primary chunks violate decision, Unicode, injection, or UTF-8 limits");
+  return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationPrimary, decision: parsed.decision, baselineDecision: parsed.baselineDecision, judgmentClass: parsed.judgmentClass, semanticMargin: parsed.semanticMargin, priorApplied: parsed.priorApplied, confidence: parsed.confidence, chunks } };
+}
+
+export function parseConversationParticipationValidator(text: string | null): ConversationParticipationValidatorParseResult {
+  const parsed = parseStrictObject(text, ["schema", "missedOpportunity", "interruption", "confidence", "priorDelta", "rationale"]);
+  if (parsed === null) return validatorInvalid("provider output must be a strict JSON object without injection markers");
+  if (parsed.schema !== ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationValidator) return validatorInvalid("validator schema is invalid");
+  if (!unit(parsed.missedOpportunity) || !unit(parsed.interruption) || !unit(parsed.confidence) || typeof parsed.priorDelta !== "number" || !Number.isFinite(parsed.priorDelta) || parsed.priorDelta < -0.05 || parsed.priorDelta > 0.05) return validatorInvalid("validator scalar fields are invalid");
+  if (typeof parsed.rationale !== "string" || !validUnicodeScalars(parsed.rationale) || parsed.rationale.trim().length === 0 || [...parsed.rationale].length > 500 || (canonicalUtf8Bytes(parsed.rationale) ?? Infinity) > 2_000 || containsInjectionMarker(parsed.rationale)) return validatorInvalid("validator rationale is invalid");
+  return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.participationValidator, missedOpportunity: parsed.missedOpportunity, interruption: parsed.interruption, confidence: parsed.confidence, priorDelta: parsed.priorDelta, rationale: parsed.rationale } };
 }
 
 function stripCodeFence(text: string): string {
@@ -83,3 +108,21 @@ function delta(value: unknown): value is number { return typeof value === "numbe
 function record(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function snowflake(value: string): boolean { return SNOWFLAKE.test(value) && BigInt(value) <= MAX_SNOWFLAKE; }
 function invalid(diagnostic: string): AmbientAppraisalParseResult { return { kind: "invalid", diagnostic }; }
+function parseStrictObject(text: string | null, fields: readonly string[]): Record<string, unknown> | null {
+  if (!text || text.trim().length === 0 || containsInjectionMarker(text)) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(text.trim()); } catch { return null; }
+  return record(parsed) && only(parsed, fields) ? parsed : null;
+}
+function decision(value: unknown): value is "observe" | "speak" { return value === "observe" || value === "speak"; }
+function parseV2Chunks(value: unknown, proposedDecision: "observe" | "speak"): readonly string[] | null {
+  if (!Array.isArray(value) || (proposedDecision === "observe" && value.length !== 0) || (proposedDecision === "speak" && (value.length < 1 || value.length > 5))) return null;
+  const chunks: string[] = [];
+  for (const chunk of value) {
+    if (typeof chunk !== "string" || !validUnicodeScalars(chunk) || chunk.trim().length === 0 || (canonicalUtf8Bytes(chunk) ?? Infinity) > 1_800 || containsInjectionMarker(chunk)) return null;
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+function primaryInvalid(diagnostic: string): ConversationParticipationPrimaryParseResult { return { kind: "invalid", diagnostic }; }
+function validatorInvalid(diagnostic: string): ConversationParticipationValidatorParseResult { return { kind: "invalid", diagnostic }; }

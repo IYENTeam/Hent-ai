@@ -31,6 +31,16 @@ describe("Discord ambient worker entrypoint", () => {
   it("fails closed before opening a database or Discord client", async () => {
     expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST: "malformed" }).config).toBeUndefined();
     expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "http://provider.example" }).config).toBeUndefined();
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "http://127.0.0.1:9742/v1/chat/completions" }).config?.providerEndpoint).toBe("http://127.0.0.1:9742/v1/chat/completions");
+    const invalidValidator = service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_VALIDATOR_MODEL: "gpt-4.1" });
+    expect(invalidValidator).toEqual({ diagnostics: ["invalid_validator_model"] });
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_VALIDATOR_TIMEOUT_MS: "1000" }).config?.validatorTimeoutMs).toBe(1_000);
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_VALIDATOR_TIMEOUT_MS: "10000" }).config?.validatorTimeoutMs).toBe(10_000);
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_VALIDATOR_TIMEOUT_MS: "999" }).diagnostics).toEqual(["invalid_validator_timeout"]);
+    expect(service.loadDiscordAmbientWorkerConfig(env(path())).config?.defaultMode).toBe("off");
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PARTICIPATION_DEFAULT_MODE: "shadow" }).config?.defaultMode).toBe("shadow");
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PARTICIPATION_DEFAULT_MODE: "APPLY" })).toEqual({ diagnostics: ["participation_mode_invalid"] });
+    expect(service.loadDiscordAmbientWorkerConfig({ ...env(path()), HENT_AI_CONVERSATION_PARTICIPATION_DEFAULT_MODE: "enabled" })).toEqual({ diagnostics: ["participation_mode_invalid"] });
     let opened = 0; let clientCreated = 0; const events: unknown[] = [];
     const worker = await service.startDiscordAmbientWorker({}, {
       createDatabase: () => { opened += 1; throw new Error("must not open"); }, createClient: () => { clientCreated += 1; throw new Error("must not connect"); },
@@ -75,6 +85,39 @@ describe("Discord ambient worker entrypoint", () => {
     const missingPath = path(); const mapped = new service.ServiceDatabase(missingPath); mapped.setChannelMapping(scopes[0]!.channelId, { enabled: true }); mapped.close();
     const missing = await service.startDiscordAmbientWorker(env(missingPath), { createClient: () => client(), timer });
     expect(missing.status).toBe("running"); await missing.stop();
+  });
+  it("persists the off → shadow → apply → off transition fence and rejects historical shadow promotion", async () => {
+    const dbPath = path(); const db = new service.ServiceDatabase(dbPath);
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { conversationParticipationMode: "apply" } });
+    const events: unknown[] = [];
+    const rejected = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), { createClient: () => client(), logger: { log: (_level, event, fields) => events.push({ event, fields }) }, timer: { setInterval: () => 0, clearInterval: () => undefined } });
+    expect(rejected.status).toBe("disabled");
+    expect(events).toContainEqual({ event: "discord_ambient_scope_skipped", fields: { guildId: scopes[0]!.guildId, channelId: scopes[0]!.channelId, reason: "direct_off_to_apply_requires_shadow_promotion" } });
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { conversationParticipationMode: "shadow" } });
+    const shadow = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), { createClient: () => client(), timer: { setInterval: () => 0, clearInterval: () => undefined } });
+    expect(shadow.status).toBe("running");
+    await shadow.stop();
+    db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(`discord:${scopes[0]!.guildId}:${scopes[0]!.channelId}`, scopes[0]!.channelId, "promotion-source", "user", "discord-participant", "source", new Date().toISOString(), new Date().toISOString(), 0, "{}", new Date().toISOString());
+    const raw = db.db.prepare("SELECT id FROM conversation_raw_events WHERE message_id='promotion-source'").get() as { id: number };
+    const now = Date.now();
+    db.db.prepare("INSERT INTO participant_event_work (id,event_id,event_digest,guild_id,channel_id,status,observe_only,created_at_ms,updated_at_ms) VALUES ('promotion-work','promotion-source','digest',?,?, 'pending',0,?,?)").run(scopes[0]!.guildId, scopes[0]!.channelId, now, now);
+    db.db.prepare(`INSERT INTO conversation_participation_ticks (id,guild_id,channel_id,mode,primary_contract_version,status,anchor_work_id,snapshot_high_watermark_id,snapshot_json,snapshot_utf8_bytes,snapshot_digest,persona_source,persona_text,persona_utf8_bytes,persona_digest,persona_revision,created_at_ms,updated_at_ms)
+      VALUES ('promotion-tick',?,?, 'shadow','v2','validated','promotion-work',?,'{}',2,?,'generic','x',1,?,?,?,?)`).run(scopes[0]!.guildId, scopes[0]!.channelId, raw.id, "0".repeat(64), "1".repeat(64), "2".repeat(64), now, now);
+    db.db.prepare(`INSERT INTO conversation_participation_validations (tick_id,status,schema_version,model,missed_opportunity,interruption,confidence,prior_delta,rationale,rationale_utf8_bytes,created_at_ms,updated_at_ms)
+      VALUES ('promotion-tick','accepted_shadow','v2','validator',0,0,1,0,'validated',9,?,?)`).run(now, now);
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { conversationParticipationMode: "apply" } });
+    const allowed = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), { createClient: () => client(), timer: { setInterval: () => 0, clearInterval: () => undefined } });
+    expect(allowed.status).toBe("running");
+    await allowed.stop();
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { conversationParticipationMode: "off" } });
+    const off = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), { createClient: () => client(), timer: { setInterval: () => 0, clearInterval: () => undefined } });
+    expect(off.status).toBe("running");
+    await off.stop();
+    db.setChannelMapping(scopes[0]!.channelId, { enabled: true, settings: { conversationParticipationMode: "apply" } });
+    const rollbackRejected = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), { createClient: () => client(), timer: { setInterval: () => 0, clearInterval: () => undefined } });
+    expect(rollbackRejected.status).toBe("disabled");
+    db.close();
   });
 
   it("does not call Discord identity or polling when every eligible scope lease is unavailable", async () => {

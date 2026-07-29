@@ -18,7 +18,7 @@ Each allowed guild/channel gets its own lease key, so one worker process can own
 
 Guild/user relationships are bounded and idempotent. Membership v1 uses complete paged guild rosters; active humans are recent (10-minute) non-bot authors intersected with a fresh complete roster. First polling seeds a cursor without replying; later work is durable. Raw events are marked archived after 14 days, while raw events and source-linked summaries remain permanently: neither is deleted.
 
-Ambient participation is continuous and probabilistic. A normal request for silence is social transcript evidence: the model may accept, ignore, resist, or escalate. It must never become deterministic mute, quit, or quiet-until state. Only operational kill switches, lease loss, disabled mappings, and invalid startup configuration are deterministic. Delivery uses one to five typed bubbles, bounded length delay, durable nonces/receipts, and cancels remaining bubbles on newer human ingress.
+Ambient participation is continuous and probabilistic. A normal request for silence is social transcript evidence: the model may accept, ignore, resist, or escalate. It must never become deterministic mute, quit, or quiet-until state. Only operational kill switches, lease loss, disabled mappings, and invalid startup configuration are deterministic. Active human conversation is sufficient evidence for spontaneous participation; an explicit mention or direct address is not required. Each poll captures the newest actionable event as a fixed high-watermark, appraises the recent conversation once, and atomically marks older queued work through that boundary as observed. Events ingested after the boundary remain pending for the next poll and do not cancel delivery from the current poll. Delivery uses one to five typed bubbles, bounded length delay, and durable nonces/receipts.
 
 ## Ambient hardening addendum
 
@@ -35,6 +35,13 @@ Per-channel overrides live in `channel_settings.settings_json`; invalid or absen
 | `ambientIdleDecayTauMs` | integer >= `60000` | `7200000` (2h) |
 | `ambientPressureTauMs` | integer >= `60000` | `1800000` (30m) |
 | `ambientPityEnabled` | boolean | `true` |
+### V2 participation and protected cleanup
+
+V2 has explicit `off`, `shadow`, and `apply` modes. `off` has no V2 participant ingress or delivery. `shadow` may bind an immutable diagnostic tick and persist `coverage_kind='shadow'`, but it does not change `participant_event_work` assignment/status or deliver. Only `apply` binds work coverage and creates a delivery plan. New posts and ticks after the tick high-watermark remain pending for the next tick; they do not revise or cancel the current plan.
+
+The service owns V2 ticks, anchor/high-watermark snapshots, coverage, delivery plans and receipts, validator records, diagnostics, retention, and cleanup. OpenClaw owns no part of that state and must not invoke the validator. The validator boundary defaults to service-only `gpt-4.1-mini`; timeout, transport, malformed output, or schema failure is fail-closed for prior learning and next-primary admission and persists a diagnostic.
+
+Approved cleanup is a service SQLite transaction, scoped to its approved guild/channel pairs. It retains protected/nonterminal tick evidence, linked work, and every pending/retryable plan. Complete terminal aggregates older than seven days are deleted in FK-safe phases, after which their unreferenced terminal work and bounded raw ingress become eligible for pruning. Operators can canary in `shadow`, promote one allowlisted channel to `apply`, and roll back to `shadow` or `off` without manually deleting durable state.
 
 ## Live QA
 

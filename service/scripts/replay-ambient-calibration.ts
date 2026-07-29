@@ -1,167 +1,80 @@
+import { parseConversationParticipationPrimary } from "../src/adaptive-ambient-proposal-parser.js";
 import {
-  applyAmbientIdleDecay,
-  applyAmbientPressure,
-  calculateAmbientProbability,
-  evaluateAmbientDecision,
-  IDLE_DECAY_TAU_MS,
-  PRESSURE_TAU_MS,
-} from "../src/conversation-ambient.js";
-import {
-  ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS,
-  type AmbientAppraisalParseResult,
-  type AmbientAppraisalProposal,
-  type AmbientState,
-  type DiscordParticipantScope,
-} from "../src/adaptive-ambient-contracts.js";
+  canonicalUtf8Bytes,
+  materializeConversationParticipantContext,
+  sha256Utf8,
+  type ConversationParticipantRawEvent,
+} from "../src/conversation-participant-context.js";
 
-const scope: DiscordParticipantScope = { guildId: "calibration-guild", channelId: "calibration-channel" };
-const botUserId = "calibration-bot";
-const baselineMs = Date.parse("2026-07-25T12:00:00.000Z");
-type ReplayState = AmbientState & { readonly speakStreak?: number; readonly skipStreak?: number };
-type ReplayRow = {
-  readonly event: string;
-  readonly elapsedMinutes: number;
-  readonly driveBefore: number;
-  readonly pressure: number;
-  readonly baseProbability: number;
-  readonly probability: number;
-  readonly draw: number | null;
-  readonly speak: boolean;
-};
+const scopeId = "discord:calibration-guild:calibration-channel";
+const rows: readonly ConversationParticipantRawEvent[] = [
+  raw(1, "m1", "human-a", "첫 메시지", "2026-07-25T12:00:00.000Z"),
+  raw(2, "m2", "human-b", "앞 메시지에 답해요", "2026-07-25T12:01:00.000Z", "m1"),
+  raw(3, "m3", "human-a", "이번 틱의 앵커", "2026-07-25T12:02:00.000Z"),
+  raw(4, "m4", "human-b", "판단 뒤에 들어온 메시지", "2026-07-25T12:03:00.000Z"),
+];
 
-function appraisal(
-  decision: "observe" | "speak",
-  desiredDrive: number,
-  silenceRequest: AmbientAppraisalProposal["silenceRequest"] = { present: false },
-): AmbientAppraisalParseResult {
+function main(): void {
+  const first = materializeConversationParticipantContext(scopeId, rows.slice(0, 3), "m3");
+  invariant(first.kind === "valid", "a canonical V2 snapshot materializes");
+  if (first.kind !== "valid") return;
+
+  const replay = materializeConversationParticipantContext(scopeId, rows, "m3");
+  invariant(replay.kind === "valid", "the same selected anchor remains materializable after later ingress");
+  if (replay.kind !== "valid") return;
+
+  invariant(first.snapshot.turns.some((turn) => turn.messageId === "m3"), "the selected eligible work item is included as the immutable anchor");
+  invariant(first.snapshot.highWatermarkId === 3, "the high-watermark is frozen at bind time");
+  invariant(!first.snapshot.turns.some((turn) => turn.messageId === "m4"), "post-high-watermark ingress is deferred to a later tick");
+  invariant(replay.snapshot.highWatermarkId === 4, "later ingress is visible only to a later materialization");
+  invariant(first.snapshot.highWatermarkId === 3, "later materialization cannot mutate the already-bound high-watermark");
+  invariant(canonicalUtf8Bytes(first.snapshot.canonicalJson) === first.snapshot.utf8Bytes, "snapshot UTF-8 bytes are canonical");
+  invariant(sha256Utf8(first.snapshot.canonicalJson) === first.snapshot.digest, "snapshot digest matches canonical bytes");
+  invariant(first.snapshot.turns.some((turn) => turn.messageId === "m1"), "reply ancestors are retained in bounded context");
+
+  const multibyteChunk = "가".repeat(500);
+  const primary = (chunks: readonly string[]) => JSON.stringify({
+    schema: "hent_ai.conversation_participation.primary.v2",
+    decision: "speak",
+    baselineDecision: "speak",
+    judgmentClass: "definitive",
+    semanticMargin: 0.2,
+    priorApplied: false,
+    confidence: 0.8,
+    chunks,
+  });
+  invariant(parseConversationParticipationPrimary(primary([multibyteChunk])).kind === "valid", "a multibyte chunk below the byte cap is accepted");
+  invariant(parseConversationParticipationPrimary(primary(["가".repeat(601)])).kind === "invalid", "a multibyte chunk above the byte cap is rejected by bytes, not code points");
+
+  console.log(JSON.stringify({
+    schema: "hent_ai.conversation_participant_calibration.v2",
+    deterministic: true,
+    anchorMessageId: "m3",
+    highWatermarkId: first.snapshot.highWatermarkId,
+    turnCount: first.snapshot.turns.length,
+    snapshotUtf8Bytes: first.snapshot.utf8Bytes,
+    snapshotDigest: first.snapshot.digest,
+    postHighWatermarkDeferred: true,
+    replyAncestorRetained: true,
+    multibyteBoundaryEnforced: true,
+  }, null, 2));
+}
+
+function raw(id: number, messageId: string, authorId: string, text: string, eventTs: string, replyMessageId?: string): ConversationParticipantRawEvent {
   return {
-    kind: "valid",
-    proposal: {
-      schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal,
-      decision,
-      desiredDrive,
-      confidence: 1,
-      chunks: decision === "speak" ? ["synthetic reply"] : [],
-      relationshipProposals: [],
-      silenceRequest,
-    },
+    id,
+    scopeId,
+    messageId,
+    authorSource: "discord-participant",
+    authorRole: "user",
+    text,
+    eventTs,
+    metadataJson: JSON.stringify({ discordAuthorId: authorId, discordAuthorBot: false, ...(replyMessageId ? { replyTo: { messageId: replyMessageId, authorId: "human-a" } } : {}) }),
   };
 }
 
-function replay(
-  events: readonly { readonly event: string; readonly nowMs: number; readonly appraisal: AmbientAppraisalParseResult; readonly mentioned: boolean }[],
-  initialState: ReplayState | null,
-  options: { readonly ambientPityEnabled?: boolean; readonly pressureTauMs?: number } = {},
-): ReplayRow[] {
-  let state = initialState;
-  return events.map((event) => {
-    const driveBefore = state === null ? 0.5 : applyAmbientIdleDecay(state.drive, state.updatedAtMs, event.nowMs, IDLE_DECAY_TAU_MS);
-    const pressure = applyAmbientPressure(state, event.appraisal, event.nowMs, options.pressureTauMs ?? PRESSURE_TAU_MS);
-    const result = evaluateAmbientDecision({
-      appraisal: event.appraisal,
-      eventId: event.event,
-      state,
-      message: { mentions: event.mentioned ? [botUserId] : [], replyTo: null },
-      botUserId,
-      roster: { scope, memberIds: ["human-a", "human-b"], complete: true, observedAtMs: event.nowMs },
-      activeHumanIds: ["human-a", "human-b"],
-      nowMs: event.nowMs,
-      ambientPityEnabled: options.ambientPityEnabled ?? true,
-      pressureTauMs: options.pressureTauMs,
-    });
-    const proposal = event.appraisal.kind === "valid" ? event.appraisal.proposal : null;
-    const baseProbability = proposal === null || result.driveUpdate === null ? 0 : calculateAmbientProbability({
-      decision: proposal.decision,
-      validChunks: proposal.decision === "observe" ? proposal.chunks.length === 0 : proposal.chunks.length > 0,
-      nextDrive: result.driveUpdate.drive,
-      confidence: proposal.confidence,
-      evidenceWeight: result.evidenceWeight,
-    });
-    state = result.driveUpdate;
-    return {
-      event: event.event,
-      elapsedMinutes: (event.nowMs - baselineMs) / 60_000,
-      driveBefore,
-      pressure,
-      baseProbability,
-      probability: result.probability,
-      draw: result.draw,
-      speak: result.shouldSpeak,
-    };
-  });
-}
-
-function printScenario(name: string, rows: readonly ReplayRow[]): void {
-  console.log(`\n${name}`);
-  console.log("event                           min  drive_before  pressure  p_base  p_eff   draw    speak");
-  for (const row of rows) {
-    console.log(`${row.event.padEnd(31)} ${row.elapsedMinutes.toFixed(0).padStart(3)}  ${row.driveBefore.toFixed(4).padStart(12)}  ${row.pressure.toFixed(4).padStart(8)}  ${row.baseProbability.toFixed(4).padStart(6)}  ${row.probability.toFixed(4).padStart(6)}  ${(row.draw ?? 0).toFixed(4).padStart(6)}  ${row.speak ? "yes" : "no"}`);
-  }
-  const speaks = rows.filter((row) => row.speak).length;
-  console.log(`final speak rate: ${speaks}/${rows.length} = ${(speaks / rows.length).toFixed(3)}`);
-}
-
-function assertInvariant(condition: boolean, message: string): void {
+function invariant(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`calibration invariant failed: ${message}`);
 }
 
-function main(): void {
-  const baseline = replay(
-    Array.from({ length: 8 }, (_, index) => ({
-      event: `baseline-${String(index).padStart(2, "0")}`,
-      nowMs: baselineMs + index * 60_000,
-      appraisal: appraisal("speak", 0.5),
-      mentioned: true,
-    })),
-    null,
-    { ambientPityEnabled: false },
-  );
-
-  const idleSeed: ReplayState = { scope, drive: 0.8, version: 1, updatedAtMs: baselineMs, pressure: 0, pressureUpdatedAtMs: baselineMs, speakStreak: 0, skipStreak: 0 };
-  const idle = replay([0, 60, 120].map((minutes) => ({
-    event: `drive-0.8-after-${minutes}m-idle`,
-    nowMs: baselineMs + minutes * 60_000,
-    appraisal: appraisal("speak", 0.8),
-    mentioned: true,
-  })), idleSeed, { ambientPityEnabled: false });
-
-  const pressureEvents = [0, 1, 2, 3, 4].map((minute, index) => ({
-    event: `silence-request-${index + 1}`,
-    nowMs: baselineMs + minute * 60_000,
-    appraisal: appraisal("observe", 1, { present: true, intensity: "mild" }),
-    mentioned: false,
-  }));
-  const pressure = replay([
-    ...pressureEvents,
-    { event: "pressure-ambient-00", nowMs: baselineMs + 5 * 60_000, appraisal: appraisal("speak", 1), mentioned: false },
-    { event: "pressure-mention-02", nowMs: baselineMs + 6 * 60_000, appraisal: appraisal("speak", 1), mentioned: true },
-  ], null, { ambientPityEnabled: false });
-
-  const pitySeed: ReplayState = { scope, drive: 0.1, version: 1, updatedAtMs: baselineMs, pressure: 0, pressureUpdatedAtMs: baselineMs, speakStreak: 0, skipStreak: 0 };
-  const pity = replay(["06", "10", "12", "13", "16", "17", "19", "23"].map((suffix, index) => ({
-    event: `pity-fail-${suffix}`,
-    nowMs: baselineMs + index * 60_000,
-    appraisal: appraisal("speak", 0.1),
-    mentioned: true,
-  })), pitySeed);
-
-  printScenario("Scenario A: baseline drive 0.5", baseline);
-  printScenario("Scenario B: drive 0.8 then idle decay", idle);
-  printScenario("Scenario C: five mild silence requests, ambient suppression, explicit mention", pressure);
-  printScenario("Scenario D: eight consecutive failed draws with pity", pity);
-
-  const idleDeviations = idle.map((row) => Math.abs(row.driveBefore - 0.5));
-  assertInvariant(idleDeviations.every((value, index) => index === 0 || value < idleDeviations[index - 1]!), "idle decay is monotonic toward the 0.5 baseline");
-  assertInvariant(pressure.every((row) => row.pressure >= 0 && row.pressure <= 1), "pressure remains bounded in [0,1]");
-  assertInvariant(pressure.slice(0, 5).every((row, index) => index === 0 || row.pressure >= pressure[index - 1]!.pressure), "repeated silence requests raise pressure");
-  assertInvariant(!pressure[5]!.speak && pressure[6]!.speak, "pressure suppresses ambient speech but not an explicit mention");
-  assertInvariant(pity.every((row) => row.probability + Number.EPSILON >= row.baseProbability), "effective pity probability is never below base probability");
-  assertInvariant(pity.every((row) => !row.speak), "selected pity draws remain consecutive failures");
-}
-
-try {
-  main();
-} catch (error) {
-  console.error(error instanceof Error ? error.message : error);
-  throw error;
-}
+main();

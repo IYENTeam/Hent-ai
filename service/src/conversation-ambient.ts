@@ -5,11 +5,13 @@ import type {
   AmbientAppraisalProposal,
   AmbientDecisionAudit,
   AmbientState,
+  ConversationParticipationPrimaryParseResult,
   DiscordInboundMessage,
   DiscordMembershipSnapshot,
 } from "./adaptive-ambient-contracts.js";
 
 const DEFAULT_DRIVE = 0.5;
+const INITIAL_DRIVE = 0.7;
 export const IDLE_DECAY_TAU_MS = 2 * 3_600_000;
 export const PRESSURE_TAU_MS = 30 * 60_000;
 const ROSTER_FRESHNESS_MS = 5 * 60 * 1000;
@@ -19,7 +21,6 @@ export type AmbientEvidenceInput = {
   readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
   readonly botUserId: string;
   readonly roster: DiscordMembershipSnapshot;
-  readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
 };
 
@@ -53,6 +54,47 @@ export type AmbientDecisionResult = {
   readonly shouldSpeak: boolean;
 };
 
+export type ConversationParticipationDecisionResult = {
+  readonly decision: "observe" | "speak";
+  readonly shouldSpeak: boolean;
+  readonly baselineDecision: "observe" | "speak" | null;
+  readonly judgmentClass: "definitive" | "borderline" | null;
+  readonly semanticMargin: number | null;
+  readonly priorApplied: boolean | null;
+  readonly diagnostic: string | null;
+};
+
+/**
+ * V2 parser-valid primary decisions are authoritative. Unlike V1, this path
+ * intentionally has no draw, drive, pressure, pity, or confidence reversal.
+ */
+export function evaluateConversationParticipationPrimary(
+  primary: ConversationParticipationPrimaryParseResult,
+): ConversationParticipationDecisionResult {
+  if (primary.kind !== "valid") {
+    return {
+      decision: "observe",
+      shouldSpeak: false,
+      baselineDecision: null,
+      judgmentClass: null,
+      semanticMargin: null,
+      priorApplied: null,
+      diagnostic: primary.diagnostic,
+    };
+  }
+
+  const proposal = primary.proposal;
+  return {
+    decision: proposal.decision,
+    shouldSpeak: proposal.decision === "speak",
+    baselineDecision: proposal.baselineDecision,
+    judgmentClass: proposal.judgmentClass,
+    semanticMargin: proposal.semanticMargin,
+    priorApplied: proposal.priorApplied,
+    diagnostic: null,
+  };
+}
+
 export function classifyAmbientAppraisal(result: AmbientAppraisalParseResult): "valid" | "invalid" | "unavailable" {
   return result.kind;
 }
@@ -68,9 +110,7 @@ export function calculateAmbientEvidenceWeight(input: AmbientEvidenceInput): num
   if (isExplicitAmbientAddress(input.message, input.botUserId)) return 1;
   if (!isFreshCompleteRoster(input.roster, input.nowMs)) return 0;
 
-  const activeHumanCount = new Set(input.activeHumanIds).size;
-  if (activeHumanCount >= 2) return 0.5;
-  return activeHumanCount === 1 ? 0.25 : 0;
+  return 0.8;
 }
 
 export function applyAmbientIdleDecay(drive: number, updatedAtMs: number, nowMs: number, tauMs: number): number {
@@ -96,7 +136,7 @@ export function applyAmbientPressure(
 export function calculateNextAmbientDrive(previousState: AmbientState | null, desiredDrive: number): number | null {
   if (!isUnitInterval(desiredDrive)) return null;
 
-  const previousDrive = previousState === null ? DEFAULT_DRIVE : previousState.drive;
+  const previousDrive = previousState === null ? INITIAL_DRIVE : previousState.drive;
   if (!isUnitInterval(previousDrive)) return null;
   return clampUnitInterval(previousDrive * 0.75 + desiredDrive * 0.25);
 }
@@ -152,10 +192,10 @@ function validDecision(
     confidence: proposal.confidence,
     evidenceWeight,
   });
-  const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.7) && !input.observeOnly;
-  const probability = opportunity ? applyAmbientPityBoost(baseProbability, input.state, input.ambientPityEnabled ?? true) : baseProbability;
+  const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.6) && !input.observeOnly;
+  const probability = opportunity ? 1 : baseProbability;
   const draw = stableAmbientDraw(scopeId(input.roster), input.eventId);
-  const shouldSpeak = probability > 0 && draw < probability;
+  const shouldSpeak = opportunity;
   const streaks = nextAmbientStreaks(input.state, opportunity, shouldSpeak);
   const driveUpdate: AmbientStateWithStreaks = {
     scope: input.roster.scope,

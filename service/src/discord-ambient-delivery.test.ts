@@ -77,7 +77,16 @@ describe("nonce-fenced ambient delivery", () => {
     expect(fixture.db.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 0 }); fixture.db.close();
   });
 
-  it("fails closed for unsafe bubble normalization, stale fences, and newer human ingress", async () => {
+  it("rechecks authorization before typing and message side effects", async () => {
+    const fixture = setup(["single bubble"]); const calls: string[] = []; let authorizations = 0;
+    const delivery = factory()({ store: fixture.store, delay: async () => { calls.push("delay"); }, isAuthorized: () => ++authorizations < 3, client: {
+      sendTyping: async () => { calls.push("typing"); }, createMessage: async () => { calls.push("send"); return { id: "message" }; },
+    } });
+    await expect(delivery.deliver({ planId: "plan", fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("cancelled");
+    expect({ authorizations, calls }).toEqual({ authorizations: 3, calls: ["typing", "delay"] });
+    fixture.db.close();
+  });
+  it("fails closed for unsafe bubble normalization and stale fences while preserving the tick boundary", async () => {
     const normalize = Reflect.get(service, "normalizeDiscordAmbientBubbles") as (chunks: readonly string[]) => readonly string[] | null;
     expect(normalize(["a".repeat(700)])).toHaveLength(5);
     expect(normalize(["a".repeat(701)])).toBeNull();
@@ -85,17 +94,17 @@ describe("nonce-fenced ambient delivery", () => {
     const stale = setup(["never sent"]); now += 30_001;
     const noDispatch = factory()({ store: stale.store, clock: () => now, delay: async () => { throw new Error("delay"); }, client: { sendTyping: async () => { throw new Error("typing"); }, createMessage: async () => { throw new Error("send"); } } });
     await expect(noDispatch.deliver({ planId: "plan", fence: stale.fence, signal: new AbortController().signal })).resolves.toBe("aborted"); stale.db.close(); now = 1_000_000;
-    const cancelled = setup(); let sends = 0;
-    const delivery = factory()({ store: cancelled.store, clock: () => now, delay: async () => {}, client: {
+    const bounded = setup(); let sends = 0;
+    const delivery = factory()({ store: bounded.store, clock: () => now, delay: async () => {}, client: {
       sendTyping: async () => {}, createMessage: async () => {
         sends += 1;
-        if (sends === 1) cancelled.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+        if (sends === 1) bounded.db.db.prepare(`INSERT INTO conversation_raw_events (scope_id,channel_id,thread_id,session_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
           VALUES (?, ?, NULL, NULL, 'newer-human', 'user', 'discord-participant', 'new', ?, ?, 0, '{}', ?)`).run(`discord:${scope.guildId}:${scope.channelId}`, scope.channelId, new Date(now).toISOString(), new Date(now).toISOString(), new Date(now).toISOString());
         return { id: `message-${sends}` };
       },
     } });
-    await expect(delivery.deliver({ planId: "plan", fence: cancelled.fence, signal: new AbortController().signal })).resolves.toBe("cancelled");
-    expect(cancelled.db.db.prepare("SELECT status FROM participant_delivery_plans").get()).toEqual({ status: "cancelled" });
-    expect(cancelled.db.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 1 }); cancelled.db.close();
+    await expect(delivery.deliver({ planId: "plan", fence: bounded.fence, signal: new AbortController().signal })).resolves.toBe("delivered");
+    expect(bounded.db.db.prepare("SELECT status FROM participant_delivery_plans").get()).toEqual({ status: "delivered" });
+    expect(bounded.db.db.prepare("SELECT COUNT(*) AS count FROM participant_delivery_receipts").get()).toEqual({ count: 2 }); bounded.db.close();
   });
 });

@@ -51,6 +51,11 @@ describe("bounded relationship profiles and roster evidence", () => {
     await expect(service.accumulateDiscordRoster(scope, async () => { throw new Error("page two failed"); }, 0)).resolves.toMatchObject({ terminated: "page_failure", roster: { complete: false } });
     await expect(service.accumulateDiscordRoster(scope, async (request) => request.after ? page : page, 0)).resolves.toMatchObject({ terminated: "duplicate", roster: { complete: false, memberIds: expect.any(Array) } });
     await expect(service.accumulateDiscordRoster(scope, async () => [{ userId: "2", bot: false }, { userId: "1", bot: false }], 0)).resolves.toMatchObject({ terminated: "non_increasing", roster: { complete: false } });
+    let backwardPage = 0;
+    await expect(service.accumulateDiscordRoster(scope, async () => {
+      backwardPage += 1;
+      return backwardPage === 1 ? Array.from({ length: 1000 }, (_, index) => ({ userId: String(index + 1001), bot: false })) : [{ userId: "1", bot: false }];
+    }, 0)).resolves.toMatchObject({ terminated: "non_increasing", roster: { complete: false } });
     let pageNumber = 0;
     const guarded = await service.accumulateDiscordRoster(scope, async () => {
       const start = pageNumber * 1000 + 1;

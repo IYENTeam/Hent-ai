@@ -14,7 +14,6 @@ type AmbientEvidenceInput = {
   readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
   readonly botUserId: string;
   readonly roster: DiscordMembershipSnapshot;
-  readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
 };
 
@@ -107,7 +106,6 @@ function decisionInput(overrides: Partial<AmbientDecisionInput> = {}): AmbientDe
     message: { mentions: [botUserId], replyTo: null },
     botUserId,
     roster,
-    activeHumanIds: ["100000000000000004", "100000000000000005"],
     nowMs,
     ...overrides,
   };
@@ -124,24 +122,22 @@ describe("adaptive ambient drive and evidence", () => {
     expect(typeof api?.evaluateAmbientDecision).toBe("function");
 
     const outcome = ambient().evaluateAmbientDecision(decisionInput());
-    expect(outcome.driveUpdate).toMatchObject({ drive: 0.575, version: 1, scope, updatedAtMs: nowMs });
+    expect(outcome.driveUpdate).toMatchObject({ drive: 0.7 * 0.75 + 0.8 * 0.25, version: 1, scope, updatedAtMs: nowMs });
     expect(outcome.evidenceWeight).toBe(1);
-    expect(outcome.probability).toBeCloseTo(0.46);
+    expect(outcome.probability).toBe(1);
     expect(outcome.draw).toBeGreaterThanOrEqual(0);
     expect(outcome.draw).toBeLessThan(1);
   });
 
-  it("weights explicit mentions and replies above fresh complete roster activity", () => {
+  it("weights explicit mentions and replies above any fresh complete roster", () => {
     const api = ambient();
-    const base = { message: { mentions: [], replyTo: null }, botUserId, roster, activeHumanIds: [], nowMs };
+    const base = { message: { mentions: [], replyTo: null }, botUserId, roster, nowMs };
 
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [botUserId], replyTo: null } })).toBe(1);
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [], replyTo: { messageId: "reply-1", authorId: botUserId } } })).toBe(1);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"] })).toBe(0.5);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1"] })).toBe(0.25);
-    expect(api.calculateAmbientEvidenceWeight(base)).toBe(0);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, complete: false } })).toBe(0);
-    expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"], roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);
+    expect(api.calculateAmbientEvidenceWeight(base)).toBe(0.8);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, roster: { ...roster, complete: false } })).toBe(0);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, roster: { ...roster, observedAtMs: nowMs - 300_001 } })).toBe(0);
   });
 
   it("relaxes ambient drive toward baseline across idle time without changing the EMA", () => {
@@ -157,7 +153,7 @@ describe("adaptive ambient drive and evidence", () => {
     expect(api.applyAmbientIdleDecay(-10, nowMs - 1, nowMs, 1_000_000_000)).toBe(0);
 
     const first = api.evaluateAmbientDecision(decisionInput({ appraisal: appraisal({ desiredDrive: 0.8 }) }));
-    expect(first.driveUpdate?.drive).toBe(0.575);
+    expect(first.driveUpdate?.drive).toBe(0.7 * 0.75 + 0.8 * 0.25);
 
     const stale = api.evaluateAmbientDecision(decisionInput({
       state: { scope, drive: 0.8, version: 7, updatedAtMs: Number.NaN },
@@ -173,7 +169,7 @@ describe("adaptive ambient drive and evidence", () => {
 
     // A mild 0.7-confidence request produces pressure 0.5 * 0.7 = 0.35,
     // so the EMA receives desiredDrive 0.8 * (1 - 0.35) = 0.52.
-    expect(singleMild.driveUpdate).toMatchObject({ drive: 0.505, pressure: 0.35, pressureUpdatedAtMs: nowMs });
+    expect(singleMild.driveUpdate).toMatchObject({ drive: 0.7 * 0.75 + 0.52 * 0.25, pressure: 0.35, pressureUpdatedAtMs: nowMs });
     expect(singleMild.evidenceWeight).toBe(1);
     expect(singleMild.probability).toBeGreaterThan(0);
     expect(singleMild.shouldSpeak).toBe(true);
@@ -208,7 +204,7 @@ describe("adaptive ambient drive and evidence", () => {
     const fullState: AmbientState = { scope, drive: 1, version: 4, updatedAtMs: nowMs };
     const emptyState: AmbientState = { scope, drive: 0, version: 4, updatedAtMs: nowMs };
 
-    expect(api.calculateNextAmbientDrive(null, 0)).toBe(0.375);
+    expect(api.calculateNextAmbientDrive(null, 0)).toBe(0.7 * 0.75);
     expect(api.calculateNextAmbientDrive(fullState, 1)).toBe(1);
     expect(api.calculateNextAmbientDrive(emptyState, 0)).toBe(0);
     expect(api.calculateNextAmbientDrive(null, Number.NaN)).toBeNull();
@@ -253,7 +249,7 @@ describe("adaptive ambient drive and evidence", () => {
     }
   });
 
-  it("boosts probability after quiet streaks without forcing a decision", () => {
+  it("treats a valid provider speech decision as authoritative", () => {
     const api = ambient();
     const baseState = { scope, drive: 0, version: 1, updatedAtMs: nowMs };
     const baseInput = {
@@ -267,13 +263,13 @@ describe("adaptive ambient drive and evidence", () => {
     const capped = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 10 } }));
     const disabled = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 }, ambientPityEnabled: false }));
 
-    expect(base.probability).toBeCloseTo(0.1);
-    expect(boosted.probability).toBeCloseTo(1 - 0.9 ** 5);
-    expect(capped.probability).toBeCloseTo(0.05);
-    expect(disabled.probability).toBeCloseTo(0.1);
-    expect(boosted.shouldSpeak).toBe(false);
-    expect(boosted.shouldSpeak).toBe(boosted.draw! < boosted.probability);
-    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 0, skipStreak: 5 });
+    expect(base.probability).toBe(1);
+    expect(boosted.probability).toBe(1);
+    expect(capped.probability).toBe(1);
+    expect(disabled.probability).toBe(1);
+    expect(base.shouldSpeak).toBe(true);
+    expect(boosted.shouldSpeak).toBe(true);
+    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 1, skipStreak: 0 });
 
     const speech = api.evaluateAmbientDecision(decisionInput({
       ...baseInput,

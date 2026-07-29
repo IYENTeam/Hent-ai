@@ -157,7 +157,7 @@ function ingressEvent(message: DiscordParticipantMessage, scope: Scope, selfUser
     ingressDigest: digest(message),
   };
   return {
-    eventId: message.id, eventDigest: digest(message), queue: !self, observeOnly: !self && now - createdAtMs > STALE_EVENT_MS,
+    eventId: message.id, eventDigest: digest(message), queue: !self && !message.author.bot, observeOnly: !self && now - createdAtMs > STALE_EVENT_MS,
     raw: { scopeId: `discord:${scope.guildId}:${scope.channelId}`, channelId: scope.channelId, messageId: message.id,
       authorRole: self ? "assistant" : "user", text: message.content, eventTs: message.timestamp, botSelfLoop: self, metadata },
   };
