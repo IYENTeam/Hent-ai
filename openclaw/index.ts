@@ -60,10 +60,31 @@ type ReplyPayloadSendingEvent = {
   runId?: string;
 };
 
+type OpenClawOutboundSendContext = {
+  cfg: unknown;
+  to: string;
+  text: string;
+  mediaUrl?: string;
+  accountId?: string | null;
+};
+
+type OpenClawOutboundAdapter = {
+  sendText?: (ctx: OpenClawOutboundSendContext) => Promise<unknown>;
+  sendMedia?: (ctx: OpenClawOutboundSendContext) => Promise<unknown>;
+};
+
+type OpenClawOutboundRuntime = {
+  channel?: {
+    outbound?: {
+      loadAdapter?: (id: string) => Promise<OpenClawOutboundAdapter | undefined>;
+    };
+  };
+};
+
 type PluginApi = {
   pluginConfig?: unknown;
   config?: unknown;
-  runtime?: RuntimeConfigProvider & { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{ sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>; sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown> } | undefined> } } };
+  runtime?: RuntimeConfigProvider & OpenClawOutboundRuntime;
   logger?: Logger;
   on: (name: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown, options?: { name?: string }) => void;
   supportsHook?: (name: string) => boolean;
@@ -77,10 +98,17 @@ type Logger = {
 
 type FetchLike = typeof fetch;
 
+export type OpenClawOutboundTarget = {
+  /** OpenClaw channel adapter id, for example `discord` or an injected `loopback`. */
+  channel: string;
+  /** Host-native delivery target copied from the hook event/context. */
+  to: string;
+  accountId?: string;
+};
 
 export type OpenClawMessageSender = {
-  sendText?: (channelId: string, text: string) => Promise<string | null>;
-  sendMedia?: (channelId: string, mediaUrl: string, text?: string) => Promise<string | null>;
+  sendText?: (target: OpenClawOutboundTarget, text: string) => Promise<string | null>;
+  sendMedia?: (target: OpenClawOutboundTarget, mediaUrl: string, text?: string) => Promise<string | null>;
 };
 
 type ConversationDeliveryChunkMetadata = {
@@ -125,31 +153,39 @@ function extractOutboundMessageId(result: unknown): string | null {
 
 export function createOpenClawMessageSender(api: {
   config?: unknown;
-  runtime?: { channel?: { outbound?: { loadAdapter?: (id: string) => Promise<{
-    sendText?: (ctx: { cfg: unknown; to: string; text: string }) => Promise<unknown>;
-    sendMedia?: (ctx: { cfg: unknown; to: string; text: string; mediaUrl: string }) => Promise<unknown>;
-  } | undefined> } } };
+  runtime?: OpenClawOutboundRuntime;
   logger?: Logger;
 }): OpenClawMessageSender | undefined {
   const loadAdapter = api.runtime?.channel?.outbound?.loadAdapter;
   if (!loadAdapter) return undefined;
   return {
-    async sendText(channelId, text) {
+    async sendText(target, text) {
       try {
-        const adapter = await loadAdapter("discord");
+        const adapter = await loadAdapter(target.channel);
         if (!adapter?.sendText) return null;
-        const result = await adapter.sendText({ cfg: api.config ?? {}, to: `channel:${channelId}`, text });
+        const result = await adapter.sendText({
+          cfg: api.config ?? {},
+          to: target.to,
+          text,
+          ...(target.accountId ? { accountId: target.accountId } : {}),
+        });
         return extractOutboundMessageId(result);
       } catch (error) {
         loggerWarn(api.logger, `hent-ai adapter: outbound text send failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
     },
-    async sendMedia(channelId, mediaUrl, text = "") {
+    async sendMedia(target, mediaUrl, text = "") {
       try {
-        const adapter = await loadAdapter("discord");
+        const adapter = await loadAdapter(target.channel);
         if (!adapter?.sendMedia) return null;
-        const result = await adapter.sendMedia({ cfg: api.config ?? {}, to: `channel:${channelId}`, text, mediaUrl });
+        const result = await adapter.sendMedia({
+          cfg: api.config ?? {},
+          to: target.to,
+          text,
+          mediaUrl,
+          ...(target.accountId ? { accountId: target.accountId } : {}),
+        });
         return extractOutboundMessageId(result);
       } catch (error) {
         loggerWarn(api.logger, `hent-ai adapter: outbound media send failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -433,8 +469,76 @@ function messageSentBody(event: unknown, ctx?: unknown): Record<string, unknown>
       metadata: record.metadata ?? payload?.channelData,
       sessionKey: record.sessionKey ?? hookCtx.sessionKey,
       runId: record.runId ?? hookCtx.runId,
+      responseAffect: record.responseAffect,
     },
   };
+}
+
+const RESPONSE_AFFECT_DIMENSIONS = [
+  "valence", "arousal", "dominance", "joy", "anger", "irritation", "sadness", "anxiety",
+  "fear", "surprise", "confusion", "disgust", "embarrassment", "pride", "determination",
+  "affection", "warmth", "playfulness", "teasing", "deference", "smileIntensity",
+  "browTension", "eyeOpenness", "bodyOpenness",
+] as const;
+
+const RESPONSE_AFFECT_MARKER = /(?:\r?\n)*\[\[HENT_AFFECT_V2\|([^\r\n]*)\]\]\s*$/;
+const RESPONSE_AFFECT_MARKER_PAYLOAD = /^(\[[0-9, ]+\])\|([0-9]{1,3})$/;
+
+const RESPONSE_AFFECT_PROMPT = [
+  "For every final user-facing answer, append exactly one transport metadata line after the answer.",
+  "Use this exact format with no code fence: [[HENT_AFFECT_V2|[n1,n2,...,n24]|confidence]].",
+  "All 25 values must be integers from 0 to 100.",
+  `The 24 values are the emotional performance of your answer in this exact order: ${RESPONSE_AFFECT_DIMENSIONS.join(",")}.`,
+  "The transport removes this line before delivery. Never discuss or omit it, including for very short answers.",
+].join(" ");
+
+function shouldInjectResponseAffect(ctx: unknown): boolean {
+  const context = asRecord(ctx);
+  const sessionKey = stringValue(context?.sessionKey);
+  return Boolean(sessionKey?.includes(":discord:"));
+}
+
+type EmbeddedResponseAffect = {
+  readonly schemaVersion: "ResponseAffectV2";
+  readonly affectSpaceVersion: "AffectSpaceV2";
+  readonly dimensions: Record<(typeof RESPONSE_AFFECT_DIMENSIONS)[number], number>;
+  readonly confidence: number;
+};
+
+export function extractEmbeddedResponseAffect(text: string): {
+  readonly text: string;
+  readonly markerPresent: boolean;
+  readonly affect?: EmbeddedResponseAffect;
+} {
+  const marker = text.match(RESPONSE_AFFECT_MARKER);
+  if (!marker) return { text, markerPresent: false };
+  const visibleText = text.slice(0, marker.index).trimEnd();
+  const payload = marker[1]?.match(RESPONSE_AFFECT_MARKER_PAYLOAD);
+  if (!payload) return { text: visibleText, markerPresent: true };
+  try {
+    const values = JSON.parse(payload[1]!) as unknown;
+    const confidence = Number(payload[2]);
+    if (!Array.isArray(values)
+      || values.length !== RESPONSE_AFFECT_DIMENSIONS.length
+      || !values.every((value) => Number.isInteger(value) && value >= 0 && value <= 100)
+      || !Number.isInteger(confidence)
+      || confidence < 0
+      || confidence > 100) {
+      return { text: visibleText, markerPresent: true };
+    }
+    return {
+      text: visibleText,
+      markerPresent: true,
+      affect: {
+        schemaVersion: "ResponseAffectV2",
+        affectSpaceVersion: "AffectSpaceV2",
+        dimensions: Object.fromEntries(RESPONSE_AFFECT_DIMENSIONS.map((dimension, index) => [dimension, Number(values[index]) / 100])) as EmbeddedResponseAffect["dimensions"],
+        confidence: confidence / 100,
+      },
+    };
+  } catch {
+    return { text: visibleText, markerPresent: true };
+  }
 }
 
 function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawStage1Media): Record<string, unknown> {
@@ -460,6 +564,20 @@ function channelIdFromEvent(event: unknown, ctx?: unknown): string | undefined {
       ?? stringValue(context?.parentConversationId)
       ?? stringValue(context?.channelId),
   );
+}
+
+export function outboundTargetFromEvent(event: unknown, ctx?: unknown): OpenClawOutboundTarget | null {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  const channel = stringValue(context?.channelId) ?? stringValue(record.channel);
+  const to = stringValue(record.to)
+    ?? stringValue(metadata?.to)
+    ?? stringValue(context?.conversationId)
+    ?? stringValue(context?.parentConversationId);
+  if (!channel || !to) return null;
+  const accountId = stringValue(context?.accountId) ?? stringValue(record.accountId);
+  return { channel, to, ...(accountId ? { accountId } : {}) };
 }
 
 function safeSleep(milliseconds: number): Promise<void> {
@@ -552,16 +670,20 @@ function parseMessageSentResponse(value: unknown): MessageSentServiceResponse | 
 async function sendConversationDeliveryPlan(
   sender: OpenClawMessageSender | undefined,
   response: ConversationDeliveryPlan,
+  target: OpenClawOutboundTarget,
   scopeId: string,
+  channelId: string,
   baseConfig: { baseUrl: URL; token: string; timeoutMs: number },
   suppressMessageIds: Set<string>,
   suppressMaxSize: number,
+  logger?: Logger,
 ): Promise<void> {
   const deliveryMessageIds: Record<string, string> = {};
   const requiredChunkIds = new Set(response.commit.requiredChunkIds);
   for (const chunk of response.chunks) {
     await safeSleep(chunk.delayMs);
-    const sentMessageId = await sender?.sendText?.(response.channelId, chunk.text);
+    if (!await serviceChannelEligible({ ...baseConfig, channelId, logger })) return;
+    const sentMessageId = await sender?.sendText?.(target, chunk.text);
     if (sentMessageId && requiredChunkIds.has(chunk.chunkId)) {
       deliveryMessageIds[chunk.chunkId] = sentMessageId;
       addToSuppressSet(suppressMessageIds, sentMessageId, suppressMaxSize);
@@ -583,6 +705,7 @@ async function sendConversationDeliveryPlan(
       signalId: response.commit.signalId,
       deliveryMessageIds,
     },
+    logger,
   });
   if (!responseJson) return;
 }
@@ -648,6 +771,96 @@ async function callJsonService(params: {
   }
 }
 
+async function serviceChannelEligible(params: {
+  baseUrl: URL;
+  token: string;
+  timeoutMs: number;
+  channelId: string;
+  logger?: Logger;
+}): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
+  const endpoint = `/v1/channels/${encodeURIComponent(params.channelId)}/mapping`;
+  try {
+    const response = await fetch(endpointUrl(params.baseUrl, endpoint), {
+      method: "GET",
+      headers: { authorization: `Bearer ${params.token}` },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      loggerWarn(params.logger, `hent-ai adapter: ${endpoint} returned HTTP ${response.status}; watcher delivery suppressed`);
+      return false;
+    }
+    const mapping = asRecord(asRecord(await response.json())?.mapping);
+    const eligible = mapping?.enabled === true;
+    if (!eligible) {
+      loggerInfo(params.logger, `hent-ai adapter: watcher delivery suppressed for unmapped or disabled channel=${params.channelId}`);
+    }
+    return eligible;
+  } catch (error) {
+    loggerWarn(params.logger, `hent-ai adapter: ${endpoint} failed; watcher delivery suppressed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deliverWatcherResponse(params: {
+  sender: OpenClawMessageSender | undefined;
+  response: MessageSentServiceResponse | null;
+  target: OpenClawOutboundTarget | null;
+  scopeId: string;
+  channelId: string;
+  config: { baseUrl: URL; token: string; timeoutMs: number };
+  suppressMessageIds: Set<string>;
+  suppressMaxSize: number;
+  logger?: Logger;
+}): Promise<void> {
+  const { response } = params;
+  if (!response || (!response.deliveryPlan && !response.nudgeText)) return;
+  if (!params.sender || !params.target) {
+    loggerWarn(params.logger, "hent-ai adapter: watcher delivery suppressed because no host outbound route is available");
+    return;
+  }
+  if (response.deliveryPlan
+    && (response.deliveryPlan.channelId !== params.channelId || response.deliveryPlan.scopeId !== params.scopeId)) {
+    loggerWarn(params.logger, "hent-ai adapter: watcher delivery suppressed because service plan route does not match the hook route");
+    return;
+  }
+  if (response.deliveryPlan) {
+    await sendConversationDeliveryPlan(
+      params.sender,
+      response.deliveryPlan,
+      params.target,
+      params.scopeId,
+      params.channelId,
+      params.config,
+      params.suppressMessageIds,
+      params.suppressMaxSize,
+      params.logger,
+    );
+    return;
+  }
+
+  const nudgeText = response.nudgeText;
+  if (!nudgeText) return;
+  if (!await serviceChannelEligible({ ...params.config, channelId: params.channelId, logger: params.logger })) return;
+  const deliveryMessageId = await params.sender.sendText?.(params.target, nudgeText);
+  if (deliveryMessageId) addToSuppressSet(params.suppressMessageIds, deliveryMessageId, params.suppressMaxSize);
+  const audit = asRecord(response.audit);
+  const cooldownKey = stringValue(audit?.cooldownKey);
+  const signalId = stringValue(audit?.internalSignalId);
+  if (!deliveryMessageId || !cooldownKey || !signalId) return;
+  await callJsonService({
+    baseUrl: params.config.baseUrl,
+    token: params.config.token,
+    timeoutMs: params.config.timeoutMs,
+    endpoint: "/v1/watcher/commit-delivery",
+    body: { cooldownKey, scopeId: params.scopeId, signalId, deliveryMessageId },
+    logger: params.logger,
+  });
+}
+
 async function handleReplyPayloadSending(params: {
   event: unknown;
   ctx: unknown;
@@ -658,20 +871,30 @@ async function handleReplyPayloadSending(params: {
   const payload = asRecord(event.payload);
   if (!payload) return undefined;
   const kind = stringValue(event.kind);
-  const text = stringValue(payload.text);
+  const originalText = stringValue(payload.text);
+  const embedded = originalText ? extractEmbeddedResponseAffect(originalText) : null;
+  const text = embedded?.text ?? originalText;
   if (!text || kind !== "final") return undefined;
+  const cleanPayload = embedded?.markerPresent ? { ...payload, text } : payload;
 
   const serviceResult = await callHentAiService({
     baseUrl: params.config.baseUrl,
     token: params.config.token,
     timeoutMs: params.config.timeoutMs,
     endpoint: "/v1/final-response/verdict",
-    body: messageSentBody({ payload, content: text, sessionKey: event.sessionKey, runId: event.runId }, params.ctx),
+    body: messageSentBody({
+      payload: cleanPayload,
+      content: text,
+      sessionKey: event.sessionKey,
+      runId: event.runId,
+      responseAffect: embedded?.affect,
+    }, params.ctx),
     responseMediaPath: "verdict.media",
     logger: params.logger,
   });
 
-  return serviceResult.media ? { payload: applyMediaToPayload(payload, serviceResult.media) } : undefined;
+  if (serviceResult.media) return { payload: applyMediaToPayload(cleanPayload, serviceResult.media) };
+  return embedded?.markerPresent ? { payload: cleanPayload } : undefined;
 }
 
 function supportsReplyPayloadSending(api: PluginApi): boolean {
@@ -721,8 +944,23 @@ export default definePluginEntry({
       ...(typeof serviceConversation.watcherCompatibility === "boolean" ? { watcherCompatibility: serviceConversation.watcherCompatibility } : {}),
     } : undefined;
 
+    api.on("before_prompt_build", (_event: unknown, ctx: unknown) => shouldInjectResponseAffect(ctx)
+      ? { appendSystemContext: RESPONSE_AFFECT_PROMPT }
+      : undefined, {
+      name: "hent-ai-response-affect-v2",
+    });
+
+    api.on("message_sending", (event: unknown) => {
+      const record = asRecord(event);
+      const content = stringValue(record?.content);
+      if (!content) return undefined;
+      const embedded = extractEmbeddedResponseAffect(content);
+      return embedded.markerPresent ? { content: embedded.text } : undefined;
+    }, { name: "hent-ai-response-affect-v2-sanitizer" });
+
     api.on("message_received", async (event: unknown, ctx: unknown) => {
       const channelId = channelIdFromEvent(event, ctx);
+      const outboundTarget = outboundTargetFromEvent(event, ctx);
       const record = asRecord(event) ?? {};
       const content = stringValue(record.content);
       if (!channelId || !content) return;
@@ -754,29 +992,23 @@ export default definePluginEntry({
           },
           logger: api.logger,
         })) ?? null;
-        if (evalResult?.deliveryPlan) {
-          await sendConversationDeliveryPlan(sender, evalResult.deliveryPlan, scope.scopeId, config, selfLoopMessageIds, SELF_LOOP_MAX_SIZE);
-        } else if (evalResult?.nudgeText) {
-          const nudgeId = await sender?.sendText?.(channelId, evalResult.nudgeText);
-          if (nudgeId) addToSuppressSet(selfLoopMessageIds, nudgeId, SELF_LOOP_MAX_SIZE);
-          const audit = asRecord(evalResult?.audit);
-          const cooldownKey = stringValue(audit?.cooldownKey);
-          const signalId = stringValue(audit?.internalSignalId);
-          if (nudgeId && cooldownKey && signalId) {
-            await callJsonService({
-              baseUrl: config.baseUrl,
-              token: config.token,
-              timeoutMs: config.timeoutMs,
-              endpoint: "/v1/watcher/commit-delivery",
-              body: { cooldownKey, scopeId: scope.scopeId, signalId, deliveryMessageId: nudgeId },
-              logger: api.logger,
-            });
-          }
-        }
+        await deliverWatcherResponse({
+          sender,
+          response: evalResult,
+          target: outboundTarget,
+          scopeId: scope.scopeId,
+          channelId,
+          config,
+          suppressMessageIds: selfLoopMessageIds,
+          suppressMaxSize: SELF_LOOP_MAX_SIZE,
+          logger: api.logger,
+        });
       }
       if (preReplyMediaEnabled) {
         const media = await serviceMediaForPreReply({ event, ctx, config, logger: api.logger });
-        if (media?.mediaUrl) await sender?.sendMedia?.(channelId, media.mediaUrl, media.caption ?? "");
+        if (media?.mediaUrl && outboundTarget) {
+          await sender?.sendMedia?.(outboundTarget, media.mediaUrl, media.caption ?? "");
+        }
       }
     }, { name: "hent-ai-service-message-received" });
 
@@ -797,6 +1029,7 @@ export default definePluginEntry({
       }
       if (chunkMarker === true) return;
       const scope = watcherScopeId(channelId, event, ctx);
+      const outboundTarget = outboundTargetFromEvent(event, ctx);
       const sourceThreadId = stringValue(record.sourceThreadId) ?? stringValue(asRecord(record.metadata)?.sourceThreadId) ?? scope.threadId;
       const targetThreadId = stringValue(record.targetThreadId) ?? stringValue(asRecord(record.metadata)?.targetThreadId) ?? scope.threadId;
       const result = parseMessageSentResponse(await callJsonService({
@@ -816,30 +1049,17 @@ export default definePluginEntry({
         },
         logger: api.logger,
       })) ?? null;
-      if (result?.deliveryPlan) {
-        await sendConversationDeliveryPlan(sender, result.deliveryPlan, scope.scopeId, config, selfLoopMessageIds, SELF_LOOP_MAX_SIZE);
-        return;
-      }
-      const nudge = stringValue(result?.nudgeText);
-      if (nudge) {
-        const deliveryMessageId = await sender?.sendText?.(channelId, nudge);
-        if (deliveryMessageId) {
-          addToSuppressSet(selfLoopMessageIds, deliveryMessageId, SELF_LOOP_MAX_SIZE);
-        }
-        const audit = asRecord(result?.audit);
-        const cooldownKey = stringValue(audit?.cooldownKey);
-        const signalId = stringValue(audit?.internalSignalId);
-        if (deliveryMessageId && cooldownKey && signalId) {
-          await callJsonService({
-            baseUrl: config.baseUrl,
-            token: config.token,
-            timeoutMs: config.timeoutMs,
-            endpoint: "/v1/watcher/commit-delivery",
-            body: { cooldownKey, scopeId: scope.scopeId, signalId, deliveryMessageId },
-            logger: api.logger,
-          });
-        }
-      }
+      await deliverWatcherResponse({
+        sender,
+        response: result,
+        target: outboundTarget,
+        scopeId: scope.scopeId,
+        channelId,
+        config,
+        suppressMessageIds: selfLoopMessageIds,
+        suppressMaxSize: SELF_LOOP_MAX_SIZE,
+        logger: api.logger,
+      });
     }, { name: "hent-ai-service-watcher" });
 
     api.on("reply_payload_sending", async (event: unknown, ctx: unknown) => handleReplyPayloadSending({

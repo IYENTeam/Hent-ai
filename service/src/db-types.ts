@@ -40,6 +40,30 @@ export type StorageObjectInput = {
   metadata?: unknown;
 };
 
+export type AssetUpsertInput = {
+  id: string;
+  assetSetId: string;
+  emotion: string;
+  filename: string;
+  storageObjectId: number;
+  contentHash: string;
+  metadata?: unknown;
+  semanticTags?: unknown;
+  semanticVector?: readonly number[] | null;
+};
+
+export type StoredSemanticAssetCandidate = {
+  id: string;
+  assetSetId: string;
+  emotion: string;
+  filename: string;
+  contentType: string;
+  objectUrl: string;
+  storageKey: string;
+  semanticTags: unknown;
+  semanticVector: unknown;
+};
+
 export type GenerationJob = {
   id: string;
   status: "queued" | "running" | "succeeded" | "failed";

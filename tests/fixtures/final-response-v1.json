@@ -2,8 +2,8 @@
   "versions": {
     "finalVerdict": "FinalEmotionVerdictV1",
     "mediaResponse": "ServiceMediaResponseV1",
-    "verifierCachePolicy": "VerifierCachePolicyV1",
-    "assetPolicy": "ServiceAssetPolicyV1"
+    "verifierCachePolicy": "VerifierCachePolicyV4-NormalizedAffect",
+    "assetPolicy": "ServiceAssetPolicyV2-AffectSpaceV2"
   },
   "validVerdict": {
     "verdict": {

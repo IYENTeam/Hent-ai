@@ -61,6 +61,7 @@ function message(id: string, content: string, authorId: string, timestamp: strin
 }
 
 function writeWireEvidence(value: { readonly cleanup: Record<string, unknown>; readonly [key: string]: unknown }): void {
+  if (process.env.HENT_AI_WRITE_WIRE_EVIDENCE !== "true" || !existsSync(evidenceRoot)) return;
   const cleanupPath = join(evidenceRoot, "cleanup.json");
   const existing = existsSync(cleanupPath) ? JSON.parse(readFileSync(cleanupPath, "utf8")) as Record<string, unknown> : {};
   writeFileSync(join(evidenceRoot, "task-13-transcript.json"), `${JSON.stringify(value, null, 2)}\n`);

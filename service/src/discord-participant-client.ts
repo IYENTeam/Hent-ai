@@ -133,7 +133,7 @@ export function createDiscordParticipantClient(options: DiscordParticipantClient
       if (typeof content !== "string" || content.trim().length === 0 || content.length > 1800) {
         throw new DiscordParticipantClientError("invalid_request");
       }
-      if (typeof nonce !== "string" || nonce.trim().length === 0 || nonce.length > 64) {
+      if (typeof nonce !== "string" || nonce.trim().length === 0 || nonce.length > 25) {
         throw new DiscordParticipantClientError("invalid_request");
       }
       const body = JSON.stringify({ content, nonce, enforce_nonce: true });

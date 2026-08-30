@@ -1,9 +1,39 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const externalAssetRoot = process.env.HENT_AI_ASSET_ROOT?.trim() || resolve(homedir(), ".hent-ai/assets");
+const externalAffectSetId = process.env.HENT_AI_AFFECT_SET_ID?.trim() || "gothic-affect-v3";
+
+function nodeMajor(executable) {
+  const result = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  return Number(/^v(\d+)/.exec(result.stdout)?.[1]);
+}
+
+if (Number(process.versions.node.split(".")[0]) !== 22) {
+  const candidates = [
+    process.env.HENT_AI_NODE22,
+    "/opt/homebrew/opt/node@22/bin/node",
+    "/usr/local/opt/node@22/bin/node",
+  ].filter((candidate, index, values) => candidate && values.indexOf(candidate) === index);
+  const node22 = candidates.find((candidate) => existsSync(candidate) && nodeMajor(candidate) === 22);
+  if (!node22) {
+    console.error(`[release-gate] Node.js 22 is required (current: ${process.version}). Set HENT_AI_NODE22 to a Node.js 22 executable.`);
+    process.exit(1);
+  }
+  console.log(`[release-gate] re-executing with Node.js 22: ${node22}`);
+  const result = spawnSync(node22, [scriptPath, ...process.argv.slice(2)], {
+    cwd: process.cwd(),
+    env: { ...process.env, PATH: `${dirname(node22)}${delimiter}${process.env.PATH ?? ""}` },
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
 
 const checks = [
   {
@@ -37,6 +67,12 @@ const checks = [
     args: ["vitest", "run", "src/sets.test.ts"],
   },
   {
+    label: "external VisualAffectV2 asset corpus",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/verify-affect-assets.mjs", externalAssetRoot, externalAffectSetId],
+  },
+  {
     label: "Hermes compatibility parity",
     cwd: ".",
     command: "python3",
@@ -66,6 +102,12 @@ const checks = [
     command: "npx",
     args: ["tsc", "--noEmit"],
   },
+  {
+    label: "isolated and restored local OpenClaw E2E",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/e2e-hent-openclaw.mjs"],
+  },
 ];
 
 function runCheck(check) {
@@ -73,6 +115,7 @@ function runCheck(check) {
     console.log(`\n[release-gate] ${check.label}`);
     const child = spawn(check.command, check.args, {
       cwd: resolve(root, check.cwd),
+      env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` },
       stdio: "inherit",
       shell: process.platform === "win32",
     });

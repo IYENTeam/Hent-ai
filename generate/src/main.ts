@@ -3,6 +3,7 @@
 import { run as generate } from "./cli.js";
 import { runSets } from "./sets.js";
 import { runProfile } from "./profile-cli.js";
+import { runAffectStore } from "./local-affect-store.js";
 
 const VERSION = "0.1.0";
 
@@ -17,6 +18,7 @@ Commands:
   generate    Generate emotion images from a character description
   sets        Manage emotion image asset sets
   profile     Manage character profiles (create, list, delete, set-soul)
+  affect-store  Migrate an affect-tagged set into an external local asset store
 
 Run 'hent-ai <command> --help' for command-specific options.
 `);
@@ -37,6 +39,9 @@ async function main(): Promise<void> {
     case "profile":
     case "profiles":
       await runProfile(rest);
+      break;
+    case "affect-store":
+      await runAffectStore(rest);
       break;
     case "--version":
     case "-v":

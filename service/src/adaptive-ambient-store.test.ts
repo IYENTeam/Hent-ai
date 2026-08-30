@@ -131,7 +131,7 @@ describe("adaptive ambient persistence", () => {
     db.close();
   });
 
-  it("upgrades a real v3 file to v4 additively without changing legacy ambient rows", () => {
+  it("upgrades a real v3 file to schema v5 additively without changing legacy ambient rows", () => {
     const path = databasePath();
     const legacy = new Database(path);
     legacy.exec(`
@@ -156,8 +156,8 @@ describe("adaptive ambient persistence", () => {
     legacy.close();
 
     const upgraded = new service.ServiceDatabase(path);
-    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 4 });
-    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(4);
+    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: service.SCHEMA_VERSION });
+    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(service.SCHEMA_VERSION);
     for (const [table, columns] of [
       ["adaptive_ambient_audits", ["evidence_weight", "probability", "draw", "drive_before", "drive_after", "active_human_count", "roster_fresh"]],
       ["adaptive_relationship_profiles", ["channel_id"]],
@@ -187,12 +187,87 @@ describe("adaptive ambient persistence", () => {
     ]);
 
     expect(() => upgraded.initialize()).not.toThrow();
-    expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 4").get()).toEqual({ count: 1 });
+    expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = ?").get(service.SCHEMA_VERSION)).toEqual({ count: 1 });
     expect(upgraded.db.prepare("SELECT COUNT(*) AS count FROM pragma_index_list('adaptive_relationship_profiles') WHERE name = 'idx_adaptive_relationship_profiles_guild_channel_user'").get()).toEqual({ count: 1 });
     upgraded.close();
   });
 
-  it("reopens a real v2 file as v4 with WAL and deterministic archive claim takeover", () => {
+  it("upgrades a real v4 assets table to schema v5 without changing its legacy asset row", () => {
+    const path = databasePath();
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+      CREATE TABLE asset_sets (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, character TEXT, model TEXT, manifest_json TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE storage_objects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, storage_key TEXT NOT NULL UNIQUE, object_url TEXT NOT NULL,
+        content_hash TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+        provenance TEXT NOT NULL, local_path TEXT, metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY, asset_set_id TEXT NOT NULL REFERENCES asset_sets(id) ON DELETE CASCADE,
+        emotion TEXT NOT NULL, filename TEXT NOT NULL,
+        storage_object_id INTEGER NOT NULL REFERENCES storage_objects(id) ON DELETE CASCADE,
+        content_hash TEXT NOT NULL, metadata_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE(asset_set_id, emotion, filename)
+      );
+    `);
+    legacy.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (4, 'legacy-v4')").run();
+    legacy.pragma("user_version = 4");
+    legacy.prepare("INSERT INTO asset_sets (id, name, character, model, manifest_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run("set-legacy", "Legacy set", "Hent", "legacy-model", '{"version":1}', "2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    legacy.prepare(`INSERT INTO storage_objects
+      (id, storage_key, object_url, content_hash, content_type, size_bytes, provenance, local_path, metadata_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(7, "legacy/happy.png", "file:///legacy/happy.png", "sha256:legacy", "image/png", 321, "legacy-import", "/legacy/happy.png", '{"source":"v4"}', "2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    legacy.prepare(`INSERT INTO assets
+      (id, asset_set_id, emotion, filename, storage_object_id, content_hash, metadata_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("asset-legacy", "set-legacy", "happy", "happy.png", 7, "sha256:legacy", '{"pose":"wave"}', "2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    const legacyColumns = legacy.prepare("PRAGMA table_info(assets)").all().map((row) => (row as { name: string }).name);
+    expect(legacyColumns).not.toContain("semantic_tags_json");
+    expect(legacyColumns).not.toContain("semantic_vector_json");
+    legacy.close();
+
+    const upgraded = new service.ServiceDatabase(path);
+    const expectedAsset = {
+      id: "asset-legacy",
+      asset_set_id: "set-legacy",
+      emotion: "happy",
+      filename: "happy.png",
+      storage_object_id: 7,
+      content_hash: "sha256:legacy",
+      metadata_json: '{"pose":"wave"}',
+      semantic_tags_json: null,
+      semantic_vector_json: null,
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-02T00:00:00.000Z",
+    };
+    const readAsset = () => upgraded.db.prepare(`SELECT id, asset_set_id, emotion, filename, storage_object_id, content_hash,
+      metadata_json, semantic_tags_json, semantic_vector_json, created_at, updated_at FROM assets WHERE id = ?`).get("asset-legacy");
+    const readColumns = () => upgraded.db.prepare("PRAGMA table_info(assets)").all().map((row) => (row as { name: string }).name);
+    const readCurrentMigrationCount = () => upgraded.db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = ?").get(service.SCHEMA_VERSION);
+
+    expect(readColumns().filter((column) => column === "semantic_tags_json")).toHaveLength(1);
+    expect(readColumns().filter((column) => column === "semantic_vector_json")).toHaveLength(1);
+    expect(readAsset()).toEqual(expectedAsset);
+    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: service.SCHEMA_VERSION });
+    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(service.SCHEMA_VERSION);
+    expect(readCurrentMigrationCount()).toEqual({ count: 1 });
+
+    expect(() => upgraded.initialize()).not.toThrow();
+    expect(readColumns().filter((column) => column === "semantic_tags_json")).toHaveLength(1);
+    expect(readColumns().filter((column) => column === "semantic_vector_json")).toHaveLength(1);
+    expect(readAsset()).toEqual(expectedAsset);
+    expect(upgraded.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: service.SCHEMA_VERSION });
+    expect(upgraded.db.pragma("user_version", { simple: true })).toBe(service.SCHEMA_VERSION);
+    expect(readCurrentMigrationCount()).toEqual({ count: 1 });
+    upgraded.close();
+  });
+
+  it("reopens a real v2 file at schema v5 with WAL and deterministic archive claim takeover", () => {
     const fakeClock = clock(); const path = databasePath(); const legacy = new Database(path);
     legacy.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
     legacy.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (2, 'old')").run(); legacy.close();
@@ -200,7 +275,7 @@ describe("adaptive ambient persistence", () => {
     expect(firstDb.db.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(firstDb.db.pragma("synchronous", { simple: true })).toBe(1);
     expect(firstDb.db.pragma("busy_timeout", { simple: true })).toBe(5000);
-    expect(firstDb.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 4 });
+    expect(firstDb.db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: service.SCHEMA_VERSION });
     const fenceA = first.acquireLease("archive", "worker-a")!;
     expect(first.claimArchiveBatch({ batchKey: "g1:c1:1:2", summaryKey: "summary:g1:c1:1:2", scopeId: "g1:c1", sourceStartId: 1, sourceEndId: 2, fence: fenceA })).toBe(true);
     fakeClock.advance(30_001);

@@ -20,6 +20,30 @@ Hent-ai automatically classifies the emotion of every bot response and attaches 
 | `confused` | Uncertainty, questions |
 | `focused` | Working, investigating, debugging |
 
+## Runtime architecture
+
+There is one canonical OpenClaw path:
+
+```text
+OpenClaw final reply + embedded ResponseAffectV2 marker
+  -> thin openclaw/ adapter strips and validates the transport marker
+  -> Hent-ai HTTP service
+  -> authenticated ResponseAffectV2 validation (remote verifier only as compatibility fallback)
+  -> service-owned nearest-neighbor affect router
+  -> service-owned /static media
+  -> OpenClaw outbound channel adapter
+```
+
+The service owns policy, channel/profile mappings, verifier fallback state, affect routing, asset
+records, and static bytes. OpenClaw owns host lifecycle hooks, same-generation affect transport, and delivery. It does not independently classify,
+scan manifests, read profile databases, or call Discord REST directly. The former
+`server-with-poller` composition is not a supported API or OpenClaw deployment path.
+
+A fully tagged V2 set is ranked across all its images by weighted distance between the final
+response's `ResponseAffectV2` and pixel-derived `VisualAffectV2` vectors. Equal-distance candidates
+are selected randomly. A missing, malformed, hash-stale, or partially tagged set stays on the
+legacy path; incomplete metadata never silently activates mixed affect behavior.
+
 ## Getting Started
 
 > **🤖 Agent setup:** If you're using an AI agent (OpenClaw, Claude Code, Codex, etc.), tell it to read [`SKILL.md`](./SKILL.md) in this repo. The agent will walk you through the entire setup interactively.
@@ -112,7 +136,14 @@ mv your-focused-image.png assets/focused.png
 mv your-loyalty-image.png assets/loyalty.png
 ```
 
-You can also configure multiple images per emotion with labels. Hent-ai automatically infers labels from filenames such as `happy-date-night.png` (`date night`) and prefers a matching labeled image when that context appears in the bot response.
+You can configure large character image pools. New pools use pixel-derived `VisualAffectV2`
+metadata and are ranked against the final response's `ResponseAffectV2` vector across the entire
+mapped set. Exact-distance ties are random. Legacy coarse-emotion sets remain supported; malformed
+or partially tagged V2 sets fail closed to the legacy fallback.
+
+Generated pools and their runtime manifest belong in the external `HENT_AI_ASSET_ROOT` (normally
+`~/.hent-ai/assets`), not in this repository. See [`SKILL.md`](./SKILL.md) for the generation,
+pixel-tagging, migration, import, and live verification workflow.
 
 ### Tips for Better Images
 
@@ -135,7 +166,7 @@ Generate all 6 in one session to maintain style consistency. If your tool suppor
 
 ## Writing Your SOUL.md for Hent-ai
 
-Hent-ai classifies emotions from your agent's **response text**, so how your agent writes directly affects which emotion image gets attached. Your `SOUL.md` (or equivalent persona file) shapes this.
+Hent-ai derives a multidimensional affect vector from your agent's **response text**, so how your agent writes directly affects which image gets attached. Your `SOUL.md` (or equivalent persona file) shapes this.
 
 ### Key Principle
 
@@ -152,9 +183,9 @@ Hent-ai classifies emotions from your agent's **response text**, so how your age
    - When you make a mistake, own it immediately — no deflection.
    - When investigating a problem, describe what you're checking.
    ```
-   This gives the LLM classifier clear signals: celebration → `happy`, owning mistakes → `sorry`, investigating → `focused`.
+   This gives the LLM verifier clear signals across warmth, joy, embarrassment, determination, irritation, and the other AffectSpaceV2 dimensions.
 
-3. **Don't flatten your agent's personality** — A monotone agent that always writes the same way will always get `neutral`. Let your agent have range. Excitement, frustration, curiosity — these all map to distinct emotions.
+3. **Don't flatten your agent's personality** — A monotone agent will cluster around the same images. Let your agent have range: excitement, frustration, curiosity, affection, and teasing occupy different parts of the affect space.
 
 4. **Add a simple note about the plugin** — Something like:
    ```markdown
@@ -216,7 +247,9 @@ curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
 
 See [`docs/channel-profiles.md`](docs/channel-profiles.md) for the full service-owned channel/profile model.
 
-> The legacy `openclaw/scripts/switch_profile.ts` script and the plugin `defaultProfile` config write to a local profile DB that the service-backed adapter no longer reads. They remain only for the older standalone profile workflow.
+> The legacy `openclaw/scripts/switch_profile.ts` script and plugin `defaultProfile` config write
+> local state that the service-backed adapter does not read. They are migration tooling, not a
+> supported OpenClaw runtime workflow.
 
 ### Configuration (Hermes)
 
@@ -226,18 +259,18 @@ For Hermes, select a profile asset subdirectory with an environment variable:
 export HENT_AI_DEFAULT_PROFILE=gothic
 ```
 
-### Migration
+### Import/migration
 
-Existing installations are automatically migrated. On first startup with multi-profile support, Hent-ai:
-1. Copies existing flat emotion images to `profiles/default/`
-2. Converts manifest.json sets to individual profiles
-3. Migrates channel-overrides.json to the SQLite database
-
-No manual action needed.
+Migration is explicit: back up the existing assets/database, run the service importer first in
+dry-run mode, inspect its warnings and manifest/DB diff, then run the mutating import and read the
+service state back. OpenClaw startup does not migrate local profiles or manifests implicitly.
+See [`docs/agent-runbook.md`](docs/agent-runbook.md) for the operational contract.
 
 ## License
 
-MIT
+The software is MIT-licensed. Generation receipts, hashes, and provider/model metadata are
+technical provenance only; they do not establish copyright ownership, license scope, model/person
+releases, or downstream usage rights for reference or generated images.
 
 ## Special Thanks
 
@@ -249,3 +282,4 @@ Special thanks to [MoerAI](https://github.com/MoerAI) for helping name Hent-ai.
 - [Channel profiles](docs/channel-profiles.md) — service-owned channel/profile/policy model
 - [Agent runbook](docs/agent-runbook.md) — build, test, deploy, and operations
 - [Service-owned gates](docs/service-owned-gates.md) — PR/release gate policy
+- [Semantic corpus workflow](generate/README.md#semantic-100-image-corpus) — immutable generation, actual-pixel tagging, and activation

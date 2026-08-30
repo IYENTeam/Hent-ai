@@ -11,6 +11,7 @@ import {
 import { createHentAiServer, listen } from "./server.js";
 import type { FinalResponseVerifier } from "./verifier.js";
 import { createRemoteFinalResponseVerifier, createOpenAiChatCompletionsFinalResponseVerifier, loadVerifierProviderConfigFromEnv, normalizeVerifierJudgment } from "./verifier.js";
+import { AFFECT_DIMENSIONS, AFFECT_SPACE_VERSION, RESPONSE_AFFECT_SCHEMA_VERSION } from "../../shared/affect.js";
 
 const token = "test-token";
 const finalResponseFixture = JSON.parse(
@@ -90,8 +91,8 @@ describe("final-response verifier boundary", () => {
     await withServer(db, verifier, async (baseUrl) => {
       expect(FINAL_VERDICT_SCHEMA_VERSION).toBe("FinalEmotionVerdictV1");
       expect(SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION).toBe("ServiceMediaResponseV1");
-      expect(VERIFIER_CACHE_POLICY_VERSION).toBe("VerifierCachePolicyV1");
-      expect(ASSET_POLICY_VERSION).toBe("ServiceAssetPolicyV1");
+      expect(VERIFIER_CACHE_POLICY_VERSION).toBe("VerifierCachePolicyV4-NormalizedAffect");
+      expect(ASSET_POLICY_VERSION).toBe("ServiceAssetPolicyV2-AffectSpaceV2");
       expect(finalResponseFixture.versions).toEqual({
         finalVerdict: FINAL_VERDICT_SCHEMA_VERSION,
         mediaResponse: SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION,
@@ -179,13 +180,58 @@ describe("remote verifier adapter", () => {
   });
 
   it("normalizes supported judgment response shapes", () => {
+    const dimensions = Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, 0.5]));
     expect(normalizeVerifierJudgment({ verdict: { emotion: " Neutral ", confidence: 0.7, reason: "ok" } }))
       .toEqual({ emotion: "neutral", confidence: 0.7, reason: "ok" });
     expect(normalizeVerifierJudgment({ judgment: { emotion: "happy" } })).toEqual({ emotion: "happy" });
     expect(normalizeVerifierJudgment({ confidence: 0.2 })).toBeNull();
+    expect(normalizeVerifierJudgment({ affect: {
+      schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+      affectSpaceVersion: AFFECT_SPACE_VERSION,
+      dimensions,
+      confidence: 0.8,
+    } })).toEqual({ affect: {
+      schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+      affectSpaceVersion: AFFECT_SPACE_VERSION,
+      dimensions,
+      confidence: 0.8,
+    } });
     expect(normalizeVerifierJudgment({
-      choices: [{ message: { content: "{\"emotion\":\"neutral\",\"confidence\":0.9,\"reason\":\"chat-completions\"}" } }],
-    })).toEqual({ emotion: "neutral", confidence: 0.9, reason: "chat-completions" });
+      emotion: null,
+      affect: {
+        affectSpaceVersion: AFFECT_SPACE_VERSION,
+        confidence: 0.93,
+        ...Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, key === "anger" ? 0.96 : 0.1])),
+      },
+    })).toEqual({ affect: {
+      schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+      affectSpaceVersion: AFFECT_SPACE_VERSION,
+      dimensions: Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, key === "anger" ? 0.96 : 0.1])),
+      confidence: 0.93,
+    } });
+    expect(normalizeVerifierJudgment({
+      choices: [{ message: { content: JSON.stringify({
+        emotion: "neutral",
+        confidence: 0.9,
+        reason: "chat-completions",
+        affect: {
+          schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+          affectSpaceVersion: AFFECT_SPACE_VERSION,
+          dimensions,
+          confidence: 0.86,
+        },
+      }) } }],
+    })).toEqual({
+      emotion: "neutral",
+      confidence: 0.9,
+      reason: "chat-completions",
+      affect: {
+        schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+        affectSpaceVersion: AFFECT_SPACE_VERSION,
+        dimensions,
+        confidence: 0.86,
+      },
+    });
   });
 
   it("keeps the generic remote verifier request shape for existing deployments", async () => {

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.hent-ai.codex-shim</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>@@SERVICE_DIR@@/node_modules/tsx/dist/cli.mjs</string>
+    <string>@@SERVICE_DIR@@/src/codex-conversation-shim-main.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HENT_AI_CODEX_SHIM_TOKEN</key>
+    <string>@@PROVIDER_TOKEN@@</string>
+    <key>HENT_AI_CODEX_SHIM_MODEL</key>
+    <string>@@PROVIDER_MODEL@@</string>
+    <key>HENT_AI_CODEX_SHIM_TIMEOUT_MS</key>
+    <string>25000</string>
+    <key>HENT_AI_CODEX_SHIM_MAX_CONCURRENT</key>
+    <string>1</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>@@SERVICE_DIR@@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>4096</integer>
+    <key>NumberOfProcesses</key>
+    <integer>1024</integer>
+  </dict>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>2048</integer>
+    <key>NumberOfProcesses</key>
+    <integer>512</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>@@HOME@@/Library/Logs/hent-ai-codex-shim.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@HOME@@/Library/Logs/hent-ai-codex-shim.err.log</string>
+</dict>
+</plist>

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 export interface AssetSet {
   name: string;
@@ -19,7 +19,8 @@ export interface AssetManifest {
 const MANIFEST_FILENAME = "manifest.json";
 const SETS_DIR = "sets";
 const SAFE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
-const SAFE_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.(png|jpe?g|webp|gif)$/i;
+const SAFE_PATH_SEGMENT_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+const IMAGE_EXTENSION_RE = /\.(png|jpe?g|webp|gif)$/i;
 
 function isFileNotFoundError(error: unknown): boolean {
   return (
@@ -39,9 +40,30 @@ function assertSafeEmotionKey(emotion: string): void {
 }
 
 function assertSafeManifestFilename(filename: string): void {
-  if (!SAFE_FILENAME_RE.test(filename) || filename.includes("/") || filename.includes("\\")) {
+  const segments = filename.split("/");
+  if (
+    filename.includes("\\")
+    || segments.length === 0
+    || segments.some((segment) => !SAFE_PATH_SEGMENT_RE.test(segment) || segment === "." || segment === "..")
+    || !IMAGE_EXTENSION_RE.test(segments.at(-1) ?? "")
+  ) {
     throw new Error("Invalid manifest filename");
   }
+}
+
+async function listAssetImagesRecursively(root: string, directory: string = root): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.name.startsWith(".")) continue;
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listAssetImagesRecursively(root, path));
+    } else if (entry.isFile() && IMAGE_EXTENSION_RE.test(entry.name)) {
+      files.push(relative(root, path).split(sep).join("/"));
+    }
+  }
+  return files;
 }
 
 export async function loadManifest(imageDir: string): Promise<AssetManifest | null> {
@@ -102,18 +124,22 @@ export async function registerSet(
   const setDir = getSetDir(imageDir, setId);
   if (!existsSync(setDir)) throw new Error(`Set directory not found: ${setDir}`);
 
-  const files = await readdir(setDir);
+  const files = await listAssetImagesRecursively(setDir);
   const emotions: Record<string, string[]> = {};
   for (const file of files) {
-    if (!/\.(png|jpe?g|webp|gif)$/i.test(file)) continue;
     if (file === "base.png") continue;
-    const match = file.match(/^([a-z]+)(?:[-_].+)?\.(png|jpe?g|webp|gif)$/i);
+    const firstSegment = file.split("/")[0]!;
+    const match = file.includes("/")
+      ? firstSegment.match(/^([a-z]+)$/i)
+      : file.match(/^([a-z]+)(?:[-_].+)?\.(png|jpe?g|webp|gif)$/i);
     if (!match) continue;
     const emotion = match[1].toLowerCase();
     assertSafeEmotionKey(emotion);
     assertSafeManifestFilename(file);
     emotions[emotion] = [...(emotions[emotion] ?? []), file];
   }
+
+  for (const filesForEmotion of Object.values(emotions)) filesForEmotion.sort();
 
   const set: AssetSet = {
     name: options.name,
