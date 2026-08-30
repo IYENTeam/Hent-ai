@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "affectSpaceVersion",
+    "dimensions",
+    "confidence",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "enum": ["VisualAffectV2"] },
+    "affectSpaceVersion": { "type": "string", "enum": ["AffectSpaceV2"] },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "valence", "arousal", "dominance", "joy", "anger", "irritation", "sadness", "anxiety",
+        "fear", "surprise", "confusion", "disgust", "embarrassment", "pride", "determination",
+        "affection", "warmth", "playfulness", "teasing", "deference", "smileIntensity",
+        "browTension", "eyeOpenness", "bodyOpenness"
+      ],
+      "properties": {
+        "valence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "arousal": { "type": "number", "minimum": 0, "maximum": 1 },
+        "dominance": { "type": "number", "minimum": 0, "maximum": 1 },
+        "joy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "anger": { "type": "number", "minimum": 0, "maximum": 1 },
+        "irritation": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sadness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "anxiety": { "type": "number", "minimum": 0, "maximum": 1 },
+        "fear": { "type": "number", "minimum": 0, "maximum": 1 },
+        "surprise": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confusion": { "type": "number", "minimum": 0, "maximum": 1 },
+        "disgust": { "type": "number", "minimum": 0, "maximum": 1 },
+        "embarrassment": { "type": "number", "minimum": 0, "maximum": 1 },
+        "pride": { "type": "number", "minimum": 0, "maximum": 1 },
+        "determination": { "type": "number", "minimum": 0, "maximum": 1 },
+        "affection": { "type": "number", "minimum": 0, "maximum": 1 },
+        "warmth": { "type": "number", "minimum": 0, "maximum": 1 },
+        "playfulness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "teasing": { "type": "number", "minimum": 0, "maximum": 1 },
+        "deference": { "type": "number", "minimum": 0, "maximum": 1 },
+        "smileIntensity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "browTension": { "type": "number", "minimum": 0, "maximum": 1 },
+        "eyeOpenness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "bodyOpenness": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

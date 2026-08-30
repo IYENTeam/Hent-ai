@@ -1,0 +1,27 @@
+{
+  "version": "EmotionContractV1",
+  "emotions": ["sorry", "happy", "confused", "focused", "loyalty", "neutral"],
+  "defaultEmotion": "neutral",
+  "defaultFiles": {
+    "sorry": "sorry.png",
+    "happy": "happy.png",
+    "confused": "confused.png",
+    "focused": "focused.png",
+    "loyalty": "loyalty.png",
+    "neutral": "neutral.png"
+  },
+  "cases": [
+    { "text": "Sorry, I made a mistake.", "emotion": "sorry" },
+    { "text": "죄송합니다. 버그를 발견했습니다.", "emotion": "sorry" },
+    { "text": "Task completed successfully", "emotion": "happy" },
+    { "text": "테스트 통과 완료", "emotion": "happy" },
+    { "text": "Could you clarify what this means?", "emotion": "confused" },
+    { "text": "추가 정보 확인 필요", "emotion": "confused" },
+    { "text": "Testing and verifying the fix", "emotion": "focused" },
+    { "text": "디버깅 작업 중입니다", "emotion": "focused" },
+    { "text": "Got it, I will do that right away.", "emotion": "loyalty" },
+    { "text": "네, 알겠습니다", "emotion": "loyalty" },
+    { "text": "The weather is mild.", "emotion": "neutral" },
+    { "text": "MEDIA:/tmp/not-owned\nThe weather is mild.", "emotion": "neutral" }
+  ]
+}

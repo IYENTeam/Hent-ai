@@ -1,9 +1,47 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { dirname, resolve } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { constants, existsSync } from "node:fs";
+import { access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const externalAssetRoot = process.env.HENT_AI_ASSET_ROOT?.trim() || resolve(homedir(), ".hent-ai/assets");
+const externalAffectSetId = process.env.HENT_AI_AFFECT_SET_ID?.trim() || "gothic-affect-v3";
+const arguments_ = process.argv.slice(2);
+const listJsonMode = arguments_.length === 1 && arguments_[0] === "--list-json";
+const commandPath = process.env.HENT_AI_RELEASE_GATE_COMMAND_PATH ?? process.env.PATH ?? "";
+
+function nodeMajor(executable) {
+  const result = spawnSync(executable, ["--version"], { encoding: "utf8" });
+  return Number(/^v(\d+)/.exec(result.stdout)?.[1]);
+}
+
+if (!listJsonMode && Number(process.versions.node.split(".")[0]) !== 22) {
+  const candidates = [
+    process.env.HENT_AI_NODE22,
+    "/opt/homebrew/opt/node@22/bin/node",
+    "/usr/local/opt/node@22/bin/node",
+  ].filter((candidate, index, values) => candidate && values.indexOf(candidate) === index);
+  const node22 = candidates.find((candidate) => existsSync(candidate) && nodeMajor(candidate) === 22);
+  if (!node22) {
+    console.error(`[release-gate] Node.js 22 is required (current: ${process.version}). Set HENT_AI_NODE22 to a Node.js 22 executable.`);
+    process.exit(1);
+  }
+  console.error(`[release-gate] re-executing with Node.js 22: ${node22}`);
+  const result = spawnSync(node22, [scriptPath, ...process.argv.slice(2)], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HENT_AI_RELEASE_GATE_COMMAND_PATH: commandPath,
+      PATH: `${dirname(node22)}${delimiter}${commandPath}`,
+    },
+    stdio: "inherit",
+  });
+  process.exit(result.status ?? 1);
+}
 
 const liveDiscordEnv = [
   "HENT_AI_DISCORD_POLLER_TOKEN",
@@ -12,7 +50,7 @@ const liveDiscordEnv = [
   "DISCORD_BOT_TOKEN",
 ];
 
-const checks = [
+const portableChecks = [
   {
     id: "service-typescript",
     label: "service TypeScript",
@@ -101,30 +139,81 @@ const checks = [
   },
 ];
 
+const localPreflightChecks = [
+  {
+    id: "service-owned-boundary",
+    label: "service-owned architecture boundary",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/service-owned-boundary-check.mjs"],
+  },
+  {
+    id: "codex-affect-setup",
+    label: "Codex affect setup entrypoint",
+    cwd: ".",
+    command: "node",
+    args: ["--test", "scripts/codex-affect-setup.test.mjs"],
+  },
+];
+
+const localHostChecks = [
+  {
+    id: "external-affect-corpus",
+    label: "external VisualAffectV2 asset corpus",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/verify-affect-assets.mjs", externalAssetRoot, externalAffectSetId],
+  },
+  {
+    id: "local-openclaw-e2e",
+    label: "isolated and restored local OpenClaw E2E",
+    cwd: ".",
+    command: "node",
+    args: ["scripts/e2e-hent-openclaw.mjs"],
+  },
+];
+
+async function resolveCommand(command) {
+  if (command === "node") return process.execPath;
+  if (command.includes("/")) return command;
+
+  for (const directory of commandPath.split(delimiter)) {
+    if (!directory) continue;
+    const candidate = resolve(directory, command);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep searching the caller's command path.
+    }
+  }
+  return command;
+}
+
 function runCheck(check) {
   return new Promise((resolveCheck) => {
-    console.log(`\n[release-gate] ${check.label}`);
-    const env = { ...process.env };
-    for (const key of check.envUnset ?? []) delete env[key];
-    const child = spawn(check.command, check.args, {
-      cwd: resolve(root, check.cwd),
-      env,
-      stdio: "inherit",
-      shell: process.platform === "win32",
-    });
-    child.on("close", (code) => resolveCheck(code ?? 1));
-    child.on("error", (error) => {
-      console.error(`[release-gate] failed to start ${check.label}: ${error.message}`);
-      resolveCheck(1);
+    void resolveCommand(check.command).then((command) => {
+      console.log(`\n[release-gate] ${check.label}`);
+      const env = { ...process.env };
+      for (const key of check.envUnset ?? []) delete env[key];
+      const child = spawn(command, check.args, {
+        cwd: resolve(root, check.cwd),
+        env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${commandPath}` },
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
+      child.on("close", (code) => resolveCheck(code ?? 1));
+      child.on("error", (error) => {
+        console.error(`[release-gate] failed to start ${check.label}: ${error.message}`);
+        resolveCheck(1);
+      });
     });
   });
 }
 
-const arguments_ = process.argv.slice(2);
-
-if (arguments_.length === 1 && arguments_[0] === "--list-json") {
+if (listJsonMode) {
   console.log(JSON.stringify({
-    lanes: checks.map(({ id, label, cwd, command, args, envUnset = [] }) => ({
+    lanes: portableChecks.map(({ id, label, cwd, command, args, envUnset = [] }) => ({
       id,
       label,
       cwd,
@@ -136,10 +225,15 @@ if (arguments_.length === 1 && arguments_[0] === "--list-json") {
   process.exit(0);
 }
 
-if (arguments_.length > 0) {
+const ciMode = arguments_.length === 1 && arguments_[0] === "--ci";
+if (arguments_.length > 0 && !ciMode) {
   console.error(`[release-gate] unknown argument: ${arguments_[0]}`);
   process.exit(2);
 }
+
+const checks = ciMode
+  ? portableChecks
+  : [...localPreflightChecks, ...portableChecks, ...localHostChecks];
 
 for (const check of checks) {
   const code = await runCheck(check);
@@ -150,4 +244,4 @@ for (const check of checks) {
   }
 }
 
-console.log("\n[release-gate] passed; local release regression gate is clean.");
+console.log(`\n[release-gate] passed; ${ciMode ? "portable CI" : "local release"} regression gate is clean.`);

@@ -1,155 +1,91 @@
 import { describe, expect, it, vi } from "vitest";
-import { CONVERSATION_CONTRACT_SCHEMAS } from "./conversation-contracts.js";
-import { DEFAULT_CONVERSATION_CONFIG, type ConversationDecisionProvider } from "./conversation-config.js";
-import { createLlmConversationDecisionProvider } from "./conversation-decision-provider.js";
-import {
-  createConversationProviderClient,
-  loadConversationProviderConfigFromEnv,
-  type ConversationProviderClient,
-} from "./conversation-provider-client.js";
+import * as service from "./index.js";
 
-describe("conversation provider client", () => {
-  it("posts OpenAI-compatible chat-completions prompts and returns message content", async () => {
-    // Given: a configured OpenAI-compatible conversation provider.
-    const calls: Array<{ readonly input: string; readonly init: RequestInit | undefined }> = [];
-    const fetchImpl: typeof fetch = async (input, init) => {
-      calls.push({ input: String(input), init });
-      return new Response(JSON.stringify({ choices: [{ message: { content: "provider text" } }] }));
-    };
-    const client = createConversationProviderClient({
-      endpoint: "https://provider.example/v1/chat/completions",
-      token: "provider-token",
-      model: "chat-model",
-      timeoutMs: 20_000,
-      extraHeaders: { "x-route": "conversation" },
-      extraBody: { temperature: 0.2 },
-      fetchImpl,
-    });
+type ConversationPrompt = { readonly system: string; readonly user: string };
+type CompletionResult = { readonly kind: "ok"; readonly content: string } | { readonly kind: "invalid"; readonly diagnostic: string };
+type ConversationProviderClient = { readonly complete: (prompt: ConversationPrompt, options?: { readonly model?: string; readonly signal?: AbortSignal }) => Promise<CompletionResult> };
+type ConversationProviderClientApi = {
+  readonly createOpenAiConversationProviderClient: (config: {
+    readonly endpoint: URL | string; readonly token: string; readonly model: string; readonly timeoutMs: number;
+    readonly extraHeaders?: Record<string, string>; readonly extraBody?: Record<string, unknown>; readonly fetchImpl?: typeof fetch;
+  }) => ConversationProviderClient;
+};
 
-    // When: the service asks for a completion.
-    const text = await client.complete({ system: "Return JSON only.", user: "{\"hello\":true}" }, { model: "decision-model" });
+const prompt: ConversationPrompt = { system: "Return the required JSON only.", user: JSON.stringify({ room: "engineering", transcript: [{ author: "member", content: "hello" }] }) };
 
-    // Then: the provider receives a chat-completions request and the content is returned.
-    expect(text).toBe("provider text");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.input).toBe("https://provider.example/v1/chat/completions");
-    expect(calls[0]?.init?.headers).toMatchObject({
-      authorization: "Bearer provider-token",
-      "content-type": "application/json",
-      "x-route": "conversation",
+function conversationProviderClientApi(): ConversationProviderClientApi | null {
+  const candidate = service as object;
+  if (!("createOpenAiConversationProviderClient" in candidate)) return null;
+  return typeof Reflect.get(candidate, "createOpenAiConversationProviderClient") === "function" ? candidate as ConversationProviderClientApi : null;
+}
+
+function createClient(fetchImpl: typeof fetch, overrides: Partial<Parameters<ConversationProviderClientApi["createOpenAiConversationProviderClient"]>[0]> = {}): ConversationProviderClient {
+  const api = conversationProviderClientApi();
+  if (api === null) throw new Error("conversation provider public API was unavailable");
+  return api.createOpenAiConversationProviderClient({ endpoint: "https://provider.invalid/v1/chat/completions", token: "test-provider-token-must-not-leak", model: "ambient-test-model", timeoutMs: 1_000, fetchImpl, ...overrides });
+}
+
+describe("OpenAI-compatible conversation provider client", () => {
+  it("uses the configured endpoint and only accepts choices[0].message.content", async () => {
+    let url: URL | RequestInfo | undefined;
+    let request: RequestInit | undefined;
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      url = input;
+      request = init;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "{\"accepted\":true}" } }] }));
+    }) as typeof fetch;
+
+    expect(conversationProviderClientApi()).not.toBeNull();
+    const completion = await createClient(fetchImpl).complete(prompt, { model: "gpt-5.6-sol" });
+    expect(url?.toString()).toBe("https://provider.invalid/v1/chat/completions");
+    expect(request?.method).toBe("POST");
+    expect(request?.headers).toMatchObject({ "content-type": "application/json", authorization: "Bearer test-provider-token-must-not-leak" });
+    expect(JSON.parse(String(request?.body))).toEqual({
+      model: "gpt-5.6-sol",
+      reasoning_effort: "medium",
+      messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
     });
-    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
-      model: "decision-model",
-      temperature: 0.2,
-      messages: [
-        { role: "system", content: "Return JSON only." },
-        { role: "user", content: "{\"hello\":true}" },
-      ],
-    });
+    expect(completion).toEqual({ kind: "ok", content: "{\"accepted\":true}" });
   });
 
-  it("fails closed when provider env is incomplete or responses are unusable", async () => {
-    // Given: missing required provider env and a provider returning an invalid shape.
-    const config = loadConversationProviderConfigFromEnv({
-      HENT_AI_CONVERSATION_PROVIDER_ENDPOINT: "https://provider.example/v1/chat/completions",
-      HENT_AI_CONVERSATION_PROVIDER_TOKEN: "provider-token",
-    });
-    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({ choices: [] }), { status: 500 });
-    const client = createConversationProviderClient({
-      endpoint: "https://provider.example/v1/chat/completions",
-      token: "provider-token",
-      model: "chat-model",
-      timeoutMs: 20_000,
-      fetchImpl,
-    });
-
-    // When: env or the remote provider cannot produce valid content.
-    const text = await client.complete({ system: "system", user: "user" });
-
-    // Then: callers can omit the provider or fail closed without exceptions.
-    expect(config).toBeNull();
-    expect(text).toBeNull();
-  });
-});
-
-describe("LLM conversation decision provider", () => {
-  it("injects the resolved persona into the speech decision prompt and maps speak decisions", async () => {
-    // Given: a provider client that returns a valid speech decision.
-    const prompts: Array<{ readonly system: string; readonly user: string }> = [];
-    const client: ConversationProviderClient = {
-      complete: async (prompt) => {
-        prompts.push(prompt);
-        return JSON.stringify({
-          schema: CONVERSATION_CONTRACT_SCHEMAS.speechDecision,
-          decision: "speak",
-          reason: "A short answer would help.",
-          confidence: 0.91,
-          chunks: ["짧게 말하면 지금은 폴러 기반이 맞아."],
-        });
-      },
-    };
-    const provider: ConversationDecisionProvider = createLlmConversationDecisionProvider({
-      client,
-      model: "decision-model",
-      resolvePersonaFor: () => ({
-        source: "channel_profile",
-        text: "You are HentAI. Persona notes: calm deployment guide.",
-      }),
-    });
-
-    // When: the runtime asks the LLM whether to speak.
-    const decision = await provider.decide({
-      config: {
-        ...DEFAULT_CONVERSATION_CONFIG,
-        enabled: true,
-        cooldownMs: 0,
-        minHumanIdleMs: 0,
-      },
-      scope: { scopeId: "discord:c1", channelId: "c1" },
-      recentTurns: [],
-      memorySummaries: ["The room is discussing deployment timing."],
-    });
-
-    // Then: the persona is part of the user JSON and the speak decision is preserved.
-    expect(decision).toEqual({
-      kind: "speak",
-      confidence: 0.91,
-      chunks: ["짧게 말하면 지금은 폴러 기반이 맞아."],
-      diagnostics: [],
-    });
-    expect(prompts[0]?.system).toContain(CONVERSATION_CONTRACT_SCHEMAS.speechDecision);
-    expect(prompts[0]?.user).toContain("calm deployment guide");
-    expect(prompts[0]?.user).toContain("The room is discussing deployment timing.");
+  it("fails closed for HTTP, network, non-JSON, and malformed responses without leaking secrets", async () => {
+    const responses: Array<typeof fetch> = [
+      (async () => new Response("upstream failure", { status: 500 })) as typeof fetch,
+      (async () => { throw new Error("network disconnected"); }) as typeof fetch,
+      (async () => new Response("not json")) as typeof fetch,
+      (async () => new Response(JSON.stringify({ choices: [{ message: { content: ["not a string"] } }] }))) as typeof fetch,
+      (async () => new Response(JSON.stringify({ choices: [{ text: "legacy fallback is forbidden" }] }))) as typeof fetch,
+    ];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const outcomes = await Promise.all(responses.map(async (fetchImpl) => createClient(fetchImpl).complete(prompt)));
+      for (const outcome of outcomes) {
+        expect(outcome).toMatchObject({ kind: "invalid" });
+        expect(outcome.kind === "invalid" ? outcome.diagnostic : "").not.toContain("test-provider-token-must-not-leak");
+      }
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
-  it("maps malformed provider output to no_reply diagnostics", async () => {
-    // Given: a provider client that cannot return contract JSON.
-    const client: ConversationProviderClient = {
-      complete: async () => "sure, I can talk",
-    };
-    const provider = createLlmConversationDecisionProvider({
-      client,
-      resolvePersonaFor: () => ({ source: "generic", text: "generic persona" }),
-    });
-
-    // When: the decision provider parses the malformed output.
-    const decision = await provider.decide({
-      config: {
-        ...DEFAULT_CONVERSATION_CONFIG,
-        enabled: true,
-        cooldownMs: 0,
-        minHumanIdleMs: 0,
-      },
-      scope: { scopeId: "discord:c1", channelId: "c1" },
-      recentTurns: [],
-      memorySummaries: [],
-    });
-
-    // Then: malformed output fails closed and surfaces the parser diagnostic.
-    expect(decision).toMatchObject({
-      kind: "no_reply",
-      reason: "malformed_json",
-      diagnostics: [{ code: "malformed_json" }],
-    });
+  it("propagates caller abort and timeout abort as typed invalid input", async () => {
+    const signals: AbortSignal[] = [];
+    const waitingFetch = ((_: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("missing provider abort signal");
+      signals.push(signal);
+      signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    })) as typeof fetch;
+    const caller = new AbortController();
+    expect(conversationProviderClientApi()).not.toBeNull();
+    const callerCompletion = createClient(waitingFetch).complete(prompt, { signal: caller.signal });
+    caller.abort();
+    const callerOutcome = await callerCompletion;
+    const timeoutOutcome = await createClient(waitingFetch, { timeoutMs: 1 }).complete(prompt);
+    expect(callerOutcome).toMatchObject({ kind: "invalid" });
+    expect(timeoutOutcome).toMatchObject({ kind: "invalid" });
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
   });
 });

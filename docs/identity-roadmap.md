@@ -36,7 +36,7 @@ The canonical emotion set is:
 - `loyalty` — acknowledgment, greeting, attentive agreement
 - `neutral` — general informational responses
 
-Shared exports include `EMOTIONS`, `DEFAULT_EMOTION`, `DEFAULT_EMOTION_MAP`, `EMOTION_RULES`, `EMOTION_PROMPTS`, `EMOTION_LABELS`, and `VALID_EMOTIONS`.
+Shared exports include `EMOTION_CONTRACT_VERSION`, `CANONICAL_EMOTIONS`, `EMOTIONS`, `DEFAULT_EMOTION`, `DEFAULT_EMOTION_MAP`, `EMOTION_RULES`, `EMOTION_PROMPTS`, `EMOTION_LABELS`, and `VALID_EMOTIONS`. `tests/fixtures/emotion-contract-v1.json` is the current cross-surface fixture.
 
 Any new emotion requires an explicit roadmap decision, asset expectations, classifier behavior, generation prompt behavior, and runtime tests.
 
@@ -58,15 +58,14 @@ Service-owned responsibilities:
    - Return Stage-1 media metadata for the host to attach.
 
 2. **Profile, channel, and asset state**
-   - Own profile/channel mappings, date-mode policy, asset manifests/storage, verifier cache, rate limits, and conversation memory state.
+   - Own profile/channel mappings, date-mode policy, asset manifests/storage, verifier cache, rate limits, and watcher state.
    - Treat SQLite-backed service state as the accepted runtime profile architecture unless a later owner-approved decision replaces it.
 
 3. **OpenClaw adapter boundary**
    - Always register `reply_payload_sending` and forward final assistant reply context to `/v1/final-response/verdict`.
    - Attach service-returned media to the outgoing payload.
-   - Optionally (opt-in via `hentAiService.preReplyMedia`) register `message_received` to drive `/v1/pre-reply/media`.
-   - Keep text delivery owned by OpenClaw. Pre-reply media goes through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
-   - In standalone local service mode, Discord readback and chat participation may be owned by the Hent-ai service poller instead; this does not move Discord REST logic into the OpenClaw adapter.
+   - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
+   - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**
@@ -78,8 +77,10 @@ Current server code references:
 - `service/src/server.ts` — service HTTP endpoints, final-response verdict route, channel/profile policy integration.
 - `service/src/verifier.ts` — final-response verifier provider contract.
 - `service/src/db.ts` — service profile/channel/verifier state.
-- `service/src/discord-poller-integration.ts` — standalone Discord readback and chat participation wiring.
-- `service/src/conversation-runtime.ts` — service-owned conversation intake, memory, and chat-reply evaluation.
+- `service/src/final-response-use-case.ts` — coarse verifier decision followed by semantic media routing.
+- `service/src/final-response-routes.ts` — V1 final-verdict/media HTTP contract and input sanitization.
+- `service/src/semantic-assets/` — strict tags, deterministic vectors/cosine routing, and DB repository.
+- `service/src/watcher-core.ts` and `service/src/watcher-adapter.ts` — watcher state and delivery gating.
 - `openclaw/index.ts` — thin OpenClaw adapter registration and service delegation.
 - `openclaw/README.md` — adapter setup and E2E verification contract.
 - `docs/service-owned-gates.md` — current PR/release gate policy for this boundary.
@@ -124,7 +125,7 @@ Shared responsibilities:
 - profile ID validation (`shared/profile.ts`);
 - SQLite-backed profile/channel/settings DB utilities (`shared/db.ts`).
 
-Current profile storage:
+Legacy `ProfileDatabase` storage used by migration/generation tooling:
 
 - DB file: `<imageDir>/hentai.db`
 - Tables:
@@ -144,9 +145,33 @@ Generation responsibilities:
 - consume shared `EMOTIONS` and `EMOTION_PROMPTS`;
 - generate a base image and one variant per emotion;
 - support limited regeneration through shared emotion names;
+- own its asset-set manifest helper under `generate/src/asset-manifest.ts`;
 - resize/reference-limit inputs and optionally rephrase prompts when a caller provides a rephrase provider.
+- for the semantic corpus, execute the deterministic 100-item/ten-batch plan with immutable
+  candidates, receipts, content-hash reservations, item-level recovery, actual-pixel visual review,
+  and injected LLM/vision tagging;
+- stage manifest activation only after all accepted images and tags pass complete verification.
 
-It must not define independent profile DB semantics.
+It must not define independent profile DB semantics or import OpenClaw runtime internals.
+
+### Affect asset contract
+
+At generation time a vision-capable LLM assigns every accepted image a strict `VisualAffectV2`
+vector from its actual pixels. At response time the verifier assigns the completed response a
+`ResponseAffectV2` vector in the same 24-dimensional `AffectSpaceV2`. The service considers every
+image in the enabled channel's mapped V2 set, computes weighted Euclidean distance, and randomly
+selects among exact-distance ties. A legacy coarse emotion remains optional compatibility metadata
+and does not restrict V2 candidates.
+
+V2 mode is all-or-nothing for a mapped set. Missing, malformed, incompatible, hash-stale, partial,
+or tag/vector-mismatched metadata leaves the set on the safe legacy fallback path. OpenClaw never
+sees tags or vectors and never reranks media.
+
+Generated pools and their live manifest are external deployment data under `HENT_AI_ASSET_ROOT`,
+not checked-in repository assets. A 100-image pool is activated only after independent pixel review,
+pixel-only LLM/vision tags, hash uniqueness, external-manifest verification, DB import, channel
+mapping readback, and live byte-level verification. Provenance records technical inputs and hashes
+but does not assert copyright ownership, license scope, releases, or downstream rights.
 
 ## Current accepted profile architecture
 
@@ -154,7 +179,9 @@ The accepted runtime profile architecture is SQLite-backed service state plus pr
 
 ### Profile storage
 
-Profiles are stored in SQLite through `ProfileDatabase` in the service runtime.
+Profiles and channel mappings in the current service runtime are stored through `ServiceDatabase`, opened from `HENT_AI_SERVICE_DB_PATH` for the participant worker (and the configured service DB path for the HTTP API). `ProfileDatabase` remains true only for legacy OpenClaw/generation migration tooling; it is not a service runtime profile SSOT.
+
+The service runtime tables are `profiles`, `channel_mappings`, and `channel_settings`. `channel_mappings.profile_id` selects the profile and `channel_mappings.mode` selects the channel mode; `channel_settings.enabled` and its other settings hold service-owned channel policy. The legacy `channel_profiles` table belongs only to `ProfileDatabase` migration tooling.
 
 A profile may include:
 
@@ -173,7 +200,7 @@ Profile-specific images live under the configured service image directory:
 <imageDir>/profiles/<profileId>/
 ```
 
-The service resolves active profile/media state from its SQLite-backed `channel_profiles` mapping and asset set records. The OpenClaw adapter must not duplicate that resolution logic or fall back to plugin-local profile configuration.
+The service resolves active profile/media state from its SQLite-backed `channel_mappings` and `channel_settings` records plus asset set records. The OpenClaw adapter must not duplicate that resolution logic or fall back to plugin-local profile configuration.
 
 ### Dynamic persona injection
 
@@ -222,6 +249,13 @@ Automatic time-based, mood-based, mood-detection, or hidden-context profile swit
 ## Roadmap priorities
 
 ### P0 — OpenClaw server correctness
+
+### Accepted Discord ambient participant topology
+
+The service-owned Discord participant is an optional separate worker, not an OpenClaw capability and not an HTTP API side effect. `service/src/main.ts` serves HTTP only; `service/src/discord-ambient-worker.ts` owns allowlisted Discord polling, durable ambient work, and delivery. It requires a startup-only environment allowlist plus enabled `ServiceDatabase` channel mapping, uses per-guild/channel fenced and work-claim leases, and shares the `HENT_AI_SERVICE_DB_PATH` WAL database with the API. Profile persona resolves channel profile, then global persona, then generic persona.
+
+Archive policy is permanent: raw events become archived after 14 days and source-linked summaries are retained; neither raw archives nor summaries are deleted. An archive-only owner has its own lease and may call the configured provider without a participant scope lease only for exact startup-allowlisted Discord scopes that remain DB-enabled; it makes no Discord API calls. Membership v1 uses complete fresh roster evidence. Ambient appraisal is continuous and probabilistic: ordinary silence requests are social evidence that may be accepted, ignored, resisted, or escalated, never deterministic mute/quit state. Operational config and lease fences remain deterministic kill switches. The bot-token QA pair is documentation/fixture-only and is not production scope.
+
 
 Before broad identity expansion, the service-owned OpenClaw delivery path must remain reliable.
 
@@ -295,7 +329,7 @@ Classify work as:
 
 Recommended cancellation/pause triggers:
 
-- runtime profile architecture that bypasses SQLite `profiles` / `channel_profiles`;
+- runtime profile architecture that bypasses service SQLite `profiles` / `channel_mappings` / `channel_settings`;
 - filesystem `characters/<id>/character.json` revived as a second runtime SSOT;
 - docs that present OpenClaw and Hermes as symmetric profile runtimes;
 - dynamic personality injection without host prompt-policy boundaries;
@@ -312,7 +346,7 @@ Before merging or accepting identity/profile work, verify:
 - [ ] The change preserves natural agent writing; Hent-ai still infers emotion and owns image delivery.
 - [ ] The change cites this roadmap if it affects profile/personality identity.
 - [ ] The change keeps service-owned final-response verdict/profile/channel policy as the canonical OpenClaw delivery path.
-- [ ] The change uses SQLite `profiles` / `channel_profiles` unless a new owner-approved decision replaces that architecture.
+- [ ] The change uses service SQLite `profiles` / `channel_mappings` / `channel_settings` unless a new owner-approved decision replaces that architecture.
 - [ ] The change describes Hermes as a compatibility adapter unless it intentionally adopts shared DB state.
 - [ ] The change does not revive filesystem `characters/<id>/character.json` as a second runtime SSOT.
 - [ ] Classifier behavior changes include parity fixtures or documented server/client differences.

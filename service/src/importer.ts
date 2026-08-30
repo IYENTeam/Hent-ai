@@ -3,6 +3,9 @@ import Database from "better-sqlite3";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ServiceDatabase } from "./db.js";
+import { semanticAssetTagsFromMetadata } from "./semantic-assets/contracts.js";
+import { semanticVectorForTags } from "./semantic-assets/vector.js";
+import { affectVectorFromDimensions, parseVisualAffectV2 } from "../../shared/affect.js";
 import { objectInputFromFile } from "./storage.js";
 
 export type ImportReport = {
@@ -24,6 +27,8 @@ type ManifestSet = {
   character?: string;
   model?: string;
   emotions?: Record<string, string[]>;
+  semanticAssets?: Record<string, unknown>;
+  affectAssets?: Record<string, unknown>;
 };
 
 type Manifest = {
@@ -46,6 +51,9 @@ type ImportAsset = {
   emotion: string;
   filename: string;
   path: string;
+  semanticTags?: unknown;
+  semanticVector?: readonly number[];
+  semanticWarning?: string;
 };
 
 type ImportChannelMapping = {
@@ -161,12 +169,29 @@ function buildImportPlan(assetRoot: string, manifest: Manifest, channelOverrides
 
     for (const [emotion, files] of Object.entries(set.emotions ?? {})) {
       for (const filename of files) {
+        const affectMetadata = set.affectAssets?.[`${emotion}/${filename}`] ?? set.affectAssets?.[filename];
+        const affectTags = parseVisualAffectV2(affectMetadata);
+        const semanticMetadata = set.semanticAssets?.[`${emotion}/${filename}`] ?? set.semanticAssets?.[filename];
+        const semanticTags = semanticAssetTagsFromMetadata(semanticMetadata);
+        const validSemanticTags = semanticTags?.emotion === emotion.toLowerCase() ? semanticTags : null;
+        const selectedTags = affectTags ?? validSemanticTags;
+        const selectedVector = affectTags
+          ? affectVectorFromDimensions(affectTags.dimensions)
+          : validSemanticTags
+            ? semanticVectorForTags(validSemanticTags)
+            : undefined;
         assets.push({
           id: `${setId}:${emotion}:${filename}`,
           assetSetId: setId,
           emotion,
           filename,
           path: join(assetRoot, "sets", setId, filename),
+          ...(selectedTags && selectedVector ? { semanticTags: selectedTags, semanticVector: selectedVector } : {}),
+          ...(affectMetadata !== undefined && !affectTags
+            ? { semanticWarning: `Invalid affect metadata: ${setId}/${emotion}/${filename}` }
+            : semanticMetadata !== undefined && !validSemanticTags
+            ? { semanticWarning: `Invalid semantic metadata: ${setId}/${emotion}/${filename}` }
+            : {}),
         });
       }
     }
@@ -276,6 +301,7 @@ export function importAssets(options: { db: ServiceDatabase; assetRoot: string; 
   }
 
   for (const asset of plan.assets) {
+    if (asset.semanticWarning) warnings.push(asset.semanticWarning);
     if (!existsSync(asset.path)) {
       warnings.push(`Missing asset file: ${asset.path}`);
       continue;
@@ -292,6 +318,8 @@ export function importAssets(options: { db: ServiceDatabase; assetRoot: string; 
         filename: asset.filename,
         storageObjectId,
         contentHash: objectInput.contentHash,
+        semanticTags: asset.semanticTags,
+        semanticVector: asset.semanticVector,
       });
     }
   }

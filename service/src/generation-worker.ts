@@ -63,6 +63,16 @@ function resultWithoutInlineImage(result: unknown): Record<string, unknown> {
   return record;
 }
 
+function hashUnknown(value: unknown): string {
+  return sha256Bytes(JSON.stringify(value ?? null));
+}
+
+function assertGeneratedAssetWriteIsNew(db: ServiceDatabase, storageKey: string, assetId: string): void {
+  const existingStorage = db.db.prepare("SELECT 1 FROM storage_objects WHERE storage_key = ?").get(storageKey);
+  const existingAsset = db.db.prepare("SELECT 1 FROM assets WHERE id = ?").get(assetId);
+  if (existingStorage || existingAsset) throw new Error("Generated assets are immutable and cannot overwrite existing objects");
+}
+
 function persistGeneratedImage(db: ServiceDatabase, job: GenerationJob, result: GeneratedImageResult, assetRoot: string): Record<string, unknown> {
   const request = asRecord(job.request);
   const assetSetId = safePathSegment(result.assetSetId ?? nonEmptyString(request.assetSetId) ?? nonEmptyString(request.profileId) ?? "generated");
@@ -75,12 +85,26 @@ function persistGeneratedImage(db: ServiceDatabase, job: GenerationJob, result: 
   const localPath = join(assetRoot, storageKey);
   const bytes = Buffer.from(result.dataBase64 ?? "", "base64");
   if (bytes.length === 0) throw new Error("Generated image payload is empty");
+  const assetId = `generated_${job.id}_${emotion}`;
+  assertGeneratedAssetWriteIsNew(db, storageKey, assetId);
 
   mkdirSync(dirname(localPath), { recursive: true });
   writeFileSync(localPath, bytes);
 
   db.upsertAssetSet({ id: assetSetId, name: assetSetId, manifest: { generated: true } });
   const contentHash = sha256Bytes(bytes);
+  const provenanceMetadata = {
+    jobId: job.id,
+    requestHash: hashUnknown(job.request),
+    providerMetadataHash: hashUnknown(result.metadata ?? null),
+    contentHash,
+    contentType,
+    sizeBytes: bytes.length,
+    dimensions: null,
+    sourceReferences: [],
+    source: "hent-ai-generation-worker",
+    verificationStatus: "unverified",
+  };
   const storageObjectId = db.upsertStorageObject({
     storageKey,
     objectUrl: staticObjectUrl(storageKey),
@@ -89,9 +113,8 @@ function persistGeneratedImage(db: ServiceDatabase, job: GenerationJob, result: 
     sizeBytes: bytes.length,
     provenance: "generated",
     localPath,
-    metadata: { jobId: job.id, request: job.request, providerMetadata: result.metadata ?? null },
+    metadata: provenanceMetadata,
   });
-  const assetId = `generated_${job.id}_${emotion}`;
   db.upsertAsset({
     id: assetId,
     assetSetId,
@@ -99,12 +122,18 @@ function persistGeneratedImage(db: ServiceDatabase, job: GenerationJob, result: 
     filename,
     storageObjectId,
     contentHash,
-    metadata: { jobId: job.id, generated: true },
+    metadata: {
+      jobId: job.id,
+      generated: true,
+      contentHash,
+      source: "hent-ai-generation-worker",
+      verificationStatus: "unverified",
+    },
   });
 
   return {
     asset: { id: assetId, assetSetId, emotion, filename },
-    media: { url: staticObjectUrl(storageKey), contentType, storageKey, sizeBytes: bytes.length },
+    media: { url: staticObjectUrl(storageKey), contentType, storageKey, sizeBytes: bytes.length, contentHash },
   };
 }
 

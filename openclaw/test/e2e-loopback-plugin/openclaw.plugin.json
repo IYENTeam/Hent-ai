@@ -1,0 +1,24 @@
+{
+  "id": "hent-e2e-loopback",
+  "name": "Hent E2E Loopback",
+  "description": "Test-only outbound channel that posts deliveries to an isolated loopback recorder.",
+  "activation": { "onStartup": true },
+  "channels": ["qa-channel"],
+  "channelConfigs": {
+    "qa-channel": {
+      "label": "Hent E2E Loopback",
+      "description": "Isolated E2E loopback channel.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "baseUrl": { "type": "string", "minLength": 1 },
+          "defaultTo": { "type": "string" }
+        },
+        "required": ["baseUrl"]
+      }
+    }
+  },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}
