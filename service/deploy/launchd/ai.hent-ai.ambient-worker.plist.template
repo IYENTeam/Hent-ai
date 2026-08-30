@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.hent-ai.ambient-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>@@SERVICE_DIR@@/node_modules/tsx/dist/cli.mjs</string>
+    <string>@@SERVICE_DIR@@/src/discord-ambient-worker.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HENT_AI_DISCORD_PARTICIPANT_ENABLED</key>
+    <string>true</string>
+    <key>HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST</key>
+    <string>@@DISCORD_ALLOWLIST@@</string>
+    <key>HENT_AI_SERVICE_DB_PATH</key>
+    <string>@@DATABASE_PATH@@</string>
+    <key>HENT_AI_DISCORD_BOT_TOKEN</key>
+    <string>@@DISCORD_BOT_TOKEN@@</string>
+    <key>HENT_AI_CONVERSATION_PROVIDER_ENDPOINT</key>
+    <string>http://127.0.0.1:9742/v1/chat/completions</string>
+    <key>HENT_AI_CONVERSATION_PROVIDER_TOKEN</key>
+    <string>@@PROVIDER_TOKEN@@</string>
+    <key>HENT_AI_CONVERSATION_PROVIDER_MODEL</key>
+    <string>@@PROVIDER_MODEL@@</string>
+    <key>HENT_AI_CONVERSATION_PROVIDER_TIMEOUT_MS</key>
+    <string>30000</string>
+    <key>HENT_AI_DISCORD_PARTICIPANT_POLL_INTERVAL_MS</key>
+    <string>15000</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>@@SERVICE_DIR@@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardOutPath</key>
+  <string>@@HOME@@/Library/Logs/hent-ai-ambient-worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@HOME@@/Library/Logs/hent-ai-ambient-worker.err.log</string>
+</dict>
+</plist>

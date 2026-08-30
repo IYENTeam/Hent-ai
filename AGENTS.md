@@ -8,7 +8,7 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 
 | Path | Role |
 | --- | --- |
-| `service/` | Canonical runtime: final-response verdict selection, verifier + cache, channel/profile mappings, asset storage, generation jobs, watcher state, static media. |
+| `service/` | Canonical runtime: final-response verdict selection, verifier + cache, channel/profile mappings, semantic asset routing, asset storage, generation jobs, watcher state, static media. |
 | `openclaw/` | Thin OpenClaw adapter. Forwards hooks to the service; owns no classifier/profile/asset logic. Entry: `openclaw/index.ts`. |
 | `shared/` | Contract layer: `shared/emotions.ts` (canonical 6-emotion set + prompts/labels/rules), `shared/profile.ts`, `shared/db.ts`. |
 | `generate/` | Asset generation helper (`hent-ai generate`/`profile`/`sets` CLI). Codex-backed image generation; consumes shared emotion definitions. |
@@ -24,11 +24,19 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 - Plugin is loaded by OpenClaw at runtime — changes require gateway restart or hot-reload.
 - The OpenClaw adapter must stay service-thin: no local classifier, no manifest scan, no profile DB read, no `@hent-ai/generate` call, no direct `discord.com` REST. Pre-reply/watcher delivery uses OpenClaw's outbound channel adapter, not direct Discord.
 - Image generation costs real money. Never trigger generation (Codex / `/v1/assets/generate` worker) in tests without mocking.
+- Semantic routing is second-stage only: the service verifier chooses one canonical emotion, then
+  the service ranks that emotion's fully tagged candidates. Partial/malformed semantic metadata
+  must keep the whole candidate set on deterministic legacy fallback.
+- `scripts/e2e-hent-openclaw.mjs` temporarily replaces the process listening on the real local
+  gateway port. Run it only on the documented macOS/LaunchAgent topology after checking that the
+  gateway is healthy and no external work is active. Its disposable config must contain no MCP or
+  external channel/provider endpoint, and the original config/state/LaunchAgent must be restored.
 
 ## Build & Test
 
 ```bash
-# Service regression tests + full OpenClaw suite (release gate)
+# Node.js 22 baseline: service/generate/OpenClaw regressions, complete semantic corpus,
+# typechecks, and the isolated/restored real-local-OpenClaw E2E
 node scripts/release-gate.mjs    # or: npm run release:check
 
 # Per-package

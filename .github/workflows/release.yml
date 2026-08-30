@@ -116,7 +116,7 @@ jobs:
           HENT_AI_DISCORD_POLLER_CHANNELS: ""
           HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT: ""
           DISCORD_BOT_TOKEN: ""
-        run: node scripts/release-gate.mjs
+        run: node scripts/release-gate.mjs --ci
 
       - name: Dry-run summary
         if: inputs.dry_run

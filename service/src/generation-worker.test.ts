@@ -55,7 +55,70 @@ describe("generation worker runner", () => {
       expect(existsSync(join(root, media.storageKey))).toBe(true);
       expect(readFileSync(join(root, media.storageKey))).toEqual(Buffer.from("generated png"));
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM assets WHERE asset_set_id = 'gothic-v1' AND emotion = 'sorry'").get()).toEqual({ count: 1 });
-      expect(db.db.prepare("SELECT provenance, object_url FROM storage_objects WHERE storage_key = ?").get(media.storageKey)).toMatchObject({ provenance: "generated", object_url: media.url });
+      const storageRow = db.db.prepare("SELECT provenance, object_url, content_hash, metadata_json FROM storage_objects WHERE storage_key = ?").get(media.storageKey) as {
+        provenance: string;
+        object_url: string;
+        content_hash: string;
+        metadata_json: string;
+      };
+      expect(storageRow).toMatchObject({ provenance: "generated", object_url: media.url });
+      const storageMetadata = JSON.parse(storageRow.metadata_json) as Record<string, unknown>;
+      expect(storageMetadata).toMatchObject({
+        jobId: job.id,
+        source: "hent-ai-generation-worker",
+        verificationStatus: "unverified",
+        contentType: "image/png",
+        sizeBytes: Buffer.from("generated png").length,
+        dimensions: null,
+        sourceReferences: [],
+      });
+      expect(storageMetadata.contentHash).toBe(storageRow.content_hash);
+      expect(storageMetadata.requestHash).toEqual(expect.any(String));
+      expect(storageMetadata.providerMetadataHash).toEqual(expect.any(String));
+      expect(JSON.stringify(storageMetadata)).not.toContain("make sorry");
+      expect(JSON.stringify(storageMetadata)).not.toContain("mock");
+      const assetRow = db.db.prepare("SELECT content_hash, metadata_json FROM assets WHERE id = ?").get(`generated_${job.id}_sorry`) as {
+        content_hash: string;
+        metadata_json: string;
+      };
+      const assetMetadata = JSON.parse(assetRow.metadata_json) as Record<string, unknown>;
+      expect(assetMetadata).toMatchObject({
+        jobId: job.id,
+        generated: true,
+        source: "hent-ai-generation-worker",
+        verificationStatus: "unverified",
+      });
+      expect(assetMetadata.contentHash).toBe(assetRow.content_hash);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails rather than overwriting an existing generated storage object", async () => {
+    const root = tempDir();
+    const db = new ServiceDatabase();
+    try {
+      const job = db.createGenerationJob({ prompt: "make sorry", assetSetId: "gothic-v1", emotion: "sorry", filename: "sorry.png" });
+      const storageKey = `generated/gothic-v1/sorry/${job.id}-sorry.png`;
+      db.upsertStorageObject({
+        storageKey,
+        objectUrl: `/static/${storageKey}`,
+        contentHash: "existing",
+        contentType: "image/png",
+        sizeBytes: 1,
+        provenance: "generated",
+      });
+
+      const result = await runNextGenerationJob(db, {
+        generate: async () => ({ dataBase64: tinyPngBase64, contentType: "image/png" }),
+      }, { assetRoot: root });
+
+      expect(result).toMatchObject({
+        id: job.id,
+        status: "failed",
+        error: "Generated assets are immutable and cannot overwrite existing objects",
+      });
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

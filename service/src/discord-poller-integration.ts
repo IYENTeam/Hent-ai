@@ -1,13 +1,8 @@
-import type { ConversationChatReplyResult } from "./conversation-chat-reply.js";
-import { DEFAULT_CONVERSATION_CONFIG, type ConversationServiceConfig } from "./conversation-config.js";
-import { delayForChunkByLength } from "./conversation-delivery-timing.js";
-import type { ConversationRuntime } from "./conversation-runtime.js";
+import type { ConversationDeliveryPlanResponse } from "./conversation-delivery-plan.js";
+import type { ConversationRuntime, WatcherEvaluateResult } from "./conversation-runtime.js";
 import {
-  DiscordHttpError,
-  RateLimitError,
   createDiscordRestClient,
   createDiscordRestPoller,
-  type DiscordPollerStateStore,
   type DiscordRestClient,
   type DiscordRestMessage,
   type DiscordRestPoller,
@@ -25,11 +20,8 @@ export type DiscordPollerIntegrationOptions = {
   readonly config: DiscordPollerIntegrationConfig;
   readonly runtime: ConversationRuntime;
   readonly client?: DiscordRestClient;
-  readonly pollerStateStore?: DiscordPollerStateStore;
-  readonly conversationConfig?: ConversationServiceConfig;
   readonly log?: DiscordPollerLog;
   readonly wait?: (ms: number) => Promise<void>;
-  readonly random?: () => number;
 };
 
 export type DiscordPollerIntegration = {
@@ -39,11 +31,11 @@ export type DiscordPollerIntegration = {
   readonly evaluateOnce: () => Promise<void>;
 };
 
-type PendingChatReply = {
+type PendingEvaluation = {
   readonly scopeId: string;
   readonly channelId: string;
+  readonly text: string;
   readonly messageId: string;
-  readonly deliveryAttempts: number;
 };
 
 const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -52,85 +44,59 @@ const DEFAULT_EVALUATION_INTERVAL_MS = 60_000;
 export function createDiscordPollerIntegration(options: DiscordPollerIntegrationOptions): DiscordPollerIntegration {
   const log = options.log ?? (() => {});
   const wait = options.wait ?? defaultWait;
-  const random = options.random ?? Math.random;
-  const conversationConfig = options.conversationConfig ?? DEFAULT_CONVERSATION_CONFIG;
-  const maxDeliveryAttempts = positiveInteger(conversationConfig.maxDeliveryAttempts, DEFAULT_CONVERSATION_CONFIG.maxDeliveryAttempts);
   const client = options.client ?? createDiscordRestClient(options.config.token);
-  const pendingChatReplies = new Map<string, PendingChatReply>();
-  let replyTimer: ReturnType<typeof setInterval> | null = null;
-  let activeReplyCheck: Promise<void> | null = null;
+  const pendingEvaluations = new Map<string, PendingEvaluation>();
+  let evaluationTimer: ReturnType<typeof setInterval> | null = null;
+  let activeEvaluation: Promise<void> | null = null;
   const poller = createDiscordRestPoller({
     config: options.config,
     client,
-    stateStore: options.pollerStateStore,
     callbacks: {
       log,
       onMessages: (channelId, messages) => {
         log("info", `discord-poller-integration: observed channel=${channelId} messages=${messages.length}`);
       },
     },
-    onMessage: (message) => handleDiscordMessage({ message, runtime: options.runtime, config: options.config, log, pendingChatReplies }),
+    onMessage: (message) => handleDiscordMessage({ message, runtime: options.runtime, config: options.config, log, pendingEvaluations }),
   });
 
-  async function runReplyCheck(): Promise<void> {
-    for (const pendingReply of pendingChatReplies.values()) {
-      try {
-        const result = await options.runtime.evaluateChatReply(pendingReply);
-        const delivered = await deliverChatReply({
-          result,
-          runtime: options.runtime,
-          channelId: pendingReply.channelId,
-          scopeId: pendingReply.scopeId,
-          messageId: pendingReply.messageId,
-          conversationConfig,
-          client,
-          pendingChatReplies,
-          log,
-          wait,
-          random,
-        });
-        const latest = pendingChatReplies.get(pendingReply.channelId);
-        if (delivered === "delivered" && latest?.messageId === pendingReply.messageId) {
-          pendingChatReplies.delete(pendingReply.channelId);
-        } else if (delivered === "discarded" && latest?.messageId === pendingReply.messageId) {
-          pendingChatReplies.delete(pendingReply.channelId);
-        } else if (delivered === "failed") {
-          recordFailedDeliveryAttempt(pendingChatReplies, pendingReply, maxDeliveryAttempts, log);
-        }
-      } catch (error) {
-        log("error", `discord-poller-integration: reply check failed channel=${pendingReply.channelId}: ${error instanceof Error ? error.message : String(error)}`);
-      }
+  async function runEvaluation(): Promise<void> {
+    for (const evaluation of Array.from(pendingEvaluations.values())) {
+      const result = await options.runtime.evaluate(evaluation);
+      const current = pendingEvaluations.get(evaluation.messageId);
+      if (current?.messageId === evaluation.messageId) pendingEvaluations.delete(evaluation.messageId);
+      await deliverEvaluationResult({ result, runtime: options.runtime, client, log, wait });
     }
   }
 
   async function evaluateOnce(): Promise<void> {
-    if (activeReplyCheck) return activeReplyCheck;
-    activeReplyCheck = runReplyCheck();
+    if (activeEvaluation) return activeEvaluation;
+    activeEvaluation = runEvaluation();
     try {
-      await activeReplyCheck;
+      await activeEvaluation;
     } finally {
-      activeReplyCheck = null;
+      activeEvaluation = null;
     }
   }
 
-  function startReplyTimer(): void {
-    if (replyTimer) return;
-    replyTimer = setInterval(() => void evaluateOnce(), positiveInteger(options.config.evaluationIntervalMs, DEFAULT_EVALUATION_INTERVAL_MS));
+  function startEvaluationTimer(): void {
+    if (evaluationTimer) return;
+    evaluationTimer = setInterval(() => void evaluateOnce(), positiveInteger(options.config.evaluationIntervalMs, DEFAULT_EVALUATION_INTERVAL_MS));
   }
 
   const integration = {
     poller,
     start() {
       poller.start();
-      startReplyTimer();
+      startEvaluationTimer();
     },
     async stop() {
-      if (replyTimer) {
-        clearInterval(replyTimer);
-        replyTimer = null;
+      if (evaluationTimer) {
+        clearInterval(evaluationTimer);
+        evaluationTimer = null;
       }
       await poller.stop();
-      if (activeReplyCheck) await activeReplyCheck;
+      if (activeEvaluation) await activeEvaluation;
     },
     evaluateOnce,
   };
@@ -144,8 +110,9 @@ export function loadDiscordPollerConfigFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DiscordPollerIntegrationConfig | null {
   const token = stringEnv(env.HENT_AI_DISCORD_POLLER_TOKEN)
-    ?? stringEnv(env.DISCORD_BOT_TOKEN);
-  const channels = channelListEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS);
+    ?? stringEnv(env.DISCORD_BOT_TOKEN)
+    ?? stringEnv(env.HENT_AI_DISCORD_TOKEN);
+  const channels = channelListEnv(stringEnv(env.HENT_AI_DISCORD_POLLER_CHANNELS) ?? stringEnv(env.HENT_AI_WATCH_CHANNELS));
   if (!token || channels.length === 0) return null;
 
   return {
@@ -164,16 +131,18 @@ async function handleDiscordMessage(input: {
   readonly runtime: ConversationRuntime;
   readonly config: DiscordPollerIntegrationConfig;
   readonly log: DiscordPollerLog;
-  readonly pendingChatReplies: Map<string, PendingChatReply>;
+  readonly pendingEvaluations: Map<string, PendingEvaluation>;
 }): Promise<void> {
   const scopeId = `discord:${input.message.channelId}`;
   if (isSelfBotMessage(input.message, input.config.botUserId)) {
-    input.runtime.recordAssistant({
+    const evaluation = {
       scopeId,
       channelId: input.message.channelId,
       text: input.message.content,
       messageId: input.message.id,
-    });
+    };
+    input.runtime.recordAssistant(evaluation);
+    input.pendingEvaluations.set(input.message.id, evaluation);
     return;
   }
   if (input.message.authorBot) {
@@ -186,135 +155,54 @@ async function handleDiscordMessage(input: {
     text: input.message.content,
     id: input.message.id,
   });
-  input.pendingChatReplies.set(input.message.channelId, {
-    scopeId,
-    channelId: input.message.channelId,
-    messageId: input.message.id,
-    deliveryAttempts: 0,
-  });
 }
 
-type DeliveryOutcome = "delivered" | "deferred" | "failed" | "discarded";
-
-async function deliverChatReply(input: {
-  readonly result: ConversationChatReplyResult;
+async function deliverEvaluationResult(input: {
+  readonly result: WatcherEvaluateResult;
   readonly runtime: ConversationRuntime;
-  readonly channelId: string;
-  readonly scopeId: string;
-  readonly messageId: string;
-  readonly conversationConfig: ConversationServiceConfig;
   readonly client?: DiscordRestClient;
-  readonly pendingChatReplies: Map<string, PendingChatReply>;
   readonly log: DiscordPollerLog;
   readonly wait: (ms: number) => Promise<void>;
-  readonly random: () => number;
-}): Promise<DeliveryOutcome> {
-  if (input.result.decision === "no_reply") {
-    input.log("info", `discord-poller-integration: chat reply skipped reason=${input.result.reason}`);
-    return "deferred";
-  }
-  if (!input.client) {
-    input.log("warn", "discord-poller-integration: no Discord client for chat reply");
-    return "failed";
-  }
-  for (const chunk of input.result.chunks) {
-    if (!isCurrentPending(input.pendingChatReplies, input.channelId, input.messageId)) return "deferred";
-    const delayMs = delayForChunkByLength(chunk, input.conversationConfig, input.random);
-    await triggerTypingDuringDelay(input.client, input.channelId, delayMs, input.wait, input.log);
-    if (!isCurrentPending(input.pendingChatReplies, input.channelId, input.messageId)) return "deferred";
-    const sendOutcome = await sendMessageWithRetry(input.client, input.channelId, chunk, input.wait, input.log);
-    if (sendOutcome.kind === "discarded") return "discarded";
-    if (sendOutcome.kind === "failed") return "failed";
-    input.runtime.recordAssistant({ scopeId: input.scopeId, channelId: input.channelId, text: chunk, messageId: sendOutcome.sentId });
-  }
-  input.log("info", `discord-poller-integration: delivered chat reply chunks=${input.result.chunks.length}`);
-  return "delivered";
-}
-
-function isCurrentPending(pendingChatReplies: Map<string, PendingChatReply>, channelId: string, messageId: string): boolean {
-  return pendingChatReplies.get(channelId)?.messageId === messageId;
-}
-
-function recordFailedDeliveryAttempt(
-  pendingChatReplies: Map<string, PendingChatReply>,
-  pendingReply: PendingChatReply,
-  maxDeliveryAttempts: number,
-  log: DiscordPollerLog,
-): void {
-  const current = pendingChatReplies.get(pendingReply.channelId);
-  if (!current || current.messageId !== pendingReply.messageId) return;
-  const deliveryAttempts = current.deliveryAttempts + 1;
-  if (deliveryAttempts >= maxDeliveryAttempts) {
-    pendingChatReplies.delete(pendingReply.channelId);
-    log("error", `discord-poller-integration: dropping failed chat reply channel=${pendingReply.channelId} attempts=${deliveryAttempts}`);
+}): Promise<void> {
+  if (input.result.deliveryPlan) {
+    await deliverPlan({ plan: input.result.deliveryPlan, runtime: input.runtime, client: input.client, log: input.log, wait: input.wait });
     return;
   }
-  pendingChatReplies.set(pendingReply.channelId, { ...current, deliveryAttempts });
-  log("warn", `discord-poller-integration: retaining failed chat reply channel=${pendingReply.channelId} attempts=${deliveryAttempts}`);
-}
-
-async function triggerTypingDuringDelay(
-  client: DiscordRestClient,
-  channelId: string,
-  delayMs: number,
-  wait: (ms: number) => Promise<void>,
-  log: DiscordPollerLog,
-): Promise<void> {
-  await triggerTyping(client, channelId, log);
-  let remainingMs = delayMs;
-  while (remainingMs > 9_000) {
-    await wait(9_000);
-    remainingMs -= 9_000;
-    await triggerTyping(client, channelId, log);
-  }
-  await wait(remainingMs);
-}
-
-async function triggerTyping(client: DiscordRestClient, channelId: string, log: DiscordPollerLog): Promise<void> {
-  try {
-    await client.triggerTyping?.(channelId);
-  } catch (error) {
-    log("warn", `discord-poller-integration: typing failed channel=${channelId}: ${error instanceof Error ? error.message : String(error)}`);
+  if (input.result.nudgeText && input.result.audit?.allowed) {
+    input.log("warn", "discord-poller-integration: evaluation returned legacy nudge without delivery plan");
   }
 }
 
-async function sendMessageWithRetry(
-  client: DiscordRestClient,
-  channelId: string,
-  chunk: string,
-  wait: (ms: number) => Promise<void>,
-  log: DiscordPollerLog,
-): Promise<{ readonly kind: "sent"; readonly sentId: string } | { readonly kind: "failed" } | { readonly kind: "discarded" }> {
-  try {
-    const sentId = await client.sendMessage(channelId, chunk);
-    return sentId ? { kind: "sent", sentId } : { kind: "failed" };
-  } catch (error) {
-    if (isDiscardableDiscordSendError(error)) {
-      log("error", `discord-poller-integration: discarding chat reply channel=${channelId} status=${error.status}`);
-      return { kind: "discarded" };
-    }
-    if (!(error instanceof RateLimitError)) {
-      log("error", `discord-poller-integration: send failed channel=${channelId}: ${error instanceof Error ? error.message : String(error)}`);
-      return { kind: "failed" };
-    }
-    log("warn", `discord-poller-integration: send rate limited channel=${channelId} retryAfterMs=${error.retryAfterMs}`);
-    await wait(error.retryAfterMs);
-    try {
-      const sentId = await client.sendMessage(channelId, chunk);
-      return sentId ? { kind: "sent", sentId } : { kind: "failed" };
-    } catch (retryError) {
-      if (isDiscardableDiscordSendError(retryError)) {
-        log("error", `discord-poller-integration: discarding chat reply channel=${channelId} status=${retryError.status}`);
-        return { kind: "discarded" };
-      }
-      log("error", `discord-poller-integration: send retry failed channel=${channelId}: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
-      return { kind: "failed" };
-    }
+async function deliverPlan(input: {
+  readonly plan: ConversationDeliveryPlanResponse;
+  readonly runtime: ConversationRuntime;
+  readonly client?: DiscordRestClient;
+  readonly log: DiscordPollerLog;
+  readonly wait: (ms: number) => Promise<void>;
+}): Promise<void> {
+  if (!input.client) {
+    input.log("warn", `discord-poller-integration: no Discord client for plan=${input.plan.planId}`);
+    return;
   }
-}
-
-function isDiscardableDiscordSendError(error: unknown): error is DiscordHttpError {
-  return error instanceof DiscordHttpError && (error.status === 403 || error.status === 404);
+  const requiredChunkIds = new Set(input.plan.commit.requiredChunkIds);
+  const deliveryMessageIds: Record<string, string> = {};
+  for (const chunk of input.plan.chunks) {
+    await input.wait(chunk.delayMs);
+    const sentId = await input.client.sendMessage(input.plan.channelId, chunk.text);
+    if (sentId && requiredChunkIds.has(chunk.chunkId)) deliveryMessageIds[chunk.chunkId] = sentId;
+  }
+  if (!input.plan.commit.requiredChunkIds.every((chunkId) => deliveryMessageIds[chunkId])) {
+    input.log("warn", `discord-poller-integration: incomplete delivery for plan=${input.plan.planId}`);
+    return;
+  }
+  const commit = input.runtime.commitDeliveryPlan({
+    planId: input.plan.commit.planId,
+    cooldownKey: input.plan.commit.cooldownKey,
+    scopeId: input.plan.scopeId,
+    signalId: input.plan.commit.signalId,
+    deliveryMessageIds,
+  });
+  input.log("info", `discord-poller-integration: committed plan=${input.plan.planId} status=${commit.status}`);
 }
 
 function isSelfBotMessage(message: DiscordRestMessage, botUserId: string | undefined): boolean {

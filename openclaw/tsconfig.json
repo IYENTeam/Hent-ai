@@ -14,13 +14,12 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@hent-ai/generate": ["../generate/src/index.ts"],
       "@hent-ai/shared": ["../shared/emotions.ts"],
       "@hent-ai/shared/profile": ["../shared/profile.ts"],
       "@hent-ai/shared/db": ["../shared/db.ts"],
       "openclaw/plugin-sdk/plugin-entry": ["test/stubs/plugin-entry.ts"]
     }
   },
-  "include": ["index.ts", "channel-filter.ts", "discord-utils.ts", "profile-manager.ts", "dynamic-persona.ts", "migration.ts", "scripts/*.ts"],
+  "include": ["index.ts", "scripts/*.ts"],
   "exclude": ["dist", "node_modules", "**/*.test.ts"]
 }

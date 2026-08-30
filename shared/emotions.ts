@@ -1,5 +1,18 @@
+export const EMOTION_CONTRACT_VERSION = "EmotionContractV1";
+
+export const CANONICAL_EMOTIONS = [
+  "sorry",
+  "happy",
+  "confused",
+  "focused",
+  "loyalty",
+  "neutral",
+] as const;
+
+export type Emotion = (typeof CANONICAL_EMOTIONS)[number];
+
 export interface EmotionDefinition {
-  id: string;
+  id: Emotion;
   defaultFile: string;
   patterns: RegExp[];
   promptSuffix: string;
@@ -71,28 +84,26 @@ export const EMOTION_DEFINITIONS: readonly EmotionDefinition[] = [
   },
 ] as const;
 
-export const EMOTIONS = EMOTION_DEFINITIONS.map((d) => d.id);
+export const EMOTIONS: readonly Emotion[] = CANONICAL_EMOTIONS;
 
-export type Emotion = (typeof EMOTION_DEFINITIONS)[number]["id"];
+export const DEFAULT_EMOTION: Emotion = "neutral";
 
-export const DEFAULT_EMOTION: string = "neutral";
-
-export const DEFAULT_EMOTION_MAP: Record<string, string> = Object.fromEntries(
+export const DEFAULT_EMOTION_MAP: Record<Emotion, string> = Object.fromEntries(
   EMOTION_DEFINITIONS.map((d) => [d.id, d.defaultFile]),
-);
+) as Record<Emotion, string>;
 
-export const EMOTION_RULES: Array<{ emotion: string; patterns: RegExp[] }> =
+export const EMOTION_RULES: Array<{ emotion: Emotion; patterns: RegExp[] }> =
   EMOTION_DEFINITIONS.filter((d) => d.patterns.length > 0).map((d) => ({
     emotion: d.id,
     patterns: [...d.patterns],
   }));
 
-export const EMOTION_PROMPTS: Record<string, string> = Object.fromEntries(
+export const EMOTION_PROMPTS: Record<Emotion, string> = Object.fromEntries(
   EMOTION_DEFINITIONS.map((d) => [d.id, d.promptSuffix]),
-);
+) as Record<Emotion, string>;
 
-export const EMOTION_LABELS: Record<string, string> = Object.fromEntries(
+export const EMOTION_LABELS: Record<Emotion, string> = Object.fromEntries(
   EMOTION_DEFINITIONS.map((d) => [d.id, d.label]),
-);
+) as Record<Emotion, string>;
 
-export const VALID_EMOTIONS: string[] = [...EMOTIONS];
+export const VALID_EMOTIONS: readonly Emotion[] = EMOTIONS;
