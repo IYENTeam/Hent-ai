@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,12 +27,14 @@ function skipReasons(env: NodeJS.ProcessEnv): string {
 }
 
 function writeCleanup(cleanup: Cleanup): void {
+  mkdirSync(evidenceRoot, { recursive: true });
   const cleanupPath = join(evidenceRoot, "cleanup.json");
   const existing = existsSync(cleanupPath) ? JSON.parse(readFileSync(cleanupPath, "utf8")) as Record<string, unknown> : {};
   writeFileSync(cleanupPath, `${JSON.stringify({ ...existing, ...cleanup }, null, 2)}\n`);
 }
 
 function appendLiveReceipt(receipt: string): void {
+  mkdirSync(evidenceRoot, { recursive: true });
   appendFileSync(liveLog, `${receipt}\n`);
 }
 
