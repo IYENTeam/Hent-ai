@@ -12,6 +12,7 @@ export type AmbientSettings = {
   readonly ambientIdleDecayTauMs?: number;
   readonly ambientPressureTauMs?: number;
   readonly ambientPityEnabled?: boolean;
+  readonly ambientAddressAliases?: readonly string[];
 };
 export type DiscordInboundMessage = {
   readonly eventId: string; readonly scope: DiscordParticipantScope; readonly authorId: string; readonly authorIsBot: boolean;
@@ -73,15 +74,25 @@ export function readAmbientSettings(settingsJson: string | null): AmbientSetting
   }
   if (settings === null || typeof settings !== "object" || Array.isArray(settings)) return {};
   const value = settings as Record<string, unknown>;
+  const aliases = addressAliases(value.ambientAddressAliases);
   return {
     ...(positiveInteger(value.ambientBudgetPerHour) ? { ambientBudgetPerHour: value.ambientBudgetPerHour } : {}),
     ...(unitInterval(value.ambientConfidenceFloor) ? { ambientConfidenceFloor: value.ambientConfidenceFloor } : {}),
     ...(minimumInteger(value.ambientIdleDecayTauMs, 60_000) ? { ambientIdleDecayTauMs: value.ambientIdleDecayTauMs } : {}),
     ...(minimumInteger(value.ambientPressureTauMs, 60_000) ? { ambientPressureTauMs: value.ambientPressureTauMs } : {}),
     ...(typeof value.ambientPityEnabled === "boolean" ? { ambientPityEnabled: value.ambientPityEnabled } : {}),
+    ...(aliases.length > 0 ? { ambientAddressAliases: aliases } : {}),
   };
 }
 
+function addressAliases(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && entry.length <= 64))]
+    .slice(0, 16);
+}
 function positiveInteger(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value > 0; }
 function unitInterval(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1; }
 function minimumInteger(value: unknown, minimum: number): value is number { return typeof value === "number" && Number.isInteger(value) && value >= minimum; }

@@ -2,10 +2,18 @@
 
 ## Build
 
+Node.js 22 is the reproducible baseline. Use the checked-in package lock for each package; do not
+refresh dependencies as part of a release verification run.
+
 ```bash
+node --version     # expected: v22.x
 cd openclaw/
-npm install        # if deps changed
+npm ci             # only when dependencies are not already installed
 ```
+
+`scripts/release-gate.mjs` verifies the runtime. When invoked from another Node version it
+re-executes a verified Homebrew Node 22 installation if present. On other layouts, point it to the
+runtime explicitly: `HENT_AI_NODE22=/absolute/path/to/node node scripts/release-gate.mjs`.
 
 No separate build step — TypeScript is loaded via tsx at runtime.
 
@@ -30,22 +38,31 @@ Equivalent package script:
 npm run release:check
 ```
 
-The gate runs the service-owned boundary check, focused service verifier/poller/worker regression tests, adaptive ambient client/worker/runtime/delivery/archive/roster/wire/live regressions, shared emotion contract tests, generate manifest tests, Hermes compatibility tests, and the full OpenClaw suite:
+The gate runs the service-owned boundary check, service and ambient regressions (including legacy
+poller regression coverage, not a supported deployment path), shared contracts, generation
+manifest checks, the external VisualAffectV2 corpus verifier, Hermes compatibility, the full OpenClaw
+suite, all three TypeScript checks, and the isolated/restored local OpenClaw E2E:
 
 ```bash
 node scripts/service-owned-boundary-check.mjs
-cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts src/final-response-media-sanitizer.test.ts
-cd service && npx vitest run src/adaptive-ambient-contracts.test.ts src/adaptive-ambient-provider.test.ts src/adaptive-ambient-runtime.test.ts src/adaptive-ambient-store.test.ts src/conversation-archive-scheduler.test.ts src/conversation-relationship-profile.test.ts src/discord-participant-client.test.ts src/discord-ambient-worker-core.test.ts src/discord-ambient-delivery.test.ts src/discord-ambient-worker.test.ts src/discord-ambient-worker.wire.test.ts src/discord-ambient-worker.live.test.ts src/adaptive-ambient-review-regressions.test.ts src/adaptive-ambient.redteam.test.ts src/conversation-ambient.test.ts src/discord-ambient-worker.redteam.test.ts
-cd shared && npx vitest run
-cd generate && npx vitest run src/sets.test.ts
+(cd service && npx vitest run src/service.test.ts src/verifier.test.ts src/discord-rest-poller.test.ts src/generation-worker.test.ts src/final-response-media-sanitizer.test.ts)
+(cd service && npx vitest run src/adaptive-ambient-contracts.test.ts src/adaptive-ambient-provider.test.ts src/adaptive-ambient-runtime.test.ts src/adaptive-ambient-store.test.ts src/conversation-archive-scheduler.test.ts src/conversation-relationship-profile.test.ts src/discord-participant-client.test.ts src/discord-ambient-worker-core.test.ts src/discord-ambient-delivery.test.ts src/discord-ambient-worker.test.ts src/discord-ambient-worker.wire.test.ts src/discord-ambient-worker.live.test.ts src/adaptive-ambient-review-regressions.test.ts src/adaptive-ambient.redteam.test.ts src/conversation-ambient.test.ts src/discord-ambient-worker.redteam.test.ts)
+(cd shared && npx vitest run)
+(cd generate && npx vitest run src/sets.test.ts)
+node scripts/verify-affect-assets.mjs "${HENT_AI_ASSET_ROOT:-$HOME/.hent-ai/assets}" "${HENT_AI_AFFECT_SET_ID:-gothic-affect-v3}"
 python3 -m unittest discover -s tests/hermes
-cd openclaw && npx vitest run
-cd openclaw && npx tsc --noEmit
-cd service && npx tsc --noEmit
-cd generate && npx tsc --noEmit
+(cd openclaw && npx vitest run)
+(cd openclaw && npx tsc --noEmit)
+(cd service && npx tsc --noEmit)
+(cd generate && npx tsc --noEmit)
+node scripts/e2e-hent-openclaw.mjs
 ```
 
-Any failing command blocks the release. CI required-check enforcement is intentionally deferred; this gate is the local/manual release checklist for this slice.
+The displayed commands are the expanded equivalent; use `node scripts/release-gate.mjs` from the
+repository root so working directories and the Node.js 22 runtime are resolved consistently. Any
+failure blocks release. The E2E has strict host
+preconditions described below; if the host cannot safely satisfy them, the release remains blocked
+rather than silently skipping the check.
 
 ## Remote Verifier Configuration
 
@@ -60,6 +77,34 @@ Production final-response verification uses an external verifier provider. Confi
 - `HENT_AI_VERIFIER_EXTRA_BODY_JSON` for provider-specific request body fields
 
 Missing endpoint, token, model/route, or invalid timeout/header/body JSON fails verifier config creation. Per-request provider failures return no verdict rather than using deterministic fallback.
+
+## Affect asset routing and static media
+
+The primary path asks the same assistant generation to append a compact `ResponseAffectV2` transport
+marker. The OpenClaw adapter removes that marker before delivery and sends the strictly parsed vector
+with the visible final text. The service uses the remote final-response verifier only as a compatibility
+fallback when the marker is absent or invalid. A coarse legacy emotion may also be present, but it does not filter a fully migrated V2 set.
+The service-owned router ranks every image in the channel's mapped set by normalized weighted
+Euclidean distance to its stored `VisualAffectV2` vector. Candidates tied within `1e-12` are selected
+at random. OpenClaw transports the model-produced vector and attaches media; it does not calculate
+scores or participate in ranking.
+
+Both schemas use the exact 24-dimension `AffectSpaceV2` contract in `shared/affect.ts`. The importer
+persists strict tags and ordered vectors. V2 mode activates only when every candidate in the mapped
+set has a valid tag/vector pair whose values match. Incomplete or malformed sets fail closed to the
+legacy path; legacy `SemanticAssetTagsV1` sets retain their old coarse-bucket cosine behavior.
+
+Set `HENT_AI_ASSET_ROOT` to the external local store corresponding to imported storage keys; use
+`~/.hent-ai/assets` for a new local deployment. The checkout's `assets/` is compatibility/reference
+data, not the production image-pool store. `/static/<storage-key>` serves bytes only for a normalized
+key already registered in `storage_objects`; traversal and unregistered files are rejected. Import
+or migration is explicit: back up state, dry-run `importAssets`, inspect warnings and counts, perform
+the import, then read back DB rows and `/static` bytes. Starting OpenClaw does not import or migrate
+assets.
+
+The `gothic-affect-v3` corpus is external deployment data generated and reviewed through the
+workflow in `generate/README.md`. The release gate does not generate or call an LLM; it verifies
+the external 100-image manifest, every pixel hash, complete actual-pixel tags, and activation state.
 
 ## Image Generation Job Path
 
@@ -147,13 +192,47 @@ npx tsx scripts/replay-ambient-calibration.ts
 
 The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or effective pity probability falls below its base probability.
 
+## Real local OpenClaw E2E
+
+```bash
+node scripts/e2e-hent-openclaw.mjs
+```
+
+This command is destructive to availability even though it is designed to be non-destructive to
+state: it briefly stops the real local OpenClaw LaunchAgent and binds its usual port. Run it only on
+macOS when all of these preconditions are true:
+
+- Node.js 22 and the global OpenClaw entry
+  `/opt/homebrew/lib/node_modules/openclaw/dist/index.js` are installed;
+- the healthy LaunchAgent `ai.openclaw.gateway` is listening on `127.0.0.1:18789`;
+- that gateway loads this checkout's `openclaw/index.ts`;
+- no agent, delivery, automation, or external channel work is active; and
+- the operator can immediately inspect/recover the gateway if restoration fails.
+
+Do not adapt this harness to real Discord/Slack/etc. credentials or an external LLM endpoint. Do
+not run it casually on a remote, shared, production, non-LaunchAgent, or differently managed
+gateway. The disposable child and same-port phases use temporary `HOME`, `OPENCLAW_HOME`,
+`OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, workspace, DB, and assets. The model provider, Hent
+service, semantic static files, inbound channel, and outbound adapter are all loopback. The same-port
+config has no MCP key, scrubs credential-like environment variables, disables hooks/ambient
+features, and fails if logs reveal MCP or a non-loopback HTTP URL.
+
+The first phase proves the full hook flow with pre-reply, final semantic media, watcher chunks, and
+commit using exact-byte hashes. The second phase boots out the existing LaunchAgent, runs a
+final-only smoke on port 18789, and proves the stopped original state inventory was unchanged. In a
+`finally` block the harness stops the disposable foreground gateway, restores the original
+LaunchAgent, waits for connectivity, and compares config bytes/mode, plist hash, state inventory,
+and loaded adapter source. Any failure, including restore/readback failure, blocks release. Before
+doing anything else, verify `openclaw gateway status` and restore the original LaunchAgent manually
+if necessary.
+
 ## Deploy
 
 Plugin is loaded by OpenClaw gateway from `plugins.load.paths` config. Current production-style setup should load this repository's `openclaw/` adapter and enable `plugins.entries.hent-ai-service-adapter` with the `hentAiService` connection config.
 
 After code changes or load-path changes: gateway restart/reload required (`openclaw gateway restart` from main session, NOT from Discord embedded session).
 
-Example plugin path: `/Users/iyen/projects/Hent-ai/openclaw` or the checked-out repo path currently used by the gateway.
+Example plugin path: `<repo>/openclaw`, resolved to the checked-out repository path currently used by the gateway.
 
 Do not use the old `plugins.entries.emotion-image` OpenClaw config entry for current service-adapter installs.
 
@@ -180,7 +259,11 @@ For Discord threads, repeat the mapping for the thread id if replies are deliver
 
 ### Validate attachment path
 
-Use a real assistant final reply and then check Discord readback for non-empty `attachments`. Direct/proactive `message.send` and fallback cron delivery can bypass the OpenClaw `reply_payload_sending` hook and are not valid attachment E2E tests.
+Use the loopback E2E above for the release proof. A production-channel assistant reply plus Discord
+attachment readback is an optional deployment check only with explicit owner approval and confirmed
+external-send safety; it is not a substitute for the isolated exact-byte test. Direct/proactive
+`message.send` and fallback cron delivery can bypass `reply_payload_sending` and are not valid
+final-response attachment E2E tests.
 
 ## Incident Patterns
 
@@ -199,8 +282,9 @@ Use a real assistant final reply and then check Discord readback for non-empty `
 ### Path mismatch (2026-05-19)
 - Symptom: private mode on but default images shown
 - Cause: plugin imageDir pointed to old path, overrides saved to new path
-- Fix: unified to ~/projects/Hent-ai as SSOT
-- Prevention: after path changes, verify plugin's loaded imageDir in gateway logs
+- Fix: migrated the mapping/assets into service-owned storage
+- Prevention: verify the service channel mapping, storage key, `HENT_AI_ASSET_ROOT`, and returned
+  `/static` bytes; the OpenClaw adapter has no runtime `imageDir`
 
 ## Forbidden Actions
 

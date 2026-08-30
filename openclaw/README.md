@@ -2,7 +2,13 @@
 
 Minimal Hent-ai service adapter for OpenClaw.
 
-The adapter does not classify emotions, scan manifests, read profile databases, generate images, or call Discord directly. It validates service configuration, forwards OpenClaw final assistant reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`, `sensitiveMedia`, `channelData`). In OpenClaw-hosted mode, text delivery remains owned by OpenClaw and uses host send APIs; in standalone local mode, the Hent-ai service can own Discord REST polling and conversation delivery.
+The adapter does not classify emotions, scan manifests, read profile databases, generate images,
+or call Discord directly. It validates service configuration, forwards OpenClaw final assistant
+reply context plus optional group-chat turns to the Hent-ai HTTP service, validates service
+responses, and returns OpenClaw Stage-1 media (`mediaUrl`, optional `mediaUrls`, `caption`,
+`sensitiveMedia`, `channelData`). Text and media delivery remain owned by OpenClaw host APIs. The
+service owns policy, semantic asset routing, and static media; the deprecated
+`server-with-poller` composition is not a supported OpenClaw happy path.
 
 ## Configuration
 
@@ -145,35 +151,6 @@ Service-side conversation knobs (defaults are conservative) can be controlled by
 
 Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
 
-Standalone Discord polling is service-owned. Use `createHentAiServerWithPoller(...)` or deployment wiring that calls it, then configure:
-
-- `HENT_AI_DISCORD_POLLER_TOKEN` (falls back to `DISCORD_BOT_TOKEN`)
-- `HENT_AI_DISCORD_POLLER_CHANNELS` (comma-separated Discord channel IDs)
-- `HENT_AI_DISCORD_POLLER_BOT_USER_ID` (the bot user id; required for self-message evaluation)
-- `HENT_AI_DISCORD_POLLER_INTERVAL_MS` (default `15000`)
-- `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS` (default `60000`)
-- `HENT_AI_DISCORD_POLLER_LIMIT` (default `50`, capped at Discord's `100`)
-- `HENT_AI_DISCORD_POLLER_AUTO_START` (`false` disables automatic start)
-
-Existing service deployments that already expose `HENT_AI_DISCORD_TOKEN` and `HENT_AI_WATCH_CHANNELS` continue to work as fallback names. The explicit `HENT_AI_DISCORD_POLLER_*` names win when both are set.
-
-The standalone service poller separates intake from evaluation:
-
-- every new human Discord message is recorded immediately through the conversation intake path;
-- every new self-bot Discord message is recorded immediately as an assistant turn and queued as the latest evaluation candidate for that channel;
-- evaluation runs on `HENT_AI_DISCORD_POLLER_EVALUATION_INTERVAL_MS`, not once per incoming message, and delivers/commits a nudge only when the periodic evaluation allows it.
-
-Live Discord REST verification is opt-in because it needs a real bot token and channel:
-
-```bash
-cd service
-HENT_AI_DISCORD_POLLER_TOKEN=... \
-HENT_AI_DISCORD_POLLER_CHANNELS=123456789012345678 \
-npm run verify:discord-rest
-```
-
-To verify real sends as well, set `HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT` to the exact message body to post.
-
 The OpenClaw adapter intentionally contains no fallback classifier, no local asset selection, no manifest scanning, no `shared/db` access, no `@hent-ai/generate` calls, no Discord token, and no direct `discord.com` REST calls.
 
 Real image generation and LLM image/media calls are not invoked from OpenClaw tests; they are mocked or not reached in adapter contracts.
@@ -195,6 +172,34 @@ rg -n "detectEmotion|EMOTION_RULES|@hent-ai/generate|discord\.com/api|ProfileDat
 ```
 
 Expected result for runtime adapter files: no adapter-owned classifier, generate import, direct Discord REST call, profile DB read, or manifest scan. Test fixtures may mention legacy terms only when asserting they are absent or superseded.
+
+## Real local OpenClaw E2E
+
+From the repository root, the release E2E is:
+
+```bash
+node scripts/e2e-hent-openclaw.mjs
+```
+
+This is not a casual smoke command. It is intended for the documented local macOS topology with
+the global OpenClaw entry at `/opt/homebrew/lib/node_modules/openclaw/dist/index.js`, a healthy
+LaunchAgent gateway on `127.0.0.1:18789`, and this checkout already loaded as
+`hent-ai-service-adapter`. Do not run it while the gateway has active external work or if those
+preconditions are absent.
+
+The harness first proves the complete flow in a disposable child gateway: disposable `HOME`,
+state, workspace, config, SQLite DB, semantic assets, deterministic local provider/verifier, and
+loopback outbound adapter. It checks final text, exact static media bytes, pre-reply media, watcher
+chunks, and commit state. It then temporarily boots out the existing LaunchAgent and occupies the
+same port with another disposable configuration. That phase disables ambient/pre-reply/watcher
+features and permits only the loopback QA channel, local provider, local Hent service, and the two
+checked-out plugins. Credentials are scrubbed, no MCP is configured, and logs must contain no MCP
+or non-loopback HTTP URL.
+
+The `finally` path stops the foreground gateway, bootstraps the original LaunchAgent, waits for a
+healthy connectivity probe, and proves the original config bytes/mode, LaunchAgent plist hash,
+state inventory, and checkout adapter source are unchanged/restored. A failure in restoration is
+a failed E2E and requires operator attention before any further gateway work.
 
 
 ## Current OpenClaw Setup Checklist

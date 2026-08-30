@@ -66,7 +66,6 @@ Service-owned responsibilities:
    - Attach service-returned media to the outgoing payload.
    - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
    - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
-   - In standalone local service mode, Discord readback and watcher delivery may be owned by the Hent-ai service poller instead; this does not move Discord REST logic into the OpenClaw adapter.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**
@@ -78,7 +77,9 @@ Current server code references:
 - `service/src/server.ts` — service HTTP endpoints, final-response verdict route, channel/profile policy integration.
 - `service/src/verifier.ts` — final-response verifier provider contract.
 - `service/src/db.ts` — service profile/channel/verifier state.
-- `service/src/final-response-routes.ts` — V1 final-verdict/media contract versions and finite verifier cache expiry.
+- `service/src/final-response-use-case.ts` — coarse verifier decision followed by semantic media routing.
+- `service/src/final-response-routes.ts` — V1 final-verdict/media HTTP contract and input sanitization.
+- `service/src/semantic-assets/` — strict tags, deterministic vectors/cosine routing, and DB repository.
 - `service/src/watcher-core.ts` and `service/src/watcher-adapter.ts` — watcher state and delivery gating.
 - `openclaw/index.ts` — thin OpenClaw adapter registration and service delegation.
 - `openclaw/README.md` — adapter setup and E2E verification contract.
@@ -146,8 +147,31 @@ Generation responsibilities:
 - support limited regeneration through shared emotion names;
 - own its asset-set manifest helper under `generate/src/asset-manifest.ts`;
 - resize/reference-limit inputs and optionally rephrase prompts when a caller provides a rephrase provider.
+- for the semantic corpus, execute the deterministic 100-item/ten-batch plan with immutable
+  candidates, receipts, content-hash reservations, item-level recovery, actual-pixel visual review,
+  and injected LLM/vision tagging;
+- stage manifest activation only after all accepted images and tags pass complete verification.
 
 It must not define independent profile DB semantics or import OpenClaw runtime internals.
+
+### Affect asset contract
+
+At generation time a vision-capable LLM assigns every accepted image a strict `VisualAffectV2`
+vector from its actual pixels. At response time the verifier assigns the completed response a
+`ResponseAffectV2` vector in the same 24-dimensional `AffectSpaceV2`. The service considers every
+image in the enabled channel's mapped V2 set, computes weighted Euclidean distance, and randomly
+selects among exact-distance ties. A legacy coarse emotion remains optional compatibility metadata
+and does not restrict V2 candidates.
+
+V2 mode is all-or-nothing for a mapped set. Missing, malformed, incompatible, hash-stale, partial,
+or tag/vector-mismatched metadata leaves the set on the safe legacy fallback path. OpenClaw never
+sees tags or vectors and never reranks media.
+
+Generated pools and their live manifest are external deployment data under `HENT_AI_ASSET_ROOT`,
+not checked-in repository assets. A 100-image pool is activated only after independent pixel review,
+pixel-only LLM/vision tags, hash uniqueness, external-manifest verification, DB import, channel
+mapping readback, and live byte-level verification. Provenance records technical inputs and hashes
+but does not assert copyright ownership, license scope, releases, or downstream rights.
 
 ## Current accepted profile architecture
 

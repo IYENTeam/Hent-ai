@@ -1,4 +1,4 @@
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { ServiceDatabase } from "./db.js";
 import { createHentAiServer, listen, type HentAiServerOptions } from "./server.js";
 import { createFinalResponseVerifierFromConfig, loadVerifierProviderConfigFromEnv } from "./verifier.js";
@@ -8,6 +8,7 @@ export type ApiServiceConfig = {
   readonly token: string;
   readonly port: number;
   readonly hostname: string;
+  readonly assetRoot: string;
 };
 
 export type ApiService = {
@@ -21,7 +22,8 @@ export function loadApiServiceConfig(env: Env = process.env): ApiServiceConfig {
   const token = required(env.HENT_AI_SERVICE_TOKEN, "HENT_AI_SERVICE_TOKEN");
   const port = positivePort(env.HENT_AI_SERVICE_PORT);
   const hostname = env.HENT_AI_SERVICE_HOST?.trim() || "127.0.0.1";
-  return { dbPath, token, port, hostname };
+  const assetRoot = env.HENT_AI_ASSET_ROOT?.trim() || fileURLToPath(new URL("../../assets", import.meta.url));
+  return { dbPath, token, port, hostname, assetRoot };
 }
 
 /** API-only composition. It never imports or starts the Discord participant worker. */
@@ -38,7 +40,7 @@ export function createApiService(options: {
   return {
     async start() {
       const db = createDatabase(options.config.dbPath);
-      const server = createServer({ db, token: options.config.token, verifier: options.verifier });
+      const server = createServer({ db, token: options.config.token, assetRoot: options.config.assetRoot, verifier: options.verifier });
       try {
         const binding = await listenServer(server, options.config.port, options.config.hostname);
         return {

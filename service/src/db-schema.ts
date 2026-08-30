@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { ADAPTIVE_SCHEMA_SQL } from "./db-schema-adaptive.js";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS assets (
   storage_object_id INTEGER NOT NULL REFERENCES storage_objects(id) ON DELETE CASCADE,
   content_hash TEXT NOT NULL,
   metadata_json TEXT,
+  semantic_tags_json TEXT,
+  semantic_vector_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(asset_set_id, emotion, filename)
@@ -199,6 +201,12 @@ export function initializeServiceSchema(db: Database.Database, appliedAt: string
   }
   if (!columnExists(db, "channel_settings", "cron_enabled")) {
     db.exec("ALTER TABLE channel_settings ADD COLUMN cron_enabled INTEGER CHECK (cron_enabled IN (0, 1))");
+  }
+  if (!columnExists(db, "assets", "semantic_tags_json")) {
+    db.exec("ALTER TABLE assets ADD COLUMN semantic_tags_json TEXT");
+  }
+  if (!columnExists(db, "assets", "semantic_vector_json")) {
+    db.exec("ALTER TABLE assets ADD COLUMN semantic_vector_json TEXT");
   }
   for (const migration of [
     ["conversation_archive_batches", "source_event_ids_json", "TEXT NOT NULL DEFAULT '[]'"],

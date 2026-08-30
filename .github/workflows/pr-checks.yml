@@ -113,7 +113,7 @@ jobs:
           }
 
           # Check if configSchema changed (potential breaking for existing users)
-          if echo "$CHANGED" | grep -q "openclaw.plugin.json"; then
+          if echo "$CHANGED" | grep -Fxq "openclaw/openclaw.plugin.json"; then
             OWNER_GATE_REQUIRED=1
             if ! require_owner_review "Plugin manifest changed. Verify backward compatibility of configSchema."; then
               exit 1
@@ -121,7 +121,7 @@ jobs:
           fi
 
           # Check if entry point signature changed
-          if echo "$CHANGED" | grep -q "openclaw/index.ts"; then
+          if echo "$CHANGED" | grep -Fxq "openclaw/index.ts"; then
             OWNER_GATE_REQUIRED=1
             if ! require_owner_review "Plugin entry point changed. Ensure definePluginEntry contract is preserved."; then
               exit 1

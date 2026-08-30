@@ -4,11 +4,17 @@ Hent-ai's live OpenClaw integration is service-owned. After the full service ada
 
 ## Canonical ownership
 
-- `service/` owns final-response verdict selection, verifier/cache state, channel policy, profile/channel mappings, asset lookup, watcher state, and standalone Discord readback/delivery when local polling is enabled.
+- `service/` owns final-response verdict selection, verifier/cache state, channel policy,
+  profile/channel mappings, semantic asset lookup/ranking, watcher state, storage, and static media.
 - `openclaw/` is a thin OpenClaw adapter. It validates config, forwards final assistant reply context to the service, and attaches service-returned Stage-1 media to the outgoing payload.
 - `shared/` is the contract layer for definitions and fixtures that must be reused across surfaces.
 - `hermes/` is a compatibility adapter. It may keep lightweight rules only where Hermes cannot call the service yet, but those rules must be treated as compatibility mirrors, not a new source of truth.
 - There is no current client surface. The former Cursor client was removed (commit `a3b4248`); if any client surface is revived it must not be documented as a canonical server/profile runtime.
+
+The supported topology is the API-only service plus the thin OpenClaw adapter. The former
+`server-with-poller` composition remains covered only as legacy regression code and is not a
+supported deployment or fallback happy path. The optional ambient participant, when enabled, is a
+separate service worker as defined by ADR-0001.
 
 ## Discord ambient worker gate
 
@@ -35,10 +41,12 @@ PR #99 is the reference case: it started as a useful audit repro, but after the 
 | --- | --- |
 | OpenClaw adapter code | OpenClaw tests plus proof that `openclaw/` remains service-thin: no local classifier, no local asset/profile lookup, no direct Discord REST. |
 | Service verdict/verifier changes | Service verifier/service tests, finite verifier-cache expiry evidence, and a request/response fixture or contract version for `/v1/final-response/verdict`. |
+| Affect routing/tags/vector changes | Strict `VisualAffectV2`/`ResponseAffectV2` parsing, shared dimension order and weights, full mapped-set nearest-distance evidence, random equal-distance tie tests, and all-or-nothing legacy fallback tests. |
 | Watcher behavior | Watcher core/service tests covering state lifetime, dedup/cooldown, self-nudge prevention, and scope/thread handling. |
 | Hermes compatibility rules | Hermes tests plus parity evidence against `shared/` fixtures or an explicit documented difference. |
 | Shared classifier/fixture changes | Cross-surface fixture updates where practical, including Korean, English, mixed-language, progress, apology, uncertainty, greeting, and noisy media-tag cases. `tests/fixtures/emotion-contract-v1.json` is the current fixture. |
 | Asset/manifest/profile DB mutations | Diff/readback evidence; DB migrations require backup or reversible plan. |
+| Affect corpus generation/activation | One request per planned image, immutable candidate/review evidence, hash reservations and crash recovery, pixel-only LLM/vision tags with SHA provenance, 100 unique final hashes, external-store verification, DB/channel readback, and live byte verification. Provenance must not be presented as a rights grant. |
 | Live config/restart/deployment | Owner approval, active-work inventory, config diff/validation, one restart/reload attempt, health check, E2E/readback, and error-log grep. |
 
 ## Release-gate interpretation
@@ -50,7 +58,17 @@ Changeset Validation is an owner gate, not a nuisance check. If it fails because
 
 CI green does not override this gate. Contract changes can pass tests while still pulling the architecture toward the wrong ownership boundary.
 
-`node scripts/service-owned-boundary-check.mjs` is part of the local release gate. It blocks an OpenClaw adapter package that grows beyond the thin runtime surface, an OpenClaw `tsconfig` that re-includes legacy local runtime modules, or a generate package that imports OpenClaw asset-manifest internals.
+`node scripts/release-gate.mjs` is the Node.js 22 local release gate. In addition to the boundary,
+package, and type checks, it runs the complete 100-image semantic verifier and the disposable-child
+plus restored-same-port real local OpenClaw E2E. The E2E may not be skipped when making a release
+claim. It must run only under the documented safety preconditions: no active external work,
+disposable HOME/state/config, loopback provider/channel/service, no MCP or external URL, and
+verified restoration of the original LaunchAgent/config/state. A host that cannot safely meet those
+conditions is release-blocked.
+
+`node scripts/service-owned-boundary-check.mjs` remains part of that gate. It blocks an OpenClaw
+adapter package that grows beyond the thin runtime surface, an OpenClaw `tsconfig` that re-includes
+legacy local runtime modules, or a generate package that imports OpenClaw asset-manifest internals.
 
 The repository PR template includes architecture-boundary checkboxes. Do not mark them complete unless the release gate and any needed owner-approved architecture decision are present.
 

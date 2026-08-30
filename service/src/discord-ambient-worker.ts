@@ -22,7 +22,7 @@ export type WorkerLogLevel = "info" | "warn" | "error";
 export type WorkerLogger = { readonly log: (level: WorkerLogLevel, event: string, fields: Readonly<Record<string, string | number | boolean>>) => void };
 export type DiscordAmbientWorkerConfig = {
   readonly dbPath: string; readonly botToken: string; readonly providerEndpoint: string; readonly providerToken: string; readonly providerModel: string;
-  readonly globalPersona?: string; readonly scopes: readonly DiscordParticipantScope[]; readonly pollIntervalMs: number;
+  readonly globalPersona?: string; readonly scopes: readonly DiscordParticipantScope[]; readonly pollIntervalMs: number; readonly providerTimeoutMs: number;
 };
 export type DiscordAmbientWorker = { readonly status: "disabled" | "running"; readonly stop: () => Promise<void>; readonly runOnce: () => Promise<void> };
 
@@ -51,9 +51,10 @@ export function loadDiscordAmbientWorkerConfig(env: Env = process.env): { readon
   const providerEndpoint = endpoint(env.HENT_AI_CONVERSATION_PROVIDER_ENDPOINT, diagnostics);
   const providerToken = required(env.HENT_AI_CONVERSATION_PROVIDER_TOKEN, "provider_token", diagnostics);
   const providerModel = required(env.HENT_AI_CONVERSATION_PROVIDER_MODEL, "provider_model", diagnostics);
-  const pollIntervalMs = positive(env.HENT_AI_DISCORD_PARTICIPANT_POLL_INTERVAL_MS, POLL_INTERVAL_MS, diagnostics);
+  const pollIntervalMs = positive(env.HENT_AI_DISCORD_PARTICIPANT_POLL_INTERVAL_MS, POLL_INTERVAL_MS, 1_000, "poll_interval", diagnostics);
+  const providerTimeoutMs = positive(env.HENT_AI_CONVERSATION_PROVIDER_TIMEOUT_MS, 10_000, 1_000, "provider_timeout", diagnostics);
   if (diagnostics.length > 0 || !startup.enabled || !dbPath || !botToken || !providerEndpoint || !providerToken || !providerModel) return { diagnostics };
-  return { config: { dbPath, botToken, providerEndpoint, providerToken, providerModel, globalPersona: env.HENT_AI_CONVERSATION_PERSONA?.trim() || undefined, scopes: startup.allowlist, pollIntervalMs }, diagnostics };
+  return { config: { dbPath, botToken, providerEndpoint, providerToken, providerModel, globalPersona: env.HENT_AI_CONVERSATION_PERSONA?.trim() || undefined, scopes: startup.allowlist, pollIntervalMs, providerTimeoutMs }, diagnostics };
 }
 
 export async function startDiscordAmbientWorker(env: Env = process.env, dependencies: DiscordAmbientWorkerDependencies = {}): Promise<DiscordAmbientWorker> {
@@ -70,7 +71,12 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   const store = createAdaptiveAmbientStore(db, clock);
   const holder = dependencies.holderId ?? randomUUID();
   const startupController = new AbortController();
-  const providerClient = (dependencies.createProviderClient ?? createOpenAiConversationProviderClient)({ endpoint: config.providerEndpoint, token: config.providerToken, model: config.providerModel, timeoutMs: 10_000 });
+  const providerClient = (dependencies.createProviderClient ?? createOpenAiConversationProviderClient)({
+    endpoint: config.providerEndpoint,
+    token: config.providerToken,
+    model: config.providerModel,
+    timeoutMs: config.providerTimeoutMs,
+  });
   const provider = createAdaptiveAmbientAppraisalProvider({ client: providerClient, model: config.providerModel });
   const archiveOwner = createDiscordAmbientArchiveOwner({
     store, holderId: holder, timer,
@@ -200,8 +206,28 @@ function leaseKey(scope: DiscordParticipantScope): string { return `discord-ambi
 function compareScope(a: DiscordParticipantScope, b: DiscordParticipantScope): number { return `${a.guildId}:${a.channelId}`.localeCompare(`${b.guildId}:${b.channelId}`); }
 function scopeFields(scope: DiscordParticipantScope, reason: string): Record<string, string> { return { guildId: scope.guildId, channelId: scope.channelId, reason }; }
 function required(value: string | undefined, reason: string, diagnostics: string[]): string | undefined { const normalized = value?.trim(); if (!normalized) diagnostics.push(`missing_${reason}`); return normalized; }
-function endpoint(value: string | undefined, diagnostics: string[]): string | undefined { const normalized = required(value, "provider_endpoint", diagnostics); if (!normalized) return undefined; try { const parsed = new URL(normalized); if (parsed.protocol !== "https:") throw new Error(); return parsed.toString(); } catch { diagnostics.push("invalid_provider_endpoint"); return undefined; } }
-function positive(value: string | undefined, fallback: number, diagnostics: string[]): number { if (!value?.trim()) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1000) { diagnostics.push("invalid_poll_interval"); return fallback; } return parsed; }
+function endpoint(value: string | undefined, diagnostics: string[]): string | undefined {
+  const normalized = required(value, "provider_endpoint", diagnostics);
+  if (!normalized) return undefined;
+  try {
+    const parsed = new URL(normalized);
+    const loopbackHttp = parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]");
+    if (parsed.protocol !== "https:" && !loopbackHttp) throw new Error();
+    return parsed.toString();
+  } catch {
+    diagnostics.push("invalid_provider_endpoint");
+    return undefined;
+  }
+}
+function positive(value: string | undefined, fallback: number, minimum: number, reason: string, diagnostics: string[]): number {
+  if (!value?.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum) {
+    diagnostics.push(`invalid_${reason}`);
+    return fallback;
+  }
+  return parsed;
+}
 function disabled(): DiscordAmbientWorker { return { status: "disabled", runOnce: async () => undefined, stop: async () => undefined }; }
 const nativeTimer: Timer = { setInterval: (callback, ms) => setInterval(callback, ms), clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout) };
 const jsonLogger: WorkerLogger = { log: (level, event, fields) => console[level](JSON.stringify({ event, ...fields })) };

@@ -6,6 +6,8 @@ import { ServiceDatabase } from "./db.js";
 import { importAssets } from "./importer.js";
 import { loadServiceConfig, redactBearerToken } from "./server.js";
 import { runNextGenerationJob } from "./generation-worker.js";
+import { SEMANTIC_ASSET_TAGS_SCHEMA_VERSION, type SemanticAssetTagsV1 } from "./semantic-assets/contracts.js";
+import { semanticVectorForTags } from "./semantic-assets/vector.js";
 import { request, tempDir, token, withServer, writeFixtureAssets } from "./service-test-helpers.js";
 
 describe("service auth, health, and config", () => {
@@ -231,6 +233,72 @@ describe("runtime and job APIs", () => {
       expect(await verdict.json()).toMatchObject({ verdict: { emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict", media: { filename: "neutral.png", contentType: "image/png", url: "/static/sets/gothic-v1/neutral.png" } } });
       expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
     }, { assetRoot: root, verifier: { verify: async () => ({ emotion: "neutral", confidence: 0.9, reason: "remote_test_verdict" }) } });
+  });
+
+  it("routes final-response media semantically inside the verified coarse emotion", async () => {
+    const db = new ServiceDatabase();
+    db.upsertAssetSet({ id: "semantic", name: "Semantic" });
+    const candidates: Array<{ filename: string; tags: SemanticAssetTagsV1 }> = [
+      {
+        filename: "a-quiet.png",
+        tags: {
+          schemaVersion: SEMANTIC_ASSET_TAGS_SCHEMA_VERSION,
+          emotion: "neutral",
+          gesture: "hands resting",
+          expression: "calm gaze",
+          background: "quiet library",
+          clothing: "velvet dress",
+          composition: "still portrait",
+          lighting: "moonlight",
+          mood: "contemplative",
+        },
+      },
+      {
+        filename: "b-rooftop.png",
+        tags: {
+          schemaVersion: SEMANTIC_ASSET_TAGS_SCHEMA_VERSION,
+          emotion: "neutral",
+          gesture: "waving",
+          expression: "bright smile",
+          background: "rooftop",
+          clothing: "leather jacket",
+          composition: "dynamic portrait",
+          lighting: "daylight",
+          mood: "celebratory",
+        },
+      },
+    ];
+    for (const candidate of candidates) {
+      const storageKey = `sets/semantic/${candidate.filename}`;
+      const storageObjectId = db.upsertStorageObject({
+        storageKey,
+        objectUrl: `/static/${storageKey}`,
+        contentHash: `${candidate.filename}-hash`,
+        contentType: "image/png",
+        sizeBytes: 1,
+        provenance: "test",
+      });
+      db.upsertAsset({
+        id: candidate.filename,
+        assetSetId: "semantic",
+        emotion: "neutral",
+        filename: candidate.filename,
+        storageObjectId,
+        contentHash: `${candidate.filename}-hash`,
+        semanticTags: candidate.tags,
+        semanticVector: semanticVectorForTags(candidate.tags),
+      });
+    }
+    db.setChannelMapping("semantic-channel", { enabled: true, assetSetId: "semantic" });
+
+    await withServer(db, async (baseUrl) => {
+      const response = await request(baseUrl, "/v1/final-response/verdict", {
+        method: "POST",
+        body: JSON.stringify({ context: { channelId: "semantic-channel", content: "Waving with a bright smile on the rooftop in a leather jacket, dynamic daylight and celebratory." } }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ verdict: { emotion: "neutral", media: { filename: "b-rooftop.png" } } });
+    }, { verifier: { verify: async () => ({ emotion: "neutral", confidence: 0.9, reason: "coarse" }) } });
   });
 
   it("serves only DB-registered static image objects from the asset root", async () => {

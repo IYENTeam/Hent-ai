@@ -15,6 +15,7 @@
     ]
   },
   "scripts": {
+    "setup:affect": "node scripts/codex-affect-setup.mjs",
     "release:check": "node scripts/release-gate.mjs"
   }
 }

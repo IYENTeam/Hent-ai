@@ -41,6 +41,8 @@ const forbiddenRuntimeTokens = [
   "channel-filter",
   "date-mode",
   "migration",
+  "loadAdapter(\"discord\")",
+  "loadAdapter('discord')",
 ];
 for (const token of forbiddenRuntimeTokens) {
   if (runtimeSurface.includes(token)) fail(`openclaw/index.ts must not contain service-owned token: ${token}`);

@@ -11,8 +11,9 @@ import {
 } from "./adaptive-ambient-contracts.js";
 
 type AmbientEvidenceInput = {
-  readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
+  readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo"> & Partial<Pick<DiscordInboundMessage, "content">>;
   readonly botUserId: string;
+  readonly addressAliases?: readonly string[];
   readonly roster: DiscordMembershipSnapshot;
   readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
@@ -137,6 +138,8 @@ describe("adaptive ambient drive and evidence", () => {
 
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [botUserId], replyTo: null } })).toBe(1);
     expect(api.calculateAmbientEvidenceWeight({ ...base, message: { mentions: [], replyTo: { messageId: "reply-1", authorId: botUserId } } })).toBe(1);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, message: { content: "  Hent, are you there?", mentions: [], replyTo: null }, addressAliases: ["hent"] })).toBe(1);
+    expect(api.calculateAmbientEvidenceWeight({ ...base, message: { content: "hentertainment", mentions: [], replyTo: null }, addressAliases: ["hent"] })).toBe(0);
     expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1", "human-2"] })).toBe(0.5);
     expect(api.calculateAmbientEvidenceWeight({ ...base, activeHumanIds: ["human-1"] })).toBe(0.25);
     expect(api.calculateAmbientEvidenceWeight(base)).toBe(0);

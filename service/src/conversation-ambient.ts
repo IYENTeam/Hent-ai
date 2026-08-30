@@ -16,8 +16,9 @@ const ROSTER_FRESHNESS_MS = 5 * 60 * 1000;
 const DRAW_DENOMINATOR = 2 ** 53;
 
 export type AmbientEvidenceInput = {
-  readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo">;
+  readonly message: Pick<DiscordInboundMessage, "mentions" | "replyTo"> & Partial<Pick<DiscordInboundMessage, "content">>;
   readonly botUserId: string;
+  readonly addressAliases?: readonly string[];
   readonly roster: DiscordMembershipSnapshot;
   readonly activeHumanIds: readonly string[];
   readonly nowMs: number;
@@ -58,14 +59,26 @@ export function classifyAmbientAppraisal(result: AmbientAppraisalParseResult): "
 }
 
 export function isExplicitAmbientAddress(
-  message: Pick<DiscordInboundMessage, "mentions" | "replyTo">,
+  message: Pick<DiscordInboundMessage, "mentions" | "replyTo"> & Partial<Pick<DiscordInboundMessage, "content">>,
   botUserId: string,
+  addressAliases: readonly string[] = [],
 ): boolean {
-  return message.mentions.includes(botUserId) || message.replyTo?.authorId === botUserId;
+  if (message.mentions.includes(botUserId) || message.replyTo?.authorId === botUserId) return true;
+  const content = message.content?.trimStart().toLocaleLowerCase("en-US") ?? "";
+  return addressAliases.some((alias) => {
+    const normalized = alias.trim().toLocaleLowerCase("en-US");
+    if (!normalized) return false;
+    const candidates = /[가-힣]$/u.test(normalized) ? [normalized, `${normalized}아`, `${normalized}야`] : [normalized];
+    return candidates.some((candidate) => {
+      if (!content.startsWith(candidate)) return false;
+      const remainder = content.slice(candidate.length);
+      return remainder.length === 0 || /^[\s,!?~.…]/u.test(remainder);
+    });
+  });
 }
 
 export function calculateAmbientEvidenceWeight(input: AmbientEvidenceInput): number {
-  if (isExplicitAmbientAddress(input.message, input.botUserId)) return 1;
+  if (isExplicitAmbientAddress(input.message, input.botUserId, input.addressAliases)) return 1;
   if (!isFreshCompleteRoster(input.roster, input.nowMs)) return 0;
 
   const activeHumanCount = new Set(input.activeHumanIds).size;

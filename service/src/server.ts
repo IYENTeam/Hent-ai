@@ -7,7 +7,11 @@ import type { ConversationContextProvider } from "./conversation-evaluate-contex
 import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
 import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
-import { channelIdFromHookBody, finalVerdictForBody, mediaResponseForChannel } from "./final-response-routes.js";
+import { channelIdFromHookBody, finalResponseRequestFromBody, mediaResponseForChannel } from "./final-response-routes.js";
+import { createFinalResponseUseCase } from "./final-response-use-case.js";
+import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
+import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
+import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
 import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
 
 export type ServiceConfig = {
@@ -22,6 +26,7 @@ export type HentAiServerOptions = {
   token: string;
   assetRoot?: string;
   verifier: FinalResponseVerifier;
+  semanticAssetRouter?: SemanticAssetRouter;
   conversationConfig?: ConversationServiceConfig;
   conversationContextProvider?: ConversationContextProvider;
   conversationRuntime?: ConversationRuntime;
@@ -96,6 +101,9 @@ function serveStatic(db: ServiceDatabase, assetRoot: string | undefined, pathnam
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const semanticAssetRouter = options.semanticAssetRouter
+    ?? new DeterministicSemanticAssetRouter(new ServiceDatabaseSemanticAssetRepository(options.db));
+  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, verifier: options.verifier, assetRouter: semanticAssetRouter });
   const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
     ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
   });
@@ -119,7 +127,7 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       }
       if (req.method === "POST" && url.pathname === "/v1/final-response/verdict") {
         const body = await readJsonBody(req);
-        const result = await finalVerdictForBody(options.db, options.verifier, body);
+        const result = await finalResponseUseCase.execute(finalResponseRequestFromBody(body));
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
         return;
       }

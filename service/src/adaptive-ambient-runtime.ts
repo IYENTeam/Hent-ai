@@ -88,7 +88,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           audience: {
             rosterComplete: roster.complete,
             activeHumanCount: activeHumanIds.length,
-            currentDrive: state?.drive ?? 0.5,
+            currentDrive: state?.drive ?? DEFAULT_AMBIENT_DRIVE,
             budgetRemaining: budgetRemaining(options.store, options.scope, budgetLimit, now),
           },
         }, { signal: activeWork.signal });
@@ -112,6 +112,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         state: state && { ...state, scope: options.scope },
         message: context.event,
         botUserId: options.botUserId,
+        addressAliases: ambientSettings.ambientAddressAliases,
         roster,
         activeHumanIds,
         nowMs: now,
@@ -237,7 +238,7 @@ function budgetRemaining(store: AdaptiveAmbientStore, scope: Scope, limit: numbe
 }
 function nextBudget(store: AdaptiveAmbientStore, scope: Scope, now: number) { const windowStartMs = hourStart(now); const current = store.budget(scope, BUDGET_KEY); return { key: BUDGET_KEY, count: current?.windowStartMs === windowStartMs ? current.count + 1 : 1, windowStartMs }; }
 function hourStart(now: number): number { return Math.floor(now / 3_600_000) * 3_600_000; }
-function planFor(workId: string, scope: Scope, eventId: string, chunks: readonly string[]) { return { id: `ambient:${scope.guildId}:${scope.channelId}:${eventId}`, workId, chunks: chunks.map((content, index) => ({ content, nonce: createHash("sha256").update(`ambient-plan-v1:${scope.guildId}:${scope.channelId}:${eventId}:${index}`).digest("hex").slice(0, 32) })) }; }
+function planFor(workId: string, scope: Scope, eventId: string, chunks: readonly string[]) { return { id: `ambient:${scope.guildId}:${scope.channelId}:${eventId}`, workId, chunks: chunks.map((content, index) => ({ content, nonce: createHash("sha256").update(`ambient-plan-v1:${scope.guildId}:${scope.channelId}:${eventId}:${index}`).digest("hex").slice(0, 24) })) }; }
 function personaFor(db: ServiceDatabase, profileId: string | null, globalPersona: string | undefined): string { return db.getProfile(profileId ?? "")?.soulSnippet?.trim() || globalPersona?.trim() || GENERIC_CONVERSATION_PERSONA; }
 function relationship(row: { user_id: string; rapport: number; familiarity: number; notes_json: string }): RelationshipContext { return { userId: row.user_id, rapport: row.rapport, familiarity: row.familiarity, notes: parseStringList(row.notes_json) }; }
 function parseRecord(value: string): Record<string, unknown> { try { const parsed: unknown = JSON.parse(value); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}; } catch { return {}; } }

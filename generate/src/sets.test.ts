@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -82,6 +82,22 @@ describe("sets manifest handling", () => {
         },
       }), "utf-8");
       await expect(runSets(["switch", "good", "--dir", assetDir])).rejects.toThrow("Invalid manifest filename");
+    } finally {
+      await rm(assetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("registers safe nested emotion directories recursively and ignores hidden candidate evidence", async () => {
+    const assetDir = await mkdtemp(join(tmpdir(), "hent-ai-sets-recursive-"));
+    try {
+      await mkdir(join(assetDir, "sets", "nested", "happy"), { recursive: true });
+      await mkdir(join(assetDir, "sets", "nested", ".candidates", "000"), { recursive: true });
+      await writeFile(join(assetDir, "sets", "nested", "happy", "variant-001.png"), "accepted");
+      await writeFile(join(assetDir, "sets", "nested", ".candidates", "000", "v001.png"), "candidate");
+
+      await runSets(["register", "nested", "--dir", assetDir]);
+      const manifest = JSON.parse(await readFile(join(assetDir, "manifest.json"), "utf8"));
+      expect(manifest.sets.nested.emotions).toEqual({ happy: ["happy/variant-001.png"] });
     } finally {
       await rm(assetDir, { recursive: true, force: true });
     }

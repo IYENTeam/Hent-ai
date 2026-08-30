@@ -42,6 +42,7 @@ export function createOpenAiConversationProviderClient(config: OpenAiConversatio
       else options.signal?.addEventListener("abort", onCallerAbort, { once: true });
       const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
       try {
+        const model = options.model ?? config.model;
         const response = await fetchImpl(endpoint, {
           method: "POST",
           headers: {
@@ -51,7 +52,8 @@ export function createOpenAiConversationProviderClient(config: OpenAiConversatio
           },
           body: JSON.stringify({
             ...(config.extraBody ?? {}),
-            model: options.model ?? config.model,
+            model,
+            ...(model === "gpt-5.6-sol" ? { reasoning_effort: "medium" } : {}),
             messages: [
               { role: "system", content: prompt.system },
               { role: "user", content: prompt.user },

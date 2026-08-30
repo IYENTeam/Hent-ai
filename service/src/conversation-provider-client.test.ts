@@ -36,11 +36,15 @@ describe("OpenAI-compatible conversation provider client", () => {
     }) as typeof fetch;
 
     expect(conversationProviderClientApi()).not.toBeNull();
-    const completion = await createClient(fetchImpl).complete(prompt, { model: "ambient-override" });
+    const completion = await createClient(fetchImpl).complete(prompt, { model: "gpt-5.6-sol" });
     expect(url?.toString()).toBe("https://provider.invalid/v1/chat/completions");
     expect(request?.method).toBe("POST");
     expect(request?.headers).toMatchObject({ "content-type": "application/json", authorization: "Bearer test-provider-token-must-not-leak" });
-    expect(JSON.parse(String(request?.body))).toEqual({ model: "ambient-override", messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }] });
+    expect(JSON.parse(String(request?.body))).toEqual({
+      model: "gpt-5.6-sol",
+      reasoning_effort: "medium",
+      messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
+    });
     expect(completion).toEqual({ kind: "ok", content: "{\"accepted\":true}" });
   });
 
