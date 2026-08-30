@@ -14,6 +14,8 @@ Expected layout:
 
 The external manifest owns runtime set metadata and `affectAssets`. The repository owns schemas, migration code, tests, and documentation only.
 
+For a new Codex-generated set, `npm run setup:affect -- ... --apply` automates this sequence and keeps its resumable state in a sibling `setup/` directory. Read [codex-image-generation-and-tagging.md](codex-image-generation-and-tagging.md) for generation-time tagging and the terminal verification contract.
+
 ## Migration Sequence
 
 1. Resolve the source and target to absolute paths and verify they differ.

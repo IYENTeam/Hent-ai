@@ -46,7 +46,23 @@ legacy path; incomplete metadata never silently activates mixed affect behavior.
 
 ## Getting Started
 
-> **🤖 Agent setup:** If you're using an AI agent (OpenClaw, Claude Code, Codex, etc.), tell it to read [`SKILL.md`](./SKILL.md) in this repo. The agent will walk you through the entire setup interactively.
+### One-command Codex setup
+
+Generate a 100-image pool, tag every accepted image from its pixels in `VisualAffectV2`, install it into external local storage, import it, and run service/OpenClaw verification with one command:
+
+```bash
+codex login
+npm run setup:affect -- \
+  --character "adult gothic assistant with burgundy hair and magenta eyes" \
+  --set-id gothic-affect-v4 \
+  --reference /absolute/path/to/reference.png \
+  --channel 123456789012345678 \
+  --apply
+```
+
+The generated pool, tags, manifests, setup state, and backups stay outside Git under the configured `HENT_AI_ASSET_ROOT` and its sibling setup directory. `--apply` explicitly approves paid Codex generation and vision tagging; omit it for a free preflight. Interrupted runs resume from immutable per-image receipts when the same command is run again. See [`SKILL.md`](./SKILL.md) and the [Codex generation/tagging contract](./references/codex-image-generation-and-tagging.md).
+
+> **Agent setup:** You can also tell Codex to read [`SKILL.md`](./SKILL.md) and set up a character pool. The skill uses the same one-shot entrypoint and only pauses for a real missing prerequisite.
 
 Choose your platform:
 
@@ -55,9 +71,9 @@ Choose your platform:
 
 ## Creating Emotion Images
 
-You need 6 images that visually represent each emotion. There are three ways to set them up:
+New installations should use the 100-image `VisualAffectV2` setup above. The six-image commands below remain available for legacy coarse-emotion sets.
 
-- **Agent-driven setup (easiest)** — Tell your AI agent to read [`SKILL.md`](./SKILL.md) in this repo. It should inspect the docs/config, infer your goal from context, and create/install the needed character emotion assets without forcing a fixed questionnaire.
+- **Agent-driven V2 setup (recommended)** — Tell Codex to read [`SKILL.md`](./SKILL.md), or run `npm run setup:affect -- ... --apply` directly.
 - **CLI** — Run `hent-ai generate` from the command line (Option A below).
 - **Manual** — Create images yourself with any tool (Option B below).
 

@@ -43,6 +43,12 @@ const checks = [
     args: ["scripts/service-owned-boundary-check.mjs"],
   },
   {
+    label: "Codex affect setup entrypoint",
+    cwd: ".",
+    command: "node",
+    args: ["--test", "scripts/codex-affect-setup.test.mjs"],
+  },
+  {
     label: "service focused verifier/poller/worker regression",
     cwd: "service",
     command: "npx",

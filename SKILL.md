@@ -9,11 +9,26 @@ Operate character images as deployment data, not repository content. Keep runtim
 
 Read [references/affect-space-v2.md](references/affect-space-v2.md) before changing tag generation or routing. Read [references/local-asset-store.md](references/local-asset-store.md) before moving, importing, activating, or deleting a set.
 
+## One-shot setup
+
+For a new or replacement image pool, read [references/codex-image-generation-and-tagging.md](references/codex-image-generation-and-tagging.md), then run the repository setup entrypoint. A single `--apply` invocation is the user's approval for paid generation and tagging:
+
+```bash
+npm run setup:affect -- \
+  --character "<stable character identity>" \
+  --set-id <target-set-id> \
+  --reference <approved-character-image> \
+  --channel <discord-channel-id> \
+  --apply
+```
+
+References and channels are optional and repeatable. Without `--apply`, perform only the free preflight. With `--apply`, let the spawned Codex run autonomously through generation, immediate pixel tagging, external migration, service import, restart, and E2E verification. Re-run the same command to resume immutable completed work after an external interruption. Do not replace this path with the legacy six-image generator.
+
 ## Workflow
 
 1. Inspect the live `HENT_AI_ASSET_ROOT`, manifest, channel mappings, database path, and service manager configuration. Never assume the repo's `assets/` directory is the active store.
-2. For new images, obtain user approval before invoking paid image generation. Use the approved character references with the built-in image generation tool, preserve identity, and vary gesture, expression, background, clothing, framing, and lighting. Do not add text or speech bubbles.
-3. Immediately after each image is generated, run a vision-capable LLM against the actual pixels and request the complete `VisualAffectV2` object. Do not expose the filename, planned emotion, or generation prompt to the tagger.
+2. For new images, obtain user approval before invoking paid image generation. The explicit `setup:affect --apply` invocation supplies that approval. Use Codex image generation with approved character references, preserve identity, and vary gesture, expression, background, clothing, framing, and lighting. Do not add text or speech bubbles.
+3. Immediately after each image is accepted, use Codex vision against the actual pixels and request the complete `VisualAffectV2` object. Do not expose the filename, planned emotion, generation prompt, directory, or batch position to the tagger.
 4. Bind the tag to the image SHA-256, model, timestamp, and prompt version. Treat tags as immutable; regenerate a tag when pixels change.
 5. Compile and validate the set, then run `affect-store` without `--apply`. Review file count, bytes, checksum, and target before applying.
 6. Back up the live SQLite database and service configuration. Copy to the external store, import the manifest, change only intended channel mappings, then switch `HENT_AI_ASSET_ROOT` and restart the service.

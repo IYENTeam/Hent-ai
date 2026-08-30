@@ -2,6 +2,22 @@
 
 Generate, pixel-tag, and migrate Hent-ai character image sets.
 
+## One-shot Codex setup
+
+For a new 100-image `VisualAffectV2` pool, use the repository-level entrypoint instead of composing the generation, tagging, migration, import, and E2E commands manually:
+
+```bash
+cd ..
+npm run setup:affect -- \
+  --character "<stable character identity>" \
+  --set-id <target-set-id> \
+  --reference /absolute/path/to/reference.png \
+  --channel <discord-channel-id> \
+  --apply
+```
+
+Omit `--apply` for a free preflight. The applied command launches Codex in an external writable setup directory, generates exactly 100 accepted images, tags each accepted image immediately from anonymous pixel input, resumes immutable receipts, migrates to `HENT_AI_ASSET_ROOT`, and performs available service/OpenClaw checks. See [`../references/codex-image-generation-and-tagging.md`](../references/codex-image-generation-and-tagging.md) for the complete contract.
+
 ## Install
 
 ```bash
