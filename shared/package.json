@@ -5,10 +5,12 @@
   "type": "module",
   "exports": {
     ".": "./emotions.ts",
+    "./affect": "./affect.ts",
     "./profile": "./profile.ts",
     "./db": "./db.ts"
   },
   "files": [
+    "affect.ts",
     "emotions.ts",
     "profile.ts",
     "db.ts"

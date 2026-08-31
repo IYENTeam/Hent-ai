@@ -1,68 +1,12 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { initializeServiceSchema } from "./db-schema.js";
-import { rowToJob, rowToProfile } from "./db-rows.js";
+import { prepareDatabasePath, secureDatabaseFiles } from "./db-file-security.js";
+import { rowToJob, rowToProfile, rowToStoredSemanticAssetCandidate } from "./db-rows.js";
+import type { AssetUpsertInput, ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
+
+export type { AssetUpsertInput, ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
 
 export { SCHEMA_VERSION } from "./db-schema.js";
-
-export type Profile = {
-  id: string;
-  name: string;
-  character: string | null;
-  soulSnippet: string | null;
-  model: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ProfileCreateInput = {
-  id: string;
-  name: string;
-  character?: string | null;
-  soulSnippet?: string | null;
-  model?: string | null;
-};
-
-export type ProfileUpdateInput = Partial<Omit<ProfileCreateInput, "id">>;
-
-export type ChannelMapping = {
-  channelId: string;
-  profileId: string | null;
-  mode: string | null;
-  enabled: boolean | null;
-  cronEnabled: boolean | null;
-  assetSetId: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-};
-
-export type StorageObjectInput = {
-  storageKey: string;
-  objectUrl: string;
-  contentHash: string;
-  contentType: string;
-  sizeBytes: number;
-  provenance: string;
-  localPath?: string | null;
-  metadata?: unknown;
-};
-
-export type GenerationJob = {
-  id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  request: unknown;
-  result: unknown | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type DiscordPollerState = {
-  channelId: string;
-  lastSeenMessageId: string;
-  updatedAt: string;
-};
 
 const PROFILE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
@@ -74,11 +18,14 @@ export class ServiceDatabase {
   readonly db: Database.Database;
 
   constructor(path = ":memory:") {
-    if (path !== ":memory:") mkdirSync(dirname(resolve(path)), { recursive: true });
+    if (path !== ":memory:") prepareDatabasePath(path);
     this.db = new Database(path);
     this.db.pragma("foreign_keys = ON");
     if (path !== ":memory:") this.db.pragma("journal_mode = WAL");
+    if (path !== ":memory:") this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("busy_timeout = 5000");
     this.initialize();
+    if (path !== ":memory:") secureDatabaseFiles(path);
   }
 
   close(): void {
@@ -91,34 +38,6 @@ export class ServiceDatabase {
 
   tableNames(): string[] {
     return this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => (row as { name: string }).name);
-  }
-
-  getDiscordPollerState(channelId: string): DiscordPollerState | null {
-    const row = this.db.prepare("SELECT channel_id, last_seen_message_id, updated_at FROM discord_poller_state WHERE channel_id = ?").get(channelId) as Record<string, unknown> | undefined;
-    return row
-      ? {
-        channelId: String(row.channel_id),
-        lastSeenMessageId: String(row.last_seen_message_id),
-        updatedAt: String(row.updated_at),
-      }
-      : null;
-  }
-
-  listDiscordPollerState(): DiscordPollerState[] {
-    return this.db.prepare("SELECT channel_id, last_seen_message_id, updated_at FROM discord_poller_state ORDER BY channel_id").all()
-      .map((row) => ({
-        channelId: String((row as Record<string, unknown>).channel_id),
-        lastSeenMessageId: String((row as Record<string, unknown>).last_seen_message_id),
-        updatedAt: String((row as Record<string, unknown>).updated_at),
-      }));
-  }
-
-  setDiscordPollerState(channelId: string, lastSeenMessageId: string): void {
-    const stamp = now();
-    this.db.prepare(`INSERT INTO discord_poller_state (channel_id, last_seen_message_id, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(channel_id) DO UPDATE SET last_seen_message_id = excluded.last_seen_message_id, updated_at = excluded.updated_at`)
-      .run(channelId, lastSeenMessageId, stamp);
   }
 
   listProfiles(): Profile[] {
@@ -236,12 +155,44 @@ export class ServiceDatabase {
     return (this.db.prepare("SELECT id FROM storage_objects WHERE storage_key = ?").get(input.storageKey) as { id: number }).id;
   }
 
-  upsertAsset(input: { id: string; assetSetId: string; emotion: string; filename: string; storageObjectId: number; contentHash: string; metadata?: unknown }): void {
+  upsertAsset(input: AssetUpsertInput): void {
     const stamp = now();
-    this.db.prepare(`INSERT INTO assets (id, asset_set_id, emotion, filename, storage_object_id, content_hash, metadata_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET asset_set_id = excluded.asset_set_id, emotion = excluded.emotion, filename = excluded.filename, storage_object_id = excluded.storage_object_id, content_hash = excluded.content_hash, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at`)
-      .run(input.id, input.assetSetId, input.emotion, input.filename, input.storageObjectId, input.contentHash, JSON.stringify(input.metadata ?? {}), stamp, stamp);
+    this.db.prepare(`INSERT INTO assets (id, asset_set_id, emotion, filename, storage_object_id, content_hash, metadata_json, semantic_tags_json, semantic_vector_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET asset_set_id = excluded.asset_set_id, emotion = excluded.emotion, filename = excluded.filename, storage_object_id = excluded.storage_object_id, content_hash = excluded.content_hash, metadata_json = excluded.metadata_json, semantic_tags_json = excluded.semantic_tags_json, semantic_vector_json = excluded.semantic_vector_json, updated_at = excluded.updated_at`)
+      .run(
+        input.id,
+        input.assetSetId,
+        input.emotion,
+        input.filename,
+        input.storageObjectId,
+        input.contentHash,
+        JSON.stringify(input.metadata ?? {}),
+        input.semanticTags == null ? null : JSON.stringify(input.semanticTags),
+        input.semanticVector == null ? null : JSON.stringify(input.semanticVector),
+        stamp,
+        stamp,
+      );
+  }
+
+  listAssetsForSetEmotion(assetSetId: string, emotion: string): StoredSemanticAssetCandidate[] {
+    return this.db.prepare(`SELECT a.id, a.asset_set_id, a.emotion, a.filename, a.semantic_tags_json, a.semantic_vector_json,
+        o.content_type, o.object_url, o.storage_key
+      FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
+      WHERE a.asset_set_id = ? AND lower(a.emotion) = ?
+      ORDER BY a.filename, a.id`)
+      .all(assetSetId, emotion.toLowerCase())
+      .map((row) => rowToStoredSemanticAssetCandidate(row as Record<string, unknown>));
+  }
+
+  listAssetsForSet(assetSetId: string): StoredSemanticAssetCandidate[] {
+    return this.db.prepare(`SELECT a.id, a.asset_set_id, a.emotion, a.filename, a.semantic_tags_json, a.semantic_vector_json,
+        o.content_type, o.object_url, o.storage_key
+      FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
+      WHERE a.asset_set_id = ?
+      ORDER BY a.filename, a.id`)
+      .all(assetSetId)
+      .map((row) => rowToStoredSemanticAssetCandidate(row as Record<string, unknown>));
   }
 
   firstAssetForChannel(channelId: string): { filename: string; contentType: string; objectUrl: string; storageKey: string } | null {
@@ -250,6 +201,16 @@ export class ServiceDatabase {
     const row = this.db.prepare(`SELECT a.filename, o.content_type, o.object_url, o.storage_key
       FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
       WHERE a.asset_set_id = ? ORDER BY CASE a.emotion WHEN 'neutral' THEN 0 ELSE 1 END, a.emotion, a.filename LIMIT 1`).get(mapping.assetSetId) as Record<string, unknown> | undefined;
+    return row ? { filename: String(row.filename), contentType: String(row.content_type), objectUrl: String(row.object_url), storageKey: String(row.storage_key) } : null;
+  }
+
+  firstAssetForChannelEmotion(channelId: string, emotion: string): { filename: string; contentType: string; objectUrl: string; storageKey: string } | null {
+    const mapping = this.getChannelMapping(channelId);
+    if (!mapping || mapping.enabled === false || !mapping.assetSetId) return null;
+    const row = this.db.prepare(`SELECT a.filename, o.content_type, o.object_url, o.storage_key
+      FROM assets a JOIN storage_objects o ON o.id = a.storage_object_id
+      WHERE a.asset_set_id = ? AND lower(a.emotion) = ? ORDER BY a.filename LIMIT 1`)
+      .get(mapping.assetSetId, emotion.toLowerCase()) as Record<string, unknown> | undefined;
     return row ? { filename: String(row.filename), contentType: String(row.content_type), objectUrl: String(row.object_url), storageKey: String(row.storage_key) } : null;
   }
 

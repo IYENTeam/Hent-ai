@@ -9,7 +9,7 @@ import {
   listSets,
   getSetDir,
   type AssetManifest,
-} from "../../openclaw/assets/manifest.js";
+} from "./asset-manifest.js";
 
 function printSetsUsage(): void {
   console.log(`
@@ -107,7 +107,7 @@ export async function runSets(args: string[]): Promise<void> {
       }
       await activateSet(assetDir, manifest, setId);
       console.log(`✅ Switched to set "${setId}" (${manifest.sets[setId].name})`);
-      console.log("Root emotion files updated for backward compatibility.");
+      console.log("Active set pointer updated.");
       break;
     }
 

@@ -1,37 +1,68 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONVERSATION_CONFIG } from "./conversation-config.js";
-import { startupDiagnostics } from "./main.js";
+import * as service from "./index.js";
+import { importAssets } from "./importer.js";
+import { tempDir, writeFixtureAssets } from "./service-test-helpers.js";
 
-describe("service main startup diagnostics", () => {
-  it("reports every silent no-op condition before the server starts", () => {
-    // Given: conversation is enabled but required runtime wiring is absent or invalid.
-    const diagnostics = startupDiagnostics({
-      conversationConfig: {
-        ...DEFAULT_CONVERSATION_CONFIG,
-        enabled: false,
-        diagnostics: ["HENT_AI_CONVERSATION_MAX_DELAY_MS must be greater than or equal to HENT_AI_CONVERSATION_MIN_DELAY_MS"],
+describe("API-only entrypoint", () => {
+  it("starts API without participant worker", async () => {
+    const candidate = Reflect.get(service, "createApiService");
+    expect(candidate, "starts API without participant worker through the service namespace").toBeTypeOf("function");
+    let opened = 0;
+    let closed = 0;
+    let listened = 0;
+    let configuredAssetRoot: string | undefined;
+    const api = (candidate as typeof service.createApiService)({
+      config: { dbPath: ":memory:", token: "test-token", port: 8787, hostname: "127.0.0.1", assetRoot: "/tmp/hent-assets" },
+      verifier: { verify: async () => null },
+      createDatabase: () => ({ close: () => { closed += 1; } }) as unknown as service.ServiceDatabase,
+      createServer: (options) => {
+        configuredAssetRoot = options.assetRoot;
+        return {} as never;
       },
-      pollerConfig: null,
-      providerConfigured: false,
-      verifierConfigured: false,
-      env: {
-        HENT_AI_CONVERSATION_ENABLED: "true",
-        HENT_AI_DISCORD_POLLER_TOKEN: "",
-        HENT_AI_DISCORD_POLLER_CHANNELS: "",
+      listenServer: async () => {
+        listened += 1;
+        return { url: "http://127.0.0.1:8787", close: async () => { opened += 1; } };
       },
     });
+    const binding = await api.start();
+    expect(listened).toBe(1);
+    expect(configuredAssetRoot).toBe("/tmp/hent-assets");
+    expect(opened).toBe(0);
+    await binding.stop();
+    expect(opened).toBe(1);
+    expect(closed).toBe(1);
+  });
 
-    // When: startup diagnostics are prepared for logging.
-    const messages = diagnostics.map((diagnostic) => `${diagnostic.level}:${diagnostic.message}`);
+  it("requires explicit API configuration", () => {
+    expect(() => service.loadApiServiceConfig({})).toThrow("HENT_AI_SERVICE_DB_PATH");
+  });
 
-    // Then: each silent no-op has an explicit operator-facing log line.
-    expect(messages).toEqual([
-      "error:HENT_AI_CONVERSATION_MAX_DELAY_MS must be greater than or equal to HENT_AI_CONVERSATION_MIN_DELAY_MS; conversation disabled",
-      "warn:conversation disabled due to invalid configuration",
-      "warn:discord poller disabled: missing HENT_AI_DISCORD_POLLER_TOKEN, HENT_AI_DISCORD_POLLER_CHANNELS",
-      "warn:HENT_AI_DISCORD_POLLER_BOT_USER_ID missing; self-message recognition is disabled",
-      "warn:conversation provider missing; reply checks run as no_reply(missing_decision_provider)",
-      "warn:final-response verifier missing; emotion verdict selection is disabled",
-    ]);
+  it("configures a repository asset root by default and accepts an explicit override", () => {
+    const required = { HENT_AI_SERVICE_DB_PATH: ":memory:", HENT_AI_SERVICE_TOKEN: "token" };
+    expect(service.loadApiServiceConfig(required).assetRoot).toMatch(/[/\\]assets$/);
+    expect(service.loadApiServiceConfig({ ...required, HENT_AI_ASSET_ROOT: " /srv/hent-assets " }).assetRoot).toBe("/srv/hent-assets");
+  });
+
+  it("serves DB-registered relative media through the API-only composition", async () => {
+    const root = tempDir();
+    writeFixtureAssets(root);
+    const dbPath = `${root}/service.sqlite`;
+    const seeded = new service.ServiceDatabase(dbPath);
+    importAssets({ db: seeded, assetRoot: root });
+    seeded.close();
+
+    const api = service.createApiService({
+      config: { dbPath, token: "test-token", port: 0, hostname: "127.0.0.1", assetRoot: root },
+      verifier: { verify: async () => null },
+    });
+    const binding = await api.start();
+    try {
+      const response = await fetch(`${binding.url}/static/sets/gothic-v1/neutral.png`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await response.arrayBuffer()).toString()).toBe("fake png");
+    } finally {
+      await binding.stop();
+    }
   });
 });

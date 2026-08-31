@@ -1,98 +1,90 @@
 ---
 name: hent-ai
-description: "Hent-ai setup and onboarding skill. Read the relevant docs, infer the user's goal and platform, then help create/install character emotion assets without a fixed questionnaire. Triggers when: the user asks to set up Hent-ai, install emotion images, create character images, or follow this repo's README."
+description: "Generate, pixel-tag, migrate, and operate Hent-ai character image pools with VisualAffectV2 nearest-neighbor routing. Use when creating character images, changing emotion routing, moving assets to local storage, importing a set, or validating OpenClaw media delivery."
 ---
 
-# Hent-ai Setup
+# Hent-ai Affect Assets
 
-You are setting up the Hent-ai emotion-image plugin for the user. Read the platform-specific README first, inspect the repository/configuration as needed, then choose the next useful action. Do not run a scripted questionnaire; use the docs as operating instructions and adapt to what the user already provided.
+## Goal
 
-## Step 1: Identify Platform
+Create and operate a character image corpus whose pixel-grounded VisualAffectV2
+tags support nearest-neighbor response routing, while keeping generated assets
+outside Git and preserving a verified rollback path for the live service.
 
-Detect the platform from context when possible. Ask only if the repository, config, or user's request does not make the platform clear:
+Operate character images as deployment data, not repository content. Keep runtime assets under the configured external `HENT_AI_ASSET_ROOT`; use `~/.hent-ai/assets` when establishing a new local deployment. Do not add generated images, per-image tags, or a live manifest to Git.
 
-| Platform | README | Plugin type |
-|----------|--------|-------------|
-| OpenClaw | `openclaw/README.md` | OpenClaw plugin |
-| Hermes Agent | `hermes/README.md` | Hermes integration |
+Read [references/affect-space-v2.md](references/affect-space-v2.md) before changing tag generation or routing. Read [references/local-asset-store.md](references/local-asset-store.md) before moving, importing, activating, or deleting a set.
 
-Read the relevant README for installation instructions. Follow them to install the plugin for the user's platform.
+## One-shot setup
 
-## Step 2: Create Emotion Images (Onboarding)
+For a new or replacement image pool, read [references/codex-image-generation-and-tagging.md](references/codex-image-generation-and-tagging.md), then run the repository setup entrypoint. A single `--apply` invocation is the user's approval for paid generation and tagging:
 
-After the plugin is installed, create or install the character's emotion images. Treat this as an agent-led task, not a fixed form. Gather only missing information that blocks the next action, reuse attachments/descriptions/config already present, and keep the user in the loop at meaningful approval points.
-
-### 2a. Understand the Character Goal
-
-Read the user's request and available context to infer the character concept. If the concept is missing or ambiguous, ask one concise clarifying question. The user may attach a reference image.
-
-If they attach an image, decide from context whether it should be used directly as the base character or as a style/reference image. Ask only when that choice is genuinely ambiguous.
-
-### 2b. Generate Base Character
-
-Generate with `image_generate`:
-```
-[user's description], clean illustration style, square format, simple background, high quality PNG
+```bash
+npm run setup:affect -- \
+  --character "<stable character identity>" \
+  --set-id <target-set-id> \
+  --reference <approved-character-image> \
+  --channel <discord-channel-id> \
+  --apply
 ```
 
-Show the result when generation is involved and get approval before treating it as the canonical base character.
-- Approved → save as `base.png`, proceed
-- Feedback → regenerate or edit with feedback incorporated
-- Cancel (`취소`/`cancel`/`종료`/`그만`) → abort onboarding
+References and channels are optional and repeatable. Without `--apply`, perform only the free preflight. With `--apply`, let the spawned Codex run autonomously through generation, immediate pixel tagging, external migration, service import, restart, and E2E verification. Re-run the same command to resume immutable completed work after an external interruption. Do not replace this path with the legacy six-image generator.
 
-### 2c. Generate 6 Emotion Variants
+## Workflow
 
-Create the required emotion set using the base image as reference. Work in small batches only when the user explicitly wants speed; otherwise preserve quality and consistency over rigid sequencing.
+1. Inspect the live `HENT_AI_ASSET_ROOT`, manifest, channel mappings, database path, and service manager configuration. Never assume the repo's `assets/` directory is the active store.
+2. For new images, obtain user approval before invoking paid image generation. The explicit `setup:affect --apply` invocation supplies that approval. Use Codex image generation with approved character references, preserve identity, and vary gesture, expression, background, clothing, framing, and lighting. Do not add text or speech bubbles.
+3. Immediately after each image is accepted, use Codex vision against the actual pixels and request the complete `VisualAffectV2` object. Do not expose the filename, planned emotion, generation prompt, directory, or batch position to the tagger.
+4. Bind the tag to the image SHA-256, model, timestamp, and prompt version. Treat tags as immutable; regenerate a tag when pixels change.
+5. Compile and validate the set, then run `affect-store` without `--apply`. Review file count, bytes, checksum, and target before applying.
+6. Back up the live SQLite database and service configuration. Copy to the external store, import the manifest, change only intended channel mappings, then switch `HENT_AI_ASSET_ROOT` and restart the service.
+7. Verify unit/type tests, API routing diagnostics, exact media bytes, and a real local OpenClaw/Discord response. Keep the source until all checks pass; remove it from the repo only after the external copy is hash-verified.
 
-| Emotion | File | Visual cues |
-|---------|------|-------------|
-| happy | `happy.png` | smiling, celebrating, thumbs up |
-| neutral | `neutral.png` | calm, relaxed, default expression |
-| loyalty | `loyalty.png` | saluting, nodding, attentive |
-| sorry | `sorry.png` | apologetic, bowing, sheepish |
-| confused | `confused.png` | head tilt, question mark, puzzled |
-| focused | `focused.png` | concentrating, working, determined |
+If tagging reveals weak coverage of an affect region, report it and generate additional images with approval. Never repair sparse coverage by assigning emotions that are not visible.
 
-Prompt template:
+## Commands
+
+Use Node.js 22 for this repository.
+
+```bash
+node scripts/codex-visual-affect-retag.mjs \
+  --source-root <external-asset-root> \
+  --set-id <source-set-id> \
+  --output-dir <external-retag-output> \
+  --codex-bin <codex-executable> \
+  --model gpt-5.6-sol \
+  --batch-size 5 \
+  --concurrency 3
+
+cd generate
+/opt/homebrew/opt/node@22/bin/node ../service/node_modules/tsx/dist/cli.mjs src/main.ts affect-store \
+  --source-root <staging-asset-root> \
+  --source-set <source-set-id> \
+  --target-root <external-asset-root> \
+  --target-set <target-set-id> \
+  --tags <affect-vectors.json>
 ```
-Same character as the reference image, expressing [emotion]. [visual cues]. Simple background, consistent art style.
-```
 
-For generated images, show enough output for the user to judge consistency. Save approved images with the expected filenames. The user can also attach their own image to use directly.
-
-### 2d. Save Location
-
-Save all images to the plugin's asset directory:
-- **OpenClaw**: the configured `imageDir`, or `~/.openclaw/workspace/.hent-ai/emotion-image-assets/`, or `assets/` in this repo
-- **Other**: `assets/` in this repo
-
-### 2e. Complete
-
-Confirm all 7 images saved (base + 6 emotions). Tell the user the plugin is ready — their agent's responses will now have emotion images attached automatically.
+The Codex retagger copies each batch to anonymous temporary filenames, enforces `visual-affect-output.schema.json`, binds each result to the original image hash, resumes immutable completed tags, and compiles `affect-vectors.json` only after the full set passes. Add `--apply --activate` to `affect-store` only after the dry-run report is correct. Paths and identifiers shown here are placeholders; resolve the live values before acting.
 
 ## Rules
 
-- Do not follow a fixed questionnaire when the answer can be inferred from docs, config, files, or prior conversation.
-- Ask at most one blocking question at a time.
-- Prefer agentic progress: read docs, inspect paths, generate/copy/save assets, and verify files exist.
-- Never generate text or speech bubbles in images.
-- Keep the same character identity across all variants.
-- Respond in the user's language.
-- User can abort anytime: `취소`, `cancel`, `종료`, `그만`
+- Never overwrite an external image with different bytes.
+- Never tag from a filename, prompt, coarse class, or intended emotion.
+- Never commit generated image pools or their runtime manifest.
+- Never delete the source or old DB before live byte-level verification passes.
+- Never expose service, Discord, or model-provider tokens in output or documentation.
+- Preserve a rollback path for the previous asset root, manifest, database, and channel mappings.
 
-## Advanced: Labeled Image Pools
+## Verification
 
-After basic setup, users can add multiple images per emotion with labels for context-aware selection:
+Before activating a set, confirm the dry-run reports the intended target, file
+count, byte count, and hashes. After activation:
 
-```jsonc
-{
-  "emotionMap": {
-    "happy": [
-      { "file": "happy-stage.png", "label": "stage", "weight": 2 },
-      { "file": "happy-date-night.png" }
-    ]
-  }
-}
-```
-
-Labels are auto-inferred from filenames (e.g. `happy-date-night.png` → `date night`). Hent-ai prefers images whose label matches the bot response context.
+1. Run `node scripts/verify-affect-assets.mjs <asset-root> <set-id>`.
+2. Run `node scripts/release-gate.mjs`; this includes the repository suites,
+   external corpus verification, and isolated local OpenClaw E2E.
+3. Confirm the restarted API and ambient worker are healthy and that a real
+   Discord response contains the selected image with exact expected bytes.
+4. Confirm the previous asset root, database backup, and service configuration
+   can still be restored before removing any staging copy.

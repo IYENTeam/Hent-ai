@@ -1,8 +1,31 @@
-import type { GenerationJob, Profile } from "./db.js";
+import type { GenerationJob, Profile, StoredSemanticAssetCandidate } from "./db.js";
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
   return JSON.parse(value) as T;
+}
+
+function parseOptionalJson(value: string | null | undefined): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+export function rowToStoredSemanticAssetCandidate(row: Record<string, unknown>): StoredSemanticAssetCandidate {
+  return {
+    id: String(row.id),
+    assetSetId: String(row.asset_set_id),
+    emotion: String(row.emotion),
+    filename: String(row.filename),
+    contentType: String(row.content_type),
+    objectUrl: String(row.object_url),
+    storageKey: String(row.storage_key),
+    semanticTags: parseOptionalJson(row.semantic_tags_json as string | null),
+    semanticVector: parseOptionalJson(row.semantic_vector_json as string | null),
+  };
 }
 
 export function rowToProfile(row: Record<string, unknown>): Profile {

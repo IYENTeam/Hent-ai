@@ -1,3 +1,11 @@
+import {
+  AFFECT_DIMENSIONS,
+  AFFECT_SPACE_VERSION,
+  RESPONSE_AFFECT_SCHEMA_VERSION,
+  parseResponseAffectV2,
+  type ResponseAffectV2,
+} from "../../shared/affect.js";
+
 export type VerifierRequest = {
   channelId?: string;
   finalText: string;
@@ -6,9 +14,10 @@ export type VerifierRequest = {
 };
 
 export type VerifierJudgment = {
-  emotion: string;
+  emotion?: string;
   confidence?: number;
   reason?: string;
+  affect?: ResponseAffectV2;
 };
 
 export type FinalResponseVerifier = {
@@ -110,6 +119,20 @@ function extractChatCompletionsContent(record: Record<string, unknown>): string 
   return text.trim() || null;
 }
 
+function normalizeResponseAffect(value: unknown): ResponseAffectV2 | null {
+  const strict = parseResponseAffectV2(value);
+  if (strict) return strict;
+  const flattened = asRecord(value);
+  if (!flattened || flattened.affectSpaceVersion !== AFFECT_SPACE_VERSION) return null;
+  const dimensions = Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, flattened[key]]));
+  return parseResponseAffectV2({
+    schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
+    affectSpaceVersion: flattened.affectSpaceVersion,
+    dimensions,
+    confidence: flattened.confidence,
+  });
+}
+
 export function normalizeVerifierJudgment(value: unknown): VerifierJudgment | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -125,11 +148,13 @@ export function normalizeVerifierJudgment(value: unknown): VerifierJudgment | nu
   const emotion = typeof nested.emotion === "string" && nested.emotion.trim()
     ? nested.emotion.trim().toLowerCase()
     : undefined;
-  if (!emotion) return null;
+  const affect = normalizeResponseAffect(nested.affect ?? nested.responseAffect);
+  if (!emotion && !affect) return null;
 
-  const judgment: VerifierJudgment = { emotion };
+  const judgment: VerifierJudgment = { ...(emotion ? { emotion } : {}) };
   if (typeof nested.confidence === "number" && Number.isFinite(nested.confidence)) judgment.confidence = nested.confidence;
   if (typeof nested.reason === "string" && nested.reason.trim()) judgment.reason = nested.reason.trim();
+  if (affect) judgment.affect = affect;
   return judgment;
 }
 
@@ -221,8 +246,10 @@ function chatCompletionsBody(config: OpenAiChatCompletionsVerifierConfig, reques
         role: "system",
         content: [
           "You classify a bot final response for Hent-ai.",
-          "Return only JSON with keys: emotion, confidence, reason.",
-          "emotion must be one of the provided validEmotions. If none fits, return null.",
+          "Return only JSON with keys: emotion, confidence, reason, affect.",
+          "emotion should be the closest provided validEmotions value, but may be null when none fits; a complete affect object is always required.",
+          `affect must have this exact nested shape: {"schemaVersion":"${RESPONSE_AFFECT_SCHEMA_VERSION}","affectSpaceVersion":"${AFFECT_SPACE_VERSION}","dimensions":{${AFFECT_DIMENSIONS.map((key) => `"${key}":0.0`).join(",")}},"confidence":0.0}. Replace every 0.0 with a [0,1] score and do not flatten dimensions.`,
+          "Score the expressed emotional performance, including mixed emotions, intensity, teasing, affection, facial-expression intent, and posture intent. Do not collapse the affect vector into the coarse emotion label.",
         ].join(" "),
       },
       {
