@@ -1,13 +1,15 @@
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 PLUGIN_PATH = Path(__file__).resolve().parents[2] / "hermes" / "__init__.py"
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "emotion-contract-v1.json"
 
 spec = importlib.util.spec_from_file_location("hent_ai_hermes_plugin", PLUGIN_PATH)
+assert spec is not None and spec.loader is not None
 plugin = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
 spec.loader.exec_module(plugin)
 
 
@@ -24,6 +26,19 @@ class HermesPluginTests(unittest.TestCase):
     def test_falls_back_to_neutral(self):
         self.assertEqual(plugin.detect_emotion("The weather is mild."), "neutral")
 
+    def test_matches_emotion_contract_v1_keys(self):
+        fixture = json.loads(CONTRACT_PATH.read_text())
+        self.assertEqual(plugin.EMOTION_CONTRACT_VERSION, "EmotionContractV1")
+        self.assertEqual(
+            list(plugin.DEFAULT_EMOTION_MAP.keys()),
+            fixture["emotions"],
+        )
+
+    def test_detects_fixture_contract_examples(self):
+        fixture = json.loads(CONTRACT_PATH.read_text())
+        for case in fixture["cases"]:
+            self.assertEqual(plugin.detect_emotion(case["text"]), case["emotion"])
+
     def test_skips_unsupported_platform(self):
         with TemporaryDirectory() as tmp:
             image = Path(tmp) / "happy.png"
@@ -34,6 +49,34 @@ class HermesPluginTests(unittest.TestCase):
                 assets_dir=Path(tmp),
             )
             self.assertIsNone(transformed)
+
+    def test_sanitizes_model_media_directive_for_unsupported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "Task complete\nMEDIA:/private/tmp/happy.png",
+            platform="cli",
+        )
+        self.assertEqual(transformed, "Task complete")
+
+    def test_replaces_media_only_response_for_unsupported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "MEDIA:/private/tmp/happy.png",
+            platform="cli",
+        )
+        self.assertEqual(transformed, " ")
+
+    def test_unsupported_platform_ignores_safe_whitespace_normalization(self):
+        transformed = plugin.build_transformed_response(
+            "Task  complete",
+            platform="cli",
+        )
+        self.assertIsNone(transformed)
+
+    def test_replaces_media_only_response_for_supported_platform(self):
+        transformed = plugin.build_transformed_response(
+            "MEDIA:/etc/passwd",
+            platform="discord",
+        )
+        self.assertEqual(transformed, " ")
 
     def test_appends_media_directive_for_supported_platform(self):
         with TemporaryDirectory() as tmp:
@@ -48,10 +91,60 @@ class HermesPluginTests(unittest.TestCase):
             self.assertIn("Task complete", transformed)
             self.assertIn(f"MEDIA:{image.resolve()}", transformed)
 
+    def test_strips_model_supplied_media_directives_before_appending_plugin_media(self):
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "happy.png"
+            image.write_bytes(b"png")
+            transformed = plugin.build_transformed_response(
+                "Task complete\nMEDIA:/etc/passwd",
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertIsNotNone(transformed)
+            assert transformed is not None
+            self.assertEqual(transformed.count("MEDIA:"), 1)
+            self.assertNotIn("/etc/passwd", transformed)
+            self.assertIn(f"MEDIA:{image.resolve()}", transformed)
+
+    def test_strips_inline_model_media_directives_before_appending_plugin_media(self):
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "happy.png"
+            image.write_bytes(b"png")
+            transformed = plugin.build_transformed_response(
+                'Task complete MEDIA:"/tmp/model supplied.png" MEDIA:http://evil.example/happy.png MEDIA:relative.png',
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertIsNotNone(transformed)
+            assert transformed is not None
+            self.assertEqual(transformed.count("MEDIA:"), 1)
+            self.assertNotIn("model supplied", transformed)
+            self.assertNotIn("evil.example", transformed)
+            self.assertNotIn("relative.png", transformed)
+            self.assertIn(f"MEDIA:{image.resolve()}", transformed)
+
+    def test_sanitizes_model_media_directive_when_supported_image_missing(self):
+        with TemporaryDirectory() as tmp:
+            transformed = plugin.build_transformed_response(
+                "Task complete\nMEDIA:/etc/passwd",
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertEqual(transformed, "Task complete")
+
     def test_missing_image_leaves_response_unchanged(self):
         with TemporaryDirectory() as tmp:
             transformed = plugin.build_transformed_response(
                 "Task complete",
+                platform="discord",
+                assets_dir=Path(tmp),
+            )
+            self.assertIsNone(transformed)
+
+    def test_missing_image_ignores_safe_whitespace_normalization(self):
+        with TemporaryDirectory() as tmp:
+            transformed = plugin.build_transformed_response(
+                "Task  complete",
                 platform="discord",
                 assets_dir=Path(tmp),
             )

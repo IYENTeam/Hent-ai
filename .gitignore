@@ -20,3 +20,6 @@ openclaw/index.js
 assets/hentai.db
 assets/hentai.db-shm
 assets/hentai.db-wal
+
+# Generated/runtime image pools belong under external HENT_AI_ASSET_ROOT.
+assets/sets/*/

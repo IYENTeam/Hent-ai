@@ -10,6 +10,7 @@ Hent-ai의 채널별 프로필, 채널 정책, 에셋 선택은 이제 Hent-ai H
 | Channel mapping | Hent-ai service | Discord/OpenClaw channel ID → profile/mode mapping |
 | Channel policy | Hent-ai service | 채널별 활성화, date-mode, private-mode, 민감 미디어 정책 |
 | Asset set/storage | Hent-ai service | imported/generated 이미지와 metadata |
+| Semantic asset routing | Hent-ai service | verifier가 고른 emotion 안에서 actual-pixel tag/vector로 후보 ranking |
 | OpenClaw media delivery | OpenClaw | adapter가 반환한 `mediaUrl`을 텍스트 lifecycle에 맞춰 전송/append |
 
 ## OpenClaw adapter 설정
@@ -47,10 +48,13 @@ OpenClaw 플러그인 config에는 서비스 접속 정보만 필요합니다.
 핵심 경로인 final-response media는 항상 동작합니다. adapter가 pre-reply handler를 등록하더라도, 관련 service call과 outbound 전송은 config로 켰을 때만 실행됩니다.
 
 ```text
-Final assistant reply payload (항상)
-  └─ OpenClaw reply_payload_sending (kind=final)
+OpenClaw before_prompt_build (항상)
+  └─ 동일 assistant 생성에 compact ResponseAffectV2 transport marker 요청
+Final assistant reply payload + marker (항상)
+  └─ OpenClaw reply_payload_sending (kind=final)이 marker를 제거/파싱
        ├─ adapter POST /v1/final-response/verdict
-       │    └─ service가 channel/profile/policy/verdict.media 결정
+       │    └─ service가 인증된 ResponseAffectV2를 검증한 뒤
+       │         mapped set 전체를 nearest-neighbor route하여 verdict.media 결정
        └─ media가 있으면 원본 payload에 mediaUrl/mediaUrls를 더해 반환
   └─ OpenClaw가 text + media, skip 시 text-only 전송
 
@@ -76,6 +80,12 @@ Use those service APIs or service CLI tools for channel-profile changes. Do not 
 
 Discord threads need their own mapping when OpenClaw delivers replies from a thread session. The adapter sends the active conversation/channel id to the service, so a parent-channel mapping does not automatically cover thread ids.
 
+`VisualAffectV2`는 실제 이미지 픽셀에서 측정한 24차원 값과 SHA provenance를 포함합니다.
+service importer가 동일 순서의 vector를 저장하고, final response의 `ResponseAffectV2`와 weighted
+distance로 mapped set 전체를 순위화합니다. 최소 거리가 같은 후보는 랜덤 선택합니다. 후보 중
+하나라도 tag/vector가 없거나 서로 다르면 V2 모드를 활성화하지 않고 legacy fallback으로
+처리합니다. OpenClaw adapter는 tag/vector를 읽거나 별도 classifier를 실행하지 않습니다.
+
 ## Migration note
 
 Older docs described a thick OpenClaw plugin that:
@@ -94,6 +104,10 @@ That behavior has been removed from `openclaw/`. The service is the only Hent-ai
 - `plugins.load.paths` includes this repo's `openclaw/` directory.
 - OpenClaw has `plugins.entries.hent-ai-service-adapter` enabled and no stale `plugins.entries.emotion-image` entry for the same behavior.
 - The target channel or thread id has an enabled service mapping.
-- The test is a real assistant final reply. Direct `message.send`, proactive sends, or fallback cron delivery can bypass `reply_payload_sending`.
-- Gateway logs show `/v1/final-response/verdict` and media returned.
-- Discord message readback has non-empty `attachments`.
+- Release proof는 `node scripts/e2e-hent-openclaw.mjs`의 loopback exact-byte E2E입니다. 이
+  명령은 macOS의 실제 gateway LaunchAgent를 잠시 중지하므로 `docs/agent-runbook.md`의 안전
+  조건(외부 작업 없음, disposable HOME/state/config, no MCP/external URL, 최종 복구 검증)을
+  모두 만족할 때만 실행합니다.
+- 실제 Discord attachment readback은 owner 승인된 deployment check일 뿐이며 isolated E2E를
+  대체하지 않습니다. Direct `message.send`, proactive send, fallback cron은
+  `reply_payload_sending`을 우회할 수 있습니다.

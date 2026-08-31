@@ -26,7 +26,7 @@ function recordTurn(
 }
 
 describe("conversation memory compaction", () => {
-  it("compacts retained raw history into a durable summary before pruning old rows", async () => {
+  it("compacts retained raw history into a durable summary without deleting old rows", async () => {
     // Given: raw room events older than the default retention window and a newer event.
     const db = new ServiceDatabase();
     const store = createConversationStore(db);
@@ -52,14 +52,14 @@ describe("conversation memory compaction", () => {
       now: "2026-06-22T00:00:00.000Z",
     });
 
-    // Then: old raw rows are deleted only after their summary is durable.
+    // Then: raw transcript remains permanent after its summary is durable.
     expect(result).toMatchObject({
       compactedScopeCount: 1,
       summaryCount: 1,
-      prunedRawCount: 2,
+      prunedRawCount: 0,
       diagnostics: [],
     });
-    expect(store.listRawEvents("channel:c1:session:s1")).toMatchObject([{ messageId: "m-new" }]);
+    expect(store.listRawEvents("channel:c1:session:s1")).toMatchObject([{ messageId: "m-old-1" }, { messageId: "m-old-2" }, { messageId: "m-new" }]);
     expect(store.listSummaries("channel:c1:session:s1")).toMatchObject([
       {
         summary: "Mira prefers morning deploys, and the room avoids Friday launches.",
@@ -70,7 +70,7 @@ describe("conversation memory compaction", () => {
     db.close();
   });
 
-  it("keeps summaries indefinitely when raw retention cleanup deletes older rows", async () => {
+  it("keeps both summaries and raw rows indefinitely after compaction", async () => {
     // Given: an existing long-term summary and raw events past a one-day retention window.
     const db = new ServiceDatabase();
     const store = createConversationStore(db);
@@ -102,9 +102,9 @@ describe("conversation memory compaction", () => {
       now: "2026-06-22T00:00:00.000Z",
     });
 
-    // Then: raw rows are pruned, while old and new summaries remain readable.
-    expect(result.prunedRawCount).toBe(1);
-    expect(store.listRawEvents("channel:c1:session:s1")).toEqual([]);
+    // Then: raw rows and old/new summaries remain readable.
+    expect(result.prunedRawCount).toBe(0);
+    expect(store.listRawEvents("channel:c1:session:s1")).toMatchObject([{ messageId: "m-old" }]);
     expect(store.listSummaries("channel:c1:session:s1")).toMatchObject([
       { id: existingSummary.id, summary: "Existing durable memory must survive cleanup." },
       { summary: "Past room context was compacted." },

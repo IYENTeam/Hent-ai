@@ -3,8 +3,16 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
 import type { FinalResponseVerifier } from "./verifier.js";
+import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
+import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
+import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
-import { channelIdFromHookBody, finalVerdictForBody, mediaResponseForChannel } from "./final-response-routes.js";
+import { channelIdFromHookBody, finalResponseRequestFromBody, mediaResponseForChannel } from "./final-response-routes.js";
+import { createFinalResponseUseCase } from "./final-response-use-case.js";
+import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
+import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
+import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
+import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -18,6 +26,10 @@ export type HentAiServerOptions = {
   token: string;
   assetRoot?: string;
   verifier: FinalResponseVerifier;
+  semanticAssetRouter?: SemanticAssetRouter;
+  conversationConfig?: ConversationServiceConfig;
+  conversationContextProvider?: ConversationContextProvider;
+  conversationRuntime?: ConversationRuntime;
 };
 
 export function redactBearerToken(value: string): string {
@@ -72,21 +84,29 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function serveStatic(assetRoot: string | undefined, pathname: string, res: ServerResponse): boolean {
+function serveStatic(db: ServiceDatabase, assetRoot: string | undefined, pathname: string, res: ServerResponse): boolean {
   if (!assetRoot || !pathname.startsWith("/static/")) return false;
   const key = decodeURIComponent(pathname.slice("/static/".length));
   const normalized = normalize(key);
-  if (normalized.startsWith("..")) return false;
+  if (normalized.startsWith("..") || normalized.startsWith("/") || normalized === ".") return false;
+  const object = db.db.prepare("SELECT content_type FROM storage_objects WHERE storage_key = ? AND object_url = ?")
+    .get(normalized, `/static/${normalized.split("/").map(encodeURIComponent).join("/")}`) as { content_type: string } | undefined;
+  if (!object || !object.content_type.startsWith("image/")) return false;
   const path = join(assetRoot, normalized);
   if (!existsSync(path)) return false;
   const bytes = readFileSync(path);
-  const contentType = path.endsWith(".png") ? "image/png" : path.endsWith(".jpg") || path.endsWith(".jpeg") ? "image/jpeg" : path.endsWith(".webp") ? "image/webp" : "application/octet-stream";
-  res.writeHead(200, { "content-type": contentType, "content-length": bytes.length });
+  res.writeHead(200, { "content-type": object.content_type, "content-length": bytes.length });
   res.end(bytes);
   return true;
 }
 
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const semanticAssetRouter = options.semanticAssetRouter
+    ?? new DeterministicSemanticAssetRouter(new ServiceDatabaseSemanticAssetRepository(options.db));
+  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, verifier: options.verifier, assetRouter: semanticAssetRouter });
+  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
+    ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
+  });
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -94,7 +114,7 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { ok: true, service: "@hent-ai/service" });
         return;
       }
-      if (req.method === "GET" && serveStatic(options.assetRoot, url.pathname, res)) return;
+      if (req.method === "GET" && serveStatic(options.db, options.assetRoot, url.pathname, res)) return;
       if (url.pathname.startsWith("/v1/") && !authorized(req, options.token)) {
         unauthorized(res);
         return;
@@ -107,8 +127,19 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       }
       if (req.method === "POST" && url.pathname === "/v1/final-response/verdict") {
         const body = await readJsonBody(req);
-        const result = await finalVerdictForBody(options.db, options.verifier, body);
+        const result = await finalResponseUseCase.execute(finalResponseRequestFromBody(body));
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
+        return;
+      }
+      if (isWatcherRoute(req.method, url.pathname)) {
+        const result = await handleWatcherRoute({
+          method: req.method,
+          pathname: url.pathname,
+          body: await readJsonBody(req),
+          runtime: conversationRuntime,
+        });
+        if (!result) return notFound(res);
+        sendJson(res, result.status, result.body);
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {
