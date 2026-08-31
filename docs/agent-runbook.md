@@ -234,9 +234,9 @@ service, semantic static files, inbound channel, and outbound adapter are all lo
 config has no MCP key, scrubs credential-like environment variables, disables hooks/ambient
 features, and fails if logs reveal MCP or a non-loopback HTTP URL.
 
-The first phase proves the full hook flow with pre-reply, final semantic media, watcher chunks, and
-commit using exact-byte hashes. The second phase boots out the existing LaunchAgent, runs a
-final-only smoke on port 18789, and proves the stopped original state inventory was unchanged. In a
+The first phase proves the full hook flow with pre-reply media, final semantic media, private
+anti-fixation prompt injection, zero watcher text deliveries, and exact-byte hashes. The second phase
+boots out the existing LaunchAgent, runs a final-only smoke on port 18789, and proves the stopped original state inventory was unchanged. In a
 `finally` block the harness stops the disposable foreground gateway, restores the original
 LaunchAgent, waits for connectivity, and compares config bytes/mode, plist hash, state inventory,
 and loaded adapter source. Any failure, including restore/readback failure, blocks release. Before
