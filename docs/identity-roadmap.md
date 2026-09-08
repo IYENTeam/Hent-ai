@@ -64,8 +64,8 @@ Service-owned responsibilities:
 3. **OpenClaw adapter boundary**
    - Always register `reply_payload_sending` and forward final assistant reply context to `/v1/final-response/verdict`.
    - Attach service-returned media to the outgoing payload.
-   - Optionally (opt-in via `hentAiService.preReplyMedia` / `hentAiService.watcher`) register `message_received` / `message_sent` to drive `/v1/pre-reply/media` and the watcher endpoints (`/v1/watcher/record-user`, `/v1/watcher/evaluate`, `/v1/watcher/commit-delivery`).
-   - Keep text delivery owned by OpenClaw. Pre-reply media and watcher nudges go through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), not direct Discord REST.
+   - Optionally enable `hentAiService.preReplyMedia` for pre-reply media. Internal anti-fixation steering is available only through `hentAiService.conversation`: `message_received` records the user and queues its scope, `before_prompt_build` previews and injects a steer privately, and `message_sent` records the assistant.
+   - Keep text delivery owned by OpenClaw. Pre-reply media goes through OpenClaw's outbound channel adapter (`runtime.channel.outbound`), while anti-fixation guidance stays inside `before_prompt_build` and never enters a delivery path.
    - Do not classify locally, scan manifests, read profile DBs, call `@hent-ai/generate`, call Discord REST directly, or implement delivery orchestration.
 
 4. **Prompt/persona integration**

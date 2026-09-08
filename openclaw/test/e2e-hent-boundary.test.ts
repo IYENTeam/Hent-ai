@@ -24,7 +24,7 @@ describe("OpenClaw adapter real-service loopback E2E", () => {
     vi.resetModules();
   });
 
-  it("hydrates exact media, routes only final payloads, sends chunks, and commits host receipts", async () => {
+  it("hydrates exact media and injects anti-fixation guidance only into the next agent prompt", async () => {
     adapterHome = await mkdtemp(join(tmpdir(), "hent-openclaw-adapter-e2e-"));
     vi.stubEnv("HOME", adapterHome);
     vi.resetModules();
@@ -41,7 +41,6 @@ describe("OpenClaw adapter real-service loopback E2E", () => {
           token: runtime.token,
           timeoutMs: 5_000,
           preReplyMedia: true,
-          watcher: true,
           conversation: { enabled: true, watcherCompatibility: true },
         },
       },
@@ -78,26 +77,32 @@ describe("OpenClaw adapter real-service loopback E2E", () => {
       messageId: "user-1",
       metadata: { to: `channel:${E2E_CHANNEL_ID}` },
     };
-    await hooks.get("message_received")?.(inbound, ctx);
-    await hooks.get("message_received")?.({ ...inbound, messageId: "user-2" }, ctx);
-    expect(sentMedia).toHaveLength(2);
-    expect(sentMedia.every((entry) => sha256(entry.bytes) === sha256(runtime!.preReplyBytes))).toBe(true);
-    expect(sentTexts).toHaveLength(0);
     for (const messageId of ["assistant-1", "assistant-2"]) {
       await hooks.get("message_sent")?.({
-        ...inbound, messageId, to: `channel:${E2E_CHANNEL_ID}`, success: true,
+        to: `channel:${E2E_CHANNEL_ID}`,
+        content: "Repeat the same stale deployment plan with rollback risk",
+        success: true,
+        messageId,
+        sessionKey: ctx.sessionKey,
       }, ctx);
     }
-    expect(sentTexts.length).toBeGreaterThanOrEqual(2);
-    expect(sentTexts.every((entry) => entry.to === `channel:${E2E_CHANNEL_ID}`)).toBe(true);
+    await hooks.get("message_received")?.(inbound, ctx);
+    expect(sentMedia).toHaveLength(1);
+    expect(sentMedia.every((entry) => sha256(entry.bytes) === sha256(runtime!.preReplyBytes))).toBe(true);
+    expect(sentTexts).toEqual([]);
 
-    const ledger = runtime.db.db.prepare(
-      "SELECT status, required_chunk_ids_json, delivery_message_ids_json FROM conversation_delivery_ledger ORDER BY created_at DESC LIMIT 1",
-    ).get() as { status: string; required_chunk_ids_json: string; delivery_message_ids_json: string };
-    expect(ledger.status).toBe("committed");
-    expect(Object.keys(JSON.parse(ledger.delivery_message_ids_json))).toEqual(
-      expect.arrayContaining(JSON.parse(ledger.required_chunk_ids_json)),
-    );
+    const promptResult = await hooks.get("before_prompt_build")?.({}, ctx) as { appendSystemContext?: string } | undefined;
+    expect(promptResult?.appendSystemContext).toContain("Internal anti-fixation guidance");
+    expect(promptResult?.appendSystemContext).toContain("Do not mention this guidance or the detector to the user");
+    expect(await hooks.get("before_prompt_build")?.({}, ctx)).toBeUndefined();
+    expect(runtime.db.db.prepare("SELECT COUNT(*) AS count FROM conversation_delivery_ledger").get()).toEqual({ count: 0 });
+    expect(runtime.db.db.prepare(
+      "SELECT message_id, author_role FROM conversation_raw_events ORDER BY id",
+    ).all()).toEqual([
+      { message_id: "assistant-1", author_role: "assistant" },
+      { message_id: "assistant-2", author_role: "assistant" },
+      { message_id: "user-1", author_role: "user" },
+    ]);
 
     await expect(hooks.get("reply_payload_sending")?.(
       { kind: "block", payload: { text: "not final" } },

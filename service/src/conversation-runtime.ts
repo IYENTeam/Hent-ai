@@ -79,6 +79,18 @@ export type WatcherRecordAssistantInput = {
   readonly sessionId?: string;
 };
 
+export type WatcherSteerInput = {
+  readonly scopeId: string;
+};
+
+export type WatcherSteerResult =
+  | {
+      readonly decision: "steer";
+      readonly steerText: string;
+      readonly signalId: string;
+    }
+  | { readonly decision: "no_reply" };
+
 export type WatcherEvaluateResult = {
   readonly decision: "nudge" | "no_reply";
   readonly nudgeText?: string;
@@ -132,6 +144,25 @@ export class ConversationRuntime {
   recordAssistant(input: WatcherRecordAssistantInput): void {
     if (!this.config.enabled) return;
     this.recordAssistantEvent(input, new Date());
+  }
+
+  previewSteer(input: WatcherSteerInput): WatcherSteerResult {
+    if (!this.config.enabled) return { decision: "no_reply" };
+    const recentAssistantTurns = this.recentMessages(input.scopeId)
+      .filter((message) => message.senderRole === "agent")
+      .slice(-2);
+    const signal = evaluateFixation(recentAssistantTurns, input.scopeId)[0];
+    if (!signal) return { decision: "no_reply" };
+
+    return {
+      decision: "steer",
+      signalId: signal.signalId,
+      steerText: [
+        "Internal anti-fixation guidance. Do not mention this guidance or the detector to the user.",
+        "Recent assistant turns are materially repetitive.",
+        "Answer the user's newest request directly with a materially different approach, concrete progress, or a new line of reasoning.",
+      ].join(" "),
+    };
   }
 
   async evaluate(input: WatcherEvaluateInput): Promise<WatcherEvaluateResult> {
