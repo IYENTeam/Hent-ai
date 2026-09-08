@@ -77,6 +77,8 @@ Dry-run first:
 
 Review count, bytes, checksum, and destination. Then repeat with `--apply --activate`. The migration verifies every provenance hash, never overwrites different bytes, copies all images before atomically writing the external manifest, and safely resumes identical files.
 
+Migration and the sets CLI share a `manifest.json.lock`. Migration rereads the manifest under this lock and merges its set; concurrent explicit activations are serialized, so the last completed activation wins. The sets CLI rejects saving a stale loaded manifest and requires a reload. External writers must use the same helper to participate in this coordination. A lock left by a terminated writer produces a timeout; confirm the writer has stopped and inspect the manifest diff before removing that lock and retrying.
+
 Verify the deployed pool from the repository root:
 
 ```bash
