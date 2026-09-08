@@ -43,31 +43,32 @@ Configure the `hentAiService` namespace in the plugin config:
 | `hentAiService.token` | `string` | yes | Bearer token for service requests. Literal values and `${ENV_VAR}` placeholders are supported. |
 | `hentAiService.timeoutMs` | `number` | no | Request timeout. Defaults to `15000`. |
 | `hentAiService.preReplyMedia` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, sends service-selected media as a separate message on inbound `message_received`. Defaults to **off**. |
-| `hentAiService.watcher` | `boolean` \| `{ enabled }` | no | Opt-in. When enabled, registers the group-chat anti-fixation watcher (record/evaluate/commit). Defaults to **off**. |
 | `hentAiService.conversation.enabled` | `boolean` | no | Forwards group-chat turns to the service when `true`. Defaults to `false`. |
-| `hentAiService.conversation.watcherCompatibility` | `boolean` | no | Preserves compatibility payload fields with legacy watcher clients while using service-owned runtime behavior. Defaults to `true`. |
+| `hentAiService.conversation.watcherCompatibility` | `boolean` | no | Enables internal anti-fixation steering while conversation forwarding is enabled. The adapter injects guidance into the agent prompt and never sends it as an outbound message. Defaults to `true`. |
 
 Missing token, missing URL, invalid URL, or non-localhost HTTP disables the adapter at registration time and logs the disabled state.
 
-> Note: `preReplyMedia` and `watcher` are read from the resolved `hentAiService` config by `openclaw/index.ts` and declared in `openclaw.plugin.json`'s `hentAiService` schema. Keep code and schema in sync when adding new `hentAiService` keys.
+> Note: The former standalone `watcher` toggle is deprecated and ignored. Anti-fixation steering runs only when `conversation.enabled` is `true` and `conversation.watcherCompatibility` is not `false`.
 
 ## Runtime Hooks
 
-The final-response media path is always active. The pre-reply and watcher handlers may be registered by the adapter, but service calls and outbound delivery for pre-reply/watcher behavior run only when the corresponding feature is explicitly enabled.
+The final-response media path is always active. Pre-reply media is independently opt-in. Conversation tracking and anti-fixation steering run only as part of the conversation module.
 
 | Hook | When | Condition | Service call |
 | --- | --- | --- | --- |
 | `reply_payload_sending` | Final assistant reply (`kind: "final"`) | always | `POST /v1/final-response/verdict` → attaches `verdict.media` to the payload |
 | `message_received` | Inbound user message | `preReplyMedia` enabled | `POST /v1/pre-reply/media` → sends returned media as a separate message |
-| `message_received` | Inbound user message | `watcher` enabled | `POST /v1/watcher/record-user` (records conversation window) |
-| `message_sent` | Outbound assistant message | `watcher` enabled | `POST /v1/watcher/evaluate`; on a `nudge` verdict, sends the nudge text and `POST /v1/watcher/commit-delivery` |
+| `message_received` | Inbound user message | conversation enabled | `POST /v1/watcher/record-user`; queues the scope for prompt-time steering when compatibility is enabled |
+| `before_prompt_build` | Before the next agent generation | a steering scope is pending | `POST /v1/watcher/steer`; appends returned guidance as one-shot system context |
+| `message_sent` | Outbound assistant message | conversation enabled | `POST /v1/watcher/record-assistant` |
 
-When conversation forwarding is enabled:
+When conversation forwarding and anti-fixation compatibility are enabled:
 
-- `message_received` → `POST /v1/watcher/record-user`
-- `message_sent` → `POST /v1/watcher/evaluate`, optional `POST /v1/watcher/commit-delivery`
+- `message_received` records the user turn and queues its conversation scope for the next prompt.
+- `before_prompt_build` asks the service whether that prompt needs a steer and consumes the result once as private system context.
+- `message_sent` records the actual assistant turn exactly once.
 
-Block payloads and non-final `reply_payload_sending` kinds are ignored. Pre-reply and watcher delivery use OpenClaw's outbound channel adapter abstraction, never a direct Discord REST call. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
+The user turn is never evaluated as an assistant turn. Anti-fixation text never goes through OpenClaw's outbound adapter. Block payloads and non-final `reply_payload_sending` kinds are ignored. The legacy `pre_reply_media` and `message_sent_media` fallback hooks have been removed; do not depend on them for new setups.
 
 Requests use bearer auth and JSON bodies containing the OpenClaw hook context. Service failures are non-blocking: timeout, network error, HTTP error, `null`, or malformed media leave the original payload unchanged and log a skip. OpenClaw continues text delivery.
 
@@ -90,45 +91,11 @@ Expected service response:
 
 If the service returns `dataBase64` instead of `url`, the adapter converts it to a data URL using `contentType` or `image/png`.
 
-### Group-chat delivery
+### Internal anti-fixation steering
 
-`conversation.enabled: true` allows service-owned conversation context to flow:
+`conversation.enabled: true` lets the service track user and assistant turns. When recent assistant turns repeat the same frame, `/v1/watcher/steer` returns private guidance for the next generation. The adapter stores only the pending conversation scope by OpenClaw session, evaluates it in `before_prompt_build`, and consumes it once.
 
-- user messages are sent from `message_received` as room turns (`scopeId`, `text`, `id`).
-- bot messages are sent from `message_sent` for policy/gating and delivery decisions.
-- if the service returns a `deliveryPlan`, the adapter sends each chunk through host `sendText` with the provided delays and commits delivery only after all required message IDs return.
-
-Expected decision payload (partial):
-
-```json
-{
-  "decision": "nudge",
-  "deliveryPlan": {
-    "planId": "watcher:scope-1",
-    "scopeId": "channel:123:session:s1",
-    "channelId": "123",
-    "chunks": [
-      {
-        "chunkId": "watcher:scope-1:0",
-        "text": "짧게 먼저 반응해도 좋고",
-        "delayMs": 1200,
-        "metadata": {
-          "hentAiConversationChunk": true,
-          "planId": "watcher:scope-1",
-          "chunkIndex": 0,
-          "chunkCount": 1
-        }
-      }
-    ],
-    "commit": {
-      "planId": "watcher:scope-1",
-      "cooldownKey": "channel:123:topic:repeat",
-      "signalId": "signal-7",
-      "requiredChunkIds": ["watcher:scope-1:0"]
-    }
-  }
-}
-```
+The guidance explicitly tells the agent to change approach and not expose the detector. The adapter never returns it from `message_sending`, passes it to an outbound text API, or commits it as a conversation delivery plan.
 
 ## Service-owned Decisions
 
@@ -189,9 +156,9 @@ preconditions are absent.
 
 The harness first proves the complete flow in a disposable child gateway: disposable `HOME`,
 state, workspace, config, SQLite DB, semantic assets, deterministic local provider/verifier, and
-loopback outbound adapter. It checks final text, exact static media bytes, pre-reply media, watcher
-chunks, and commit state. It then temporarily boots out the existing LaunchAgent and occupies the
-same port with another disposable configuration. That phase disables ambient/pre-reply/watcher
+loopback outbound adapter. It checks final text, exact static media bytes, pre-reply media, private
+anti-fixation prompt injection, and zero watcher text deliveries. It then temporarily boots out the
+existing LaunchAgent and occupies the same port with another disposable configuration. That phase disables ambient/pre-reply/conversation
 features and permits only the loopback QA channel, local provider, local Hent service, and the two
 checked-out plugins. Credentials are scrubbed, no MCP is configured, and logs must contain no MCP
 or non-loopback HTTP URL.
