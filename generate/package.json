@@ -13,12 +13,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node build.mjs",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@hent-ai/shared": "file:../shared",
+    "better-sqlite3": "^12.10.0",
     "god-tibo-imagen": "^0.3.0",
     "sharp": "^0.34.5"
   },
@@ -26,7 +27,6 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/sharp": "^0.31.1",
-    "better-sqlite3": "^12.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },

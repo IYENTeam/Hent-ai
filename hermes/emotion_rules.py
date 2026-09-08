@@ -79,5 +79,20 @@ def should_attach_for_platform(platform: str, allowed: Iterable[str]) -> bool:
 
 
 def strip_media_directives(text: str) -> str:
-    without_directives = MEDIA_DIRECTIVE_RE.sub("", text)
-    return re.sub(r"[ \t]{2,}", " ", without_directives).strip()
+    if not MEDIA_DIRECTIVE_RE.search(text):
+        return text
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        if not MEDIA_DIRECTIVE_RE.search(line):
+            kept.append(line)
+            continue
+        # Remove each directive's horizontal separator, preserving all other
+        # indentation, spacing and line endings in the response.
+        without_directives = re.sub(r"[ \t]*" + MEDIA_DIRECTIVE_RE.pattern, "", line, flags=re.I)
+        if not without_directives.strip():
+            if index == len(lines) - 1 and kept:
+                kept[-1] = kept[-1].removesuffix("\n").removesuffix("\r")
+            continue
+        kept.append(without_directives)
+    return "".join(kept)

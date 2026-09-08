@@ -33,6 +33,47 @@ afterEach(() => {
 });
 
 describe("semantic asset importer", () => {
+  it("preserves runtime mapping values on reimport and accepts explicit overrides without an active set", () => {
+    const root = temporaryAssetRoot();
+    const manifest = { activeSet: "semantic-set", sets: { "semantic-set": { name: "Set", emotions: { happy: ["a-legacy.png"] } } } };
+    writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(root, "channel-overrides.json"), JSON.stringify({ channel: {} }));
+    const db = new ServiceDatabase();
+    try {
+      importAssets({ db, assetRoot: root });
+      db.createProfile({ id: "custom", name: "Custom" });
+      db.setChannelMapping("channel", { profileId: "custom", assetSetId: "custom", enabled: false });
+      importAssets({ db, assetRoot: root });
+      expect(db.getChannelMapping("channel")).toMatchObject({ profileId: "custom", assetSetId: "custom", enabled: false });
+      writeFileSync(join(root, "manifest.json"), JSON.stringify({ sets: manifest.sets }));
+      writeFileSync(join(root, "channel-overrides.json"), JSON.stringify({ channel: { profileId: "semantic-set", assetSetId: "semantic-set", enabled: true } }));
+      importAssets({ db, assetRoot: root });
+      expect(db.getChannelMapping("channel")).toMatchObject({ profileId: "semantic-set", assetSetId: "semantic-set", enabled: true });
+    } finally { db.close(); }
+  });
+
+  it("imports directory images for an API-created profile and rolls back later failures", () => {
+    const root = temporaryAssetRoot();
+    mkdirSync(join(root, "profiles", "existing"), { recursive: true });
+    writeFileSync(join(root, "profiles", "existing", "happy.png"), "pixels");
+    const db = new ServiceDatabase();
+    try {
+      db.createProfile({ id: "existing", name: "API name", character: "API character" });
+      importAssets({ db, assetRoot: root });
+      expect(db.getProfile("existing")).toMatchObject({ name: "API name", character: "API character" });
+      expect(db.db.prepare("SELECT id FROM assets WHERE asset_set_id='existing'").all()).toHaveLength(1);
+      const before = db.db.prepare("SELECT * FROM assets ORDER BY id").all();
+      const imports = db.db.prepare("SELECT COUNT(*) AS count FROM import_runs").get();
+      db.db.exec("CREATE TRIGGER fail_import BEFORE INSERT ON import_runs BEGIN SELECT RAISE(FAIL, 'late import failure'); END");
+      writeFileSync(join(root, "profiles", "existing", "neutral.png"), "new pixels");
+      expect(() => importAssets({ db, assetRoot: root })).toThrow("late import failure");
+      expect(db.db.prepare("SELECT * FROM assets ORDER BY id").all()).toEqual(before);
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM import_runs").get()).toEqual(imports);
+      writeFileSync(join(root, "channel-overrides.json"), JSON.stringify({ channel: { profileId: "missing" } }));
+      expect(() => importAssets({ db, assetRoot: root, dryRun: true })).toThrow("Profile not found");
+    } finally { db.close(); }
+  });
+
   it("imports a complete VisualAffectV2 set and routes across coarse buckets", () => {
     const root = temporaryAssetRoot();
     const visual = (overrides: Partial<AffectDimensionsV2>) => ({
