@@ -224,19 +224,17 @@ function buildImportPlan(assetRoot: string, manifest: Manifest, channelOverrides
 
   for (const mapping of legacy.channelMappings) channelMap.set(mapping.channelId, mapping);
 
-  if (manifest.activeSet) {
-    for (const [channelId, value] of Object.entries(channelOverrides).filter(([, value]) => value && typeof value === "object")) {
-      const override = value as { profileId?: string; mode?: string; enabled?: boolean; cronEnabled?: boolean; assetSetId?: string };
-      channelMap.set(channelId, {
-        ...channelMap.get(channelId),
-        channelId,
-        profileId: override.profileId ?? channelMap.get(channelId)?.profileId ?? manifest.activeSet,
-        mode: override.mode ?? channelMap.get(channelId)?.mode ?? null,
-        enabled: override.enabled ?? channelMap.get(channelId)?.enabled ?? true,
-        cronEnabled: override.cronEnabled ?? channelMap.get(channelId)?.cronEnabled ?? null,
-        assetSetId: override.assetSetId ?? channelMap.get(channelId)?.assetSetId ?? manifest.activeSet,
-      });
-    }
+  for (const [channelId, value] of Object.entries(channelOverrides).filter(([, value]) => value && typeof value === "object")) {
+    const override = value as { profileId?: string; mode?: string; enabled?: boolean; cronEnabled?: boolean; assetSetId?: string };
+    channelMap.set(channelId, {
+      ...channelMap.get(channelId),
+      channelId,
+      profileId: override.profileId ?? channelMap.get(channelId)?.profileId,
+      mode: override.mode ?? channelMap.get(channelId)?.mode ?? null,
+      enabled: override.enabled ?? channelMap.get(channelId)?.enabled,
+      cronEnabled: override.cronEnabled ?? channelMap.get(channelId)?.cronEnabled ?? null,
+      assetSetId: override.assetSetId ?? channelMap.get(channelId)?.assetSetId,
+    });
   }
 
   return {
@@ -276,70 +274,81 @@ export function importAssets(options: { db: ServiceDatabase; assetRoot: string; 
   };
   const checksum = digestImportInputs(options.assetRoot, manifest, channelOverrides, plan);
 
-  for (const profile of plan.profiles) {
-    if (!dryRun) {
-      // Profiles discovered only from a profiles/<id> directory (no manifest entry)
-      // are owned by the runtime DB/API: seed them once, never clobber afterwards.
-      // Manifest-backed sets keep the manifest as source of truth, but a missing
-      // legacy hentai.db must not null out fields the API has since populated.
-      const fromManifest = profile.manifest !== undefined;
-      const existing = options.db.getProfile(profile.id);
-      if (!existing || fromManifest) {
-        options.db.upsertAssetSet({ id: profile.id, name: profile.name, character: profile.character ?? null, model: profile.model ?? null, manifest: profile.manifest ?? {} });
+  for (const mapping of plan.channelMappings) {
+    const profileId = mapping.profileId ?? (options.db.getChannelMapping(mapping.channelId) ? undefined : manifest.activeSet);
+    if (profileId && !plan.profiles.some((profile) => profile.id === profileId) && !options.db.getProfile(profileId)) {
+      throw new Error(`Profile not found: ${profileId}`);
+    }
+  }
+
+  const apply = (): ImportReport => {
+    for (const profile of plan.profiles) {
+      if (!dryRun) {
+        // Profiles discovered only from a profiles/<id> directory (no manifest entry)
+        // are owned by the runtime DB/API: seed them once, never clobber afterwards.
+        // Manifest-backed sets keep the manifest as source of truth, but a missing
+        // legacy hentai.db must not null out fields the API has since populated.
+        const fromManifest = profile.manifest !== undefined;
+        const existing = options.db.getProfile(profile.id);
+        const existingSet = options.db.db.prepare("SELECT 1 FROM asset_sets WHERE id=?").get(profile.id);
+        if (!existingSet || fromManifest) {
+          options.db.upsertAssetSet({ id: profile.id, name: profile.name, character: profile.character ?? null, model: profile.model ?? null, manifest: profile.manifest ?? {} });
+        }
+        if (!existing) {
+          options.db.createProfile({ id: profile.id, name: profile.name, character: profile.character ?? null, soulSnippet: profile.soulSnippet ?? null, model: profile.model ?? null });
+        } else if (fromManifest) {
+          options.db.updateProfile(profile.id, {
+            name: profile.name,
+            character: profile.character ?? undefined,
+            soulSnippet: profile.soulSnippet ?? undefined,
+            model: profile.model ?? undefined,
+          });
+        }
       }
-      if (!existing) {
-        options.db.createProfile({ id: profile.id, name: profile.name, character: profile.character ?? null, soulSnippet: profile.soulSnippet ?? null, model: profile.model ?? null });
-      } else if (fromManifest) {
-        options.db.updateProfile(profile.id, {
-          name: profile.name,
-          character: profile.character ?? undefined,
-          soulSnippet: profile.soulSnippet ?? undefined,
-          model: profile.model ?? undefined,
+    }
+
+    for (const asset of plan.assets) {
+      if (asset.semanticWarning) warnings.push(asset.semanticWarning);
+      if (!existsSync(asset.path)) {
+        warnings.push(`Missing asset file: ${asset.path}`);
+        continue;
+      }
+      counts.assets += 1;
+      counts.storageObjects += 1;
+      if (!dryRun) {
+        const objectInput = objectInputFromFile(options.assetRoot, asset.path, "imported");
+        const storageObjectId = options.db.upsertStorageObject(objectInput);
+        options.db.upsertAsset({
+          id: asset.id,
+          assetSetId: asset.assetSetId,
+          emotion: asset.emotion,
+          filename: asset.filename,
+          storageObjectId,
+          contentHash: objectInput.contentHash,
+          semanticTags: asset.semanticTags,
+          semanticVector: asset.semanticVector,
         });
       }
     }
-  }
 
-  for (const asset of plan.assets) {
-    if (asset.semanticWarning) warnings.push(asset.semanticWarning);
-    if (!existsSync(asset.path)) {
-      warnings.push(`Missing asset file: ${asset.path}`);
-      continue;
-    }
-    counts.assets += 1;
-    counts.storageObjects += 1;
     if (!dryRun) {
-      const objectInput = objectInputFromFile(options.assetRoot, asset.path, "imported");
-      const storageObjectId = options.db.upsertStorageObject(objectInput);
-      options.db.upsertAsset({
-        id: asset.id,
-        assetSetId: asset.assetSetId,
-        emotion: asset.emotion,
-        filename: asset.filename,
-        storageObjectId,
-        contentHash: objectInput.contentHash,
-        semanticTags: asset.semanticTags,
-        semanticVector: asset.semanticVector,
-      });
+      for (const mapping of plan.channelMappings) {
+        // Merge with the existing row so a re-import never wipes runtime-managed
+        // state (cron flags, API-set profile/mode) that the seed files don't carry.
+        const existing = options.db.getChannelMapping(mapping.channelId);
+        options.db.setChannelMapping(mapping.channelId, {
+          profileId: mapping.profileId ?? (existing ? existing.profileId : manifest.activeSet ?? null),
+          mode: mapping.mode ?? existing?.mode ?? null,
+          enabled: mapping.enabled ?? existing?.enabled ?? true,
+          cronEnabled: mapping.cronEnabled ?? existing?.cronEnabled ?? null,
+          assetSetId: mapping.assetSetId ?? mapping.profileId ?? (existing ? existing.assetSetId : manifest.activeSet ?? null),
+        });
+      }
+      options.db.recordImportRun(checksum, false, { counts, warnings });
     }
-  }
-
-  if (!dryRun) {
-    for (const mapping of plan.channelMappings) {
-      // Merge with the existing row so a re-import never wipes runtime-managed
-      // state (cron flags, API-set profile/mode) that the seed files don't carry.
-      const existing = options.db.getChannelMapping(mapping.channelId);
-      options.db.setChannelMapping(mapping.channelId, {
-        profileId: mapping.profileId ?? existing?.profileId ?? null,
-        mode: mapping.mode ?? existing?.mode ?? null,
-        enabled: mapping.enabled ?? existing?.enabled ?? true,
-        cronEnabled: mapping.cronEnabled ?? existing?.cronEnabled ?? null,
-        assetSetId: mapping.assetSetId ?? mapping.profileId ?? existing?.assetSetId ?? null,
-      });
-    }
-    options.db.recordImportRun(checksum, false, { counts, warnings });
-  }
-  return { dryRun, checksum, counts, mutations: !dryRun, warnings };
+    return { dryRun, checksum, counts, mutations: !dryRun, warnings };
+  };
+  return dryRun ? apply() : options.db.db.transaction(apply)();
 }
 
 export function listImportableSetDirectories(assetRoot: string): string[] {
