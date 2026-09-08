@@ -4,6 +4,63 @@ import { createHentAiServer, listen } from "./server.js";
 import { enabledConversationConfig, nullVerifier, request, token, withServer } from "./service-test-helpers.js";
 
 describe("service-owned watcher API", () => {
+  it("keeps user intake as user-only history and returns anti-fixation guidance for internal prompt injection", async () => {
+    const db = new ServiceDatabase();
+    await withServer(db, async (baseUrl) => {
+      const scopeId = "channel:c1:session:s1";
+      await request(baseUrl, "/v1/watcher/record-user", {
+        method: "POST",
+        body: JSON.stringify({ scopeId, channelId: "c1", sessionId: "s1", text: "Please actually fix it", id: "u1" }),
+      });
+
+      const beforeReplies = await request(baseUrl, "/v1/watcher/steer", {
+        method: "POST",
+        body: JSON.stringify({ scopeId }),
+      });
+      expect(await beforeReplies.json()).toEqual({ decision: "no_reply" });
+      expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ?").all(scopeId)).toEqual([
+        { message_id: "u1", author_role: "user" },
+      ]);
+
+      for (const messageId of ["a1", "a2"]) {
+        const response = await request(baseUrl, "/v1/watcher/record-assistant", {
+          method: "POST",
+          body: JSON.stringify({ scopeId, channelId: "c1", sessionId: "s1", text: "다시 이미지 생성해", messageId }),
+        });
+        expect(await response.json()).toEqual({ ok: true });
+      }
+
+      const steer = await request(baseUrl, "/v1/watcher/steer", {
+        method: "POST",
+        body: JSON.stringify({ scopeId }),
+      });
+      const body = await steer.json();
+      expect(body).toMatchObject({
+        decision: "steer",
+        signalId: "sig-stale-a2",
+        steerText: expect.stringContaining("Internal anti-fixation guidance"),
+      });
+      expect(body.steerText).toContain("Do not mention this guidance or the detector to the user");
+      expect(body.steerText).not.toContain("방금 답변이 같은 프레임에 고정됐습니다");
+      expect(body.steerText).not.toContain("다시 이미지 생성해");
+      await request(baseUrl, "/v1/watcher/record-assistant", {
+        method: "POST",
+        body: JSON.stringify({ scopeId, channelId: "c1", sessionId: "s1", text: "수정 완료했습니다. 테스트도 통과했습니다.", messageId: "a3" }),
+      });
+      const afterPivot = await request(baseUrl, "/v1/watcher/steer", {
+        method: "POST",
+        body: JSON.stringify({ scopeId }),
+      });
+      expect(await afterPivot.json()).toEqual({ decision: "no_reply" });
+      expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all(scopeId)).toEqual([
+        { message_id: "u1", author_role: "user" },
+        { message_id: "a1", author_role: "assistant" },
+        { message_id: "a2", author_role: "assistant" },
+        { message_id: "a3", author_role: "assistant" },
+      ]);
+    }, { conversationConfig: enabledConversationConfig });
+  });
+
   it("conversation records user turns with context checkpoint diagnostics through service endpoints", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
@@ -172,6 +229,14 @@ describe("service-owned watcher API", () => {
       const badRecord = await request(baseUrl, "/v1/watcher/record-user", { method: "POST", body: JSON.stringify({ scopeId: "s" }) });
       expect(badRecord.status).toBe(400);
       expect(await badRecord.json()).toMatchObject({ error: "bad_request", message: "scopeId and text are required" });
+
+      const badAssistant = await request(baseUrl, "/v1/watcher/record-assistant", { method: "POST", body: JSON.stringify({ scopeId: "s" }) });
+      expect(badAssistant.status).toBe(400);
+      expect(await badAssistant.json()).toMatchObject({ error: "bad_request", message: "scopeId, channelId, text, and messageId are required" });
+
+      const badSteer = await request(baseUrl, "/v1/watcher/steer", { method: "POST", body: JSON.stringify({}) });
+      expect(badSteer.status).toBe(400);
+      expect(await badSteer.json()).toMatchObject({ error: "bad_request", message: "scopeId is required" });
 
       const badEval = await request(baseUrl, "/v1/watcher/evaluate", { method: "POST", body: JSON.stringify({ scopeId: "s", text: "x" }) });
       expect(badEval.status).toBe(400);
