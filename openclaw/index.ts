@@ -17,7 +17,7 @@ export type HentAiServiceConfig = {
   timeoutMs?: number;
   /** Sends media as a separate inbound/pre-reply message when explicitly enabled. */
   preReplyMedia?: FeatureToggleConfig;
-  /** Enables watcher record/evaluate hooks. Intended for the separate group-chat watcher module. */
+  /** @deprecated Anti-fixation steering is available only through `conversation`. */
   watcher?: FeatureToggleConfig;
   conversation?: ConversationForwardingConfig;
 };
@@ -69,7 +69,6 @@ type OpenClawOutboundSendContext = {
 };
 
 type OpenClawOutboundAdapter = {
-  sendText?: (ctx: OpenClawOutboundSendContext) => Promise<unknown>;
   sendMedia?: (ctx: OpenClawOutboundSendContext) => Promise<unknown>;
 };
 
@@ -107,41 +106,12 @@ export type OpenClawOutboundTarget = {
 };
 
 export type OpenClawMessageSender = {
-  sendText?: (target: OpenClawOutboundTarget, text: string) => Promise<string | null>;
   sendMedia?: (target: OpenClawOutboundTarget, mediaUrl: string, text?: string) => Promise<string | null>;
 };
 
-type ConversationDeliveryChunkMetadata = {
-  readonly hentAiConversationChunk: true;
-  readonly planId: string;
-  readonly chunkIndex: number;
-  readonly chunkCount: number;
-};
-
-type ConversationDeliveryChunk = {
-  readonly chunkId: string;
-  readonly text: string;
-  readonly delayMs: number;
-  readonly metadata: ConversationDeliveryChunkMetadata;
-};
-
-type ConversationDeliveryPlan = {
-  readonly planId: string;
-  readonly scopeId: string;
-  readonly channelId: string;
-  readonly chunks: readonly ConversationDeliveryChunk[];
-  readonly commit: {
-    readonly planId: string;
-    readonly cooldownKey: string;
-    readonly signalId: string;
-    readonly requiredChunkIds: readonly string[];
-  };
-};
-
-type MessageSentServiceResponse = {
-  readonly deliveryPlan?: ConversationDeliveryPlan;
-  readonly nudgeText?: string;
-  readonly audit?: unknown;
+type WatcherSteerResponse = {
+  readonly decision: "steer" | "no_reply";
+  readonly steerText?: string;
 };
 
 function extractOutboundMessageId(result: unknown): string | null {
@@ -159,22 +129,6 @@ export function createOpenClawMessageSender(api: {
   const loadAdapter = api.runtime?.channel?.outbound?.loadAdapter;
   if (!loadAdapter) return undefined;
   return {
-    async sendText(target, text) {
-      try {
-        const adapter = await loadAdapter(target.channel);
-        if (!adapter?.sendText) return null;
-        const result = await adapter.sendText({
-          cfg: api.config ?? {},
-          to: target.to,
-          text,
-          ...(target.accountId ? { accountId: target.accountId } : {}),
-        });
-        return extractOutboundMessageId(result);
-      } catch (error) {
-        loggerWarn(api.logger, `hent-ai adapter: outbound text send failed: ${error instanceof Error ? error.message : String(error)}`);
-        return null;
-      }
-    },
     async sendMedia(target, mediaUrl, text = "") {
       try {
         const adapter = await loadAdapter(target.channel);
@@ -580,136 +534,16 @@ export function outboundTargetFromEvent(event: unknown, ctx?: unknown): OpenClaw
   return { channel, to, ...(accountId ? { accountId } : {}) };
 }
 
-function safeSleep(milliseconds: number): Promise<void> {
-  if (milliseconds <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function addToSuppressSet(set: Set<string>, value: string, maxSize: number): void {
-  if (set.size >= maxSize) {
-    const oldest = set.values().next().value;
-    if (oldest !== undefined) set.delete(oldest);
-  }
-  set.add(value);
-}
-
-function isConversationDeliveryPlan(value: unknown): value is ConversationDeliveryPlan {
-  const record = asRecord(value);
-  if (!record) return false;
-  if (!isNonEmptyString(record.planId) || !isNonEmptyString(record.scopeId) || !isNonEmptyString(record.channelId)) return false;
-
-  const chunksValue = asArray(record.chunks);
-  if (!chunksValue) return false;
-  const chunks = chunksValue.map((chunkValue) => {
-    const chunk = asRecord(chunkValue);
-    const metadata = asRecord(chunk?.metadata);
-    if (!chunk || !isNonEmptyString(chunk.chunkId) || !isNonEmptyString(chunk.text) || !isFiniteDelay(chunk.delayMs)) return undefined;
-
-    const planMetadata = metadata?.hentAiConversationChunk === true
-      && isNonEmptyString(metadata.planId)
-      && Number.isInteger(metadata.chunkIndex)
-      && Number.isInteger(metadata.chunkCount)
-      && typeof metadata.chunkCount === "number"
-      && metadata.chunkCount > 0
-      ? {
-          hentAiConversationChunk: true as const,
-          planId: metadata.planId,
-          chunkIndex: metadata.chunkIndex,
-          chunkCount: metadata.chunkCount,
-        }
-      : null;
-
-    if (!planMetadata) return undefined;
-    return {
-      chunkId: chunk.chunkId,
-      text: chunk.text.trim(),
-      delayMs: chunk.delayMs,
-      metadata: planMetadata,
-    } as ConversationDeliveryChunk;
-  });
-
-  if (chunks.some((chunk) => chunk === undefined)) return false;
-  const validChunks = chunks as readonly ConversationDeliveryChunk[];
-  if (validChunks.length === 0) return false;
-
-  const commit = asRecord(record.commit);
-  if (!commit) return false;
-  const requiredChunkIds = asStringArray(commit.requiredChunkIds);
-  if (!requiredChunkIds || requiredChunkIds.length === 0) return false;
-  if (!isNonEmptyString(commit.planId) || !isNonEmptyString(commit.cooldownKey) || !isNonEmptyString(commit.signalId)) return false;
-  return commit.planId === record.planId && validChunks.every((chunk) => chunk.metadata.planId === record.planId);
-}
-
-function asArray(value: unknown): readonly unknown[] | undefined {
-  return Array.isArray(value) ? value : undefined;
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isFiniteDelay(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function asStringArray(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const values = value as unknown[];
-  if (values.length === 0) return undefined;
-  return values.every(isNonEmptyString) ? values : undefined;
-}
-
-function parseMessageSentResponse(value: unknown): MessageSentServiceResponse | null {
+function parseWatcherSteerResponse(value: unknown): WatcherSteerResponse | null {
   const record = asRecord(value);
-  if (!record) return null;
-  const deliveryPlan = isConversationDeliveryPlan(record.deliveryPlan) ? record.deliveryPlan : undefined;
-  const nudgeText = isNonEmptyString(record.nudgeText) ? record.nudgeText : undefined;
-  return { deliveryPlan, nudgeText, audit: record.audit };
+  if (!record || (record.decision !== "steer" && record.decision !== "no_reply")) return null;
+  const steerText = isNonEmptyString(record.steerText) ? record.steerText.trim() : undefined;
+  return { decision: record.decision, ...(steerText ? { steerText } : {}) };
 }
-
-async function sendConversationDeliveryPlan(
-  sender: OpenClawMessageSender | undefined,
-  response: ConversationDeliveryPlan,
-  target: OpenClawOutboundTarget,
-  scopeId: string,
-  channelId: string,
-  baseConfig: { baseUrl: URL; token: string; timeoutMs: number },
-  suppressMessageIds: Set<string>,
-  suppressMaxSize: number,
-  logger?: Logger,
-): Promise<void> {
-  const deliveryMessageIds: Record<string, string> = {};
-  const requiredChunkIds = new Set(response.commit.requiredChunkIds);
-  for (const chunk of response.chunks) {
-    await safeSleep(chunk.delayMs);
-    if (!await serviceChannelEligible({ ...baseConfig, channelId, logger })) return;
-    const sentMessageId = await sender?.sendText?.(target, chunk.text);
-    if (sentMessageId && requiredChunkIds.has(chunk.chunkId)) {
-      deliveryMessageIds[chunk.chunkId] = sentMessageId;
-      addToSuppressSet(suppressMessageIds, sentMessageId, suppressMaxSize);
-    }
-  }
-
-  const allChunkIds = response.commit.requiredChunkIds.every((chunkId) => deliveryMessageIds[chunkId]);
-  if (!allChunkIds) return;
-
-  const responseJson = await callJsonService({
-    baseUrl: baseConfig.baseUrl,
-    token: baseConfig.token,
-    timeoutMs: baseConfig.timeoutMs,
-    endpoint: "/v1/watcher/commit-delivery",
-    body: {
-      planId: response.commit.planId,
-      cooldownKey: response.commit.cooldownKey,
-      scopeId,
-      signalId: response.commit.signalId,
-      deliveryMessageIds,
-    },
-    logger,
-  });
-  if (!responseJson) return;
-}
-
 
 function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { scopeId: string; threadId?: string; sessionId?: string } {
   const record = asRecord(event) ?? {};
@@ -721,6 +555,27 @@ function watcherScopeId(channelId: string, event: unknown, ctx?: unknown): { sco
   if (threadId) parts.push(`thread:${threadId}`);
   if (sessionId) parts.push(`session:${sessionId}`);
   return { scopeId: parts.join(":"), threadId, sessionId };
+}
+
+function watcherPromptKey(event: unknown, ctx?: unknown, channelId?: string): string | undefined {
+  const record = asRecord(event) ?? {};
+  const metadata = asRecord(record.metadata);
+  const context = asRecord(ctx);
+  const sessionId = stringValue(record.sessionKey)
+    ?? stringValue(metadata?.sessionId)
+    ?? stringValue(metadata?.session_id)
+    ?? stringValue(context?.sessionKey);
+  if (sessionId) return `session:${sessionId}`;
+  const resolvedChannelId = channelId ?? channelIdFromEvent(event, ctx);
+  return resolvedChannelId ? `channel:${resolvedChannelId}` : undefined;
+}
+
+function setPendingSteerScope(map: Map<string, string>, key: string, scopeId: string, maxSize: number): void {
+  if (map.size >= maxSize && !map.has(key)) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, scopeId);
 }
 
 
@@ -769,96 +624,6 @@ async function callJsonService(params: {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-async function serviceChannelEligible(params: {
-  baseUrl: URL;
-  token: string;
-  timeoutMs: number;
-  channelId: string;
-  logger?: Logger;
-}): Promise<boolean> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), params.timeoutMs);
-  const endpoint = `/v1/channels/${encodeURIComponent(params.channelId)}/mapping`;
-  try {
-    const response = await fetch(endpointUrl(params.baseUrl, endpoint), {
-      method: "GET",
-      headers: { authorization: `Bearer ${params.token}` },
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      loggerWarn(params.logger, `hent-ai adapter: ${endpoint} returned HTTP ${response.status}; watcher delivery suppressed`);
-      return false;
-    }
-    const mapping = asRecord(asRecord(await response.json())?.mapping);
-    const eligible = mapping?.enabled === true;
-    if (!eligible) {
-      loggerInfo(params.logger, `hent-ai adapter: watcher delivery suppressed for unmapped or disabled channel=${params.channelId}`);
-    }
-    return eligible;
-  } catch (error) {
-    loggerWarn(params.logger, `hent-ai adapter: ${endpoint} failed; watcher delivery suppressed: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function deliverWatcherResponse(params: {
-  sender: OpenClawMessageSender | undefined;
-  response: MessageSentServiceResponse | null;
-  target: OpenClawOutboundTarget | null;
-  scopeId: string;
-  channelId: string;
-  config: { baseUrl: URL; token: string; timeoutMs: number };
-  suppressMessageIds: Set<string>;
-  suppressMaxSize: number;
-  logger?: Logger;
-}): Promise<void> {
-  const { response } = params;
-  if (!response || (!response.deliveryPlan && !response.nudgeText)) return;
-  if (!params.sender || !params.target) {
-    loggerWarn(params.logger, "hent-ai adapter: watcher delivery suppressed because no host outbound route is available");
-    return;
-  }
-  if (response.deliveryPlan
-    && (response.deliveryPlan.channelId !== params.channelId || response.deliveryPlan.scopeId !== params.scopeId)) {
-    loggerWarn(params.logger, "hent-ai adapter: watcher delivery suppressed because service plan route does not match the hook route");
-    return;
-  }
-  if (response.deliveryPlan) {
-    await sendConversationDeliveryPlan(
-      params.sender,
-      response.deliveryPlan,
-      params.target,
-      params.scopeId,
-      params.channelId,
-      params.config,
-      params.suppressMessageIds,
-      params.suppressMaxSize,
-      params.logger,
-    );
-    return;
-  }
-
-  const nudgeText = response.nudgeText;
-  if (!nudgeText) return;
-  if (!await serviceChannelEligible({ ...params.config, channelId: params.channelId, logger: params.logger })) return;
-  const deliveryMessageId = await params.sender.sendText?.(params.target, nudgeText);
-  if (deliveryMessageId) addToSuppressSet(params.suppressMessageIds, deliveryMessageId, params.suppressMaxSize);
-  const audit = asRecord(response.audit);
-  const cooldownKey = stringValue(audit?.cooldownKey);
-  const signalId = stringValue(audit?.internalSignalId);
-  if (!deliveryMessageId || !cooldownKey || !signalId) return;
-  await callJsonService({
-    baseUrl: params.config.baseUrl,
-    token: params.config.token,
-    timeoutMs: params.config.timeoutMs,
-    endpoint: "/v1/watcher/commit-delivery",
-    body: { cooldownKey, scopeId: params.scopeId, signalId, deliveryMessageId },
-    logger: params.logger,
-  });
 }
 
 async function handleReplyPayloadSending(params: {
@@ -933,21 +698,37 @@ export default definePluginEntry({
     const sender = createOpenClawMessageSender(api);
     const serviceFeatureConfig = resolveServiceConfig(api);
     const preReplyMediaEnabled = featureEnabled(serviceFeatureConfig?.preReplyMedia, false);
-    const selfLoopMessageIds = new Set<string>();
-    const SELF_LOOP_MAX_SIZE = 100;
+    const pendingSteerScopes = new Map<string, string>();
+    const PENDING_STEER_MAX_SIZE = 100;
     const serviceConversation = serviceFeatureConfig?.conversation;
-    const watcherEnabled = serviceConversation?.enabled === false
-      ? false
-      : serviceConversation?.enabled === true || featureEnabled(serviceFeatureConfig?.watcher, false);
+    const conversationEnabled = serviceConversation?.enabled === true;
+    const conversationSteeringEnabled = conversationEnabled
+      && serviceConversation.watcherCompatibility !== false;
     const conversation = serviceConversation ? {
       ...(typeof serviceConversation.enabled === "boolean" ? { enabled: serviceConversation.enabled } : {}),
       ...(typeof serviceConversation.watcherCompatibility === "boolean" ? { watcherCompatibility: serviceConversation.watcherCompatibility } : {}),
     } : undefined;
 
-    api.on("before_prompt_build", (_event: unknown, ctx: unknown) => shouldInjectResponseAffect(ctx)
-      ? { appendSystemContext: RESPONSE_AFFECT_PROMPT }
-      : undefined, {
-      name: "hent-ai-response-affect-v2",
+    api.on("before_prompt_build", async (event: unknown, ctx: unknown) => {
+      const systemContext: string[] = [];
+      if (shouldInjectResponseAffect(ctx)) systemContext.push(RESPONSE_AFFECT_PROMPT);
+      const promptKey = watcherPromptKey(event, ctx);
+      const pendingScopeId = promptKey ? pendingSteerScopes.get(promptKey) : undefined;
+      if (promptKey && pendingScopeId) {
+        pendingSteerScopes.delete(promptKey);
+        const steer = parseWatcherSteerResponse(await callJsonService({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          timeoutMs: config.timeoutMs,
+          endpoint: "/v1/watcher/steer",
+          body: { scopeId: pendingScopeId },
+          logger: api.logger,
+        }));
+        if (steer?.decision === "steer" && steer.steerText) systemContext.push(steer.steerText);
+      }
+      return systemContext.length > 0 ? { appendSystemContext: systemContext.join("\n\n") } : undefined;
+    }, {
+      name: "hent-ai-prompt-context",
     });
 
     api.on("message_sending", (event: unknown) => {
@@ -965,42 +746,19 @@ export default definePluginEntry({
       const content = stringValue(record.content);
       if (!channelId || !content) return;
       const scope = watcherScopeId(channelId, event, ctx);
-      if (watcherEnabled) {
-        const recordResult = await callJsonService({
+      if (conversationSteeringEnabled) {
+        const promptKey = watcherPromptKey(event, ctx, channelId);
+        if (promptKey) {
+          setPendingSteerScope(pendingSteerScopes, promptKey, scope.scopeId, PENDING_STEER_MAX_SIZE);
+        }
+      }
+      if (conversationEnabled) {
+        await callJsonService({
           baseUrl: config.baseUrl,
           token: config.token,
           timeoutMs: config.timeoutMs,
           endpoint: "/v1/watcher/record-user",
           body: { scopeId: scope.scopeId, text: content, id: stringValue(record.messageId), channelId, ...(conversation ? { conversation } : {}) },
-          logger: api.logger,
-        });
-        // Evaluate immediately on user message intake
-        const messageId = stringValue(record.messageId) ?? `intake-${Date.now()}`;
-        const evalResult = parseMessageSentResponse(await callJsonService({
-          baseUrl: config.baseUrl,
-          token: config.token,
-          timeoutMs: config.timeoutMs,
-          endpoint: "/v1/watcher/evaluate",
-          body: {
-            scopeId: scope.scopeId,
-            channelId,
-            text: content,
-            messageId,
-            sourceThreadId: scope.threadId,
-            sessionId: scope.sessionId,
-            ...(conversation ? { conversation } : {}),
-          },
-          logger: api.logger,
-        })) ?? null;
-        await deliverWatcherResponse({
-          sender,
-          response: evalResult,
-          target: outboundTarget,
-          scopeId: scope.scopeId,
-          channelId,
-          config,
-          suppressMessageIds: selfLoopMessageIds,
-          suppressMaxSize: SELF_LOOP_MAX_SIZE,
           logger: api.logger,
         });
       }
@@ -1013,7 +771,7 @@ export default definePluginEntry({
     }, { name: "hent-ai-service-message-received" });
 
     api.on("message_sent", async (event: unknown, ctx: unknown) => {
-      if (!watcherEnabled) return;
+      if (!conversationEnabled) return;
       const record = asRecord(event) ?? {};
       if (record.success === false) return;
       const content = stringValue(record.content);
@@ -1023,44 +781,26 @@ export default definePluginEntry({
       const marker = asRecord(record.metadata)?.hentAiWatcherNudge;
       const chunkMarker = asRecord(record.metadata)?.hentAiConversationChunk;
       if (marker === true) return;
-      if (messageId && selfLoopMessageIds.has(messageId)) {
-        selfLoopMessageIds.delete(messageId);
-        return;
-      }
       if (chunkMarker === true) return;
       const scope = watcherScopeId(channelId, event, ctx);
-      const outboundTarget = outboundTargetFromEvent(event, ctx);
       const sourceThreadId = stringValue(record.sourceThreadId) ?? stringValue(asRecord(record.metadata)?.sourceThreadId) ?? scope.threadId;
-      const targetThreadId = stringValue(record.targetThreadId) ?? stringValue(asRecord(record.metadata)?.targetThreadId) ?? scope.threadId;
-      const result = parseMessageSentResponse(await callJsonService({
+      await callJsonService({
         baseUrl: config.baseUrl,
         token: config.token,
         timeoutMs: config.timeoutMs,
-        endpoint: "/v1/watcher/evaluate",
+        endpoint: "/v1/watcher/record-assistant",
         body: {
           scopeId: scope.scopeId,
           channelId,
           text: content,
           messageId,
           sourceThreadId,
-          targetThreadId,
           sessionId: scope.sessionId,
           ...(conversation ? { conversation } : {}),
         },
         logger: api.logger,
-      })) ?? null;
-      await deliverWatcherResponse({
-        sender,
-        response: result,
-        target: outboundTarget,
-        scopeId: scope.scopeId,
-        channelId,
-        config,
-        suppressMessageIds: selfLoopMessageIds,
-        suppressMaxSize: SELF_LOOP_MAX_SIZE,
-        logger: api.logger,
       });
-    }, { name: "hent-ai-service-watcher" });
+    }, { name: "hent-ai-conversation-assistant-recording" });
 
     api.on("reply_payload_sending", async (event: unknown, ctx: unknown) => handleReplyPayloadSending({
       event,
