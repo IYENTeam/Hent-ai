@@ -147,6 +147,8 @@ describe("Discord ambient worker entrypoint", () => {
     const seededStore = service.createAdaptiveAmbientStore(seeded, () => 1_000_000); const seedFence = seededStore.acquireLease("seed", "seed")!;
     expect(seededStore.setCursor(scopes[0]!, "1", seedFence)).toBe(true); seededStore.releaseLease(seedFence); seeded.close();
     let started!: () => void; let aborted!: () => void; let sends = 0; let providerCalls = 0; let archiveStops = 0;
+    let finishArchive!: () => void;
+    const archiveDrained = new Promise<void>((resolve) => { finishArchive = resolve; });
     const pollStarted = new Promise<void>((resolve) => { started = resolve; }); const pollAborted = new Promise<void>((resolve) => { aborted = resolve; });
     const handles = new Set<object>();
     const worker = await service.startDiscordAmbientWorker(env(dbPath, [scopes[0]!]), {
@@ -155,11 +157,17 @@ describe("Discord ambient worker entrypoint", () => {
         started(); signal?.addEventListener("abort", () => { aborted(); resolve([]); }, { once: true });
       }), sendTyping: async () => { sends += 1; }, createMessage: async () => { sends += 1; throw new Error("must not send"); } }),
       createProviderClient: (() => ({ complete: async () => { providerCalls += 1; return { kind: "invalid", diagnostic: "must not call" } as const; } })) as never,
-      createScheduler: (() => ({ ready: Promise.resolve({}), run: async () => ({}), stop: () => { archiveStops += 1; } })) as never,
+      createScheduler: (() => ({ ready: Promise.resolve({}), run: async () => ({}), stop: () => { archiveStops += 1; return archiveDrained; } })) as never,
       timer: { setInterval: () => { const handle = {}; handles.add(handle); return handle; }, clearInterval: (handle) => { handles.delete(handle as object); } },
     });
     const running = worker.runOnce(); await pollStarted;
-    const stopping = worker.stop(); await pollAborted; await stopping; await running;
+    let stopped = false;
+    const stopping = worker.stop().then(() => { stopped = true; });
+    await pollAborted;
+    await running;
+    expect(stopped).toBe(false);
+    finishArchive();
+    await stopping;
     expect({ sends, providerCalls, archiveStops }).toEqual({ sends: 0, providerCalls: 0, archiveStops: 1 });
     expect(handles).toEqual(new Set());
     const check = new service.ServiceDatabase(dbPath);
