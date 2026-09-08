@@ -13,12 +13,16 @@ type WatcherRouteResponse = {
 };
 
 const WATCHER_RECORD_USER_PATH = "/v1/watcher/record-user";
+const WATCHER_RECORD_ASSISTANT_PATH = "/v1/watcher/record-assistant";
+const WATCHER_STEER_PATH = "/v1/watcher/steer";
 const WATCHER_EVALUATE_PATH = "/v1/watcher/evaluate";
 const WATCHER_COMMIT_DELIVERY_PATH = "/v1/watcher/commit-delivery";
 
 export function isWatcherRoute(method: string | undefined, pathname: string): boolean {
   return method === "POST" && (
     pathname === WATCHER_RECORD_USER_PATH
+    || pathname === WATCHER_RECORD_ASSISTANT_PATH
+    || pathname === WATCHER_STEER_PATH
     || pathname === WATCHER_EVALUATE_PATH
     || pathname === WATCHER_COMMIT_DELIVERY_PATH
   );
@@ -31,6 +35,10 @@ export async function handleWatcherRoute(request: WatcherRouteRequest): Promise<
   switch (request.pathname) {
     case WATCHER_RECORD_USER_PATH:
       return handleRecordUser(record, request.runtime);
+    case WATCHER_RECORD_ASSISTANT_PATH:
+      return handleRecordAssistant(record, request.runtime);
+    case WATCHER_STEER_PATH:
+      return handleSteer(record, request.runtime);
     case WATCHER_EVALUATE_PATH:
       return await handleEvaluate(record, request.runtime);
     case WATCHER_COMMIT_DELIVERY_PATH:
@@ -38,6 +46,32 @@ export async function handleWatcherRoute(request: WatcherRouteRequest): Promise<
     default:
       return null;
   }
+}
+
+function handleRecordAssistant(record: Record<string, unknown>, runtime: ConversationRuntime): WatcherRouteResponse {
+  const scopeId = watcherString(record.scopeId);
+  const channelId = watcherString(record.channelId);
+  const text = watcherString(record.text);
+  const messageId = watcherString(record.messageId);
+  if (!scopeId || !channelId || !text || !messageId) {
+    return badRequestResponse("scopeId, channelId, text, and messageId are required");
+  }
+
+  runtime.recordAssistant({
+    scopeId,
+    channelId,
+    text,
+    messageId,
+    sourceThreadId: watcherString(record.sourceThreadId),
+    sessionId: watcherString(record.sessionId),
+  });
+  return { status: 200, body: { ok: true } };
+}
+
+function handleSteer(record: Record<string, unknown>, runtime: ConversationRuntime): WatcherRouteResponse {
+  const scopeId = watcherString(record.scopeId);
+  if (!scopeId) return badRequestResponse("scopeId is required");
+  return { status: 200, body: runtime.previewSteer({ scopeId }) };
 }
 
 function handleRecordUser(record: Record<string, unknown>, runtime: ConversationRuntime): WatcherRouteResponse {

@@ -54,27 +54,9 @@
               }
             ]
           },
-          "watcher": {
-            "description": "Opt-in. When enabled, register the group-chat anti-fixation watcher hooks (record/evaluate/commit). Defaults to off.",
-            "default": false,
-            "oneOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  }
-                }
-              }
-            ]
-          },
           "conversation": {
             "type": "object",
-            "description": "Opt-in service-owned group-chat conversation forwarding.",
+            "description": "Opt-in service-owned conversation context and internal anti-fixation steering.",
             "additionalProperties": false,
             "properties": {
               "enabled": {
@@ -84,7 +66,7 @@
               },
               "watcherCompatibility": {
                 "type": "boolean",
-                "description": "Also enable legacy watcher-compatible record/evaluate forwarding while the service owns policy.",
+                "description": "Inject anti-fixation guidance into the agent prompt when repetition is detected. The adapter never sends guidance as an outbound message.",
                 "default": true
               }
             }

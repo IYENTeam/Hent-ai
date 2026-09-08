@@ -226,7 +226,7 @@ async function smokeExistingGateway(input: {
       load: { paths: [join(checkoutRoot, "openclaw"), join(checkoutRoot, "openclaw/test/e2e-loopback-plugin")] },
       entries: {
         "hent-e2e-loopback": { enabled: true },
-        "hent-ai-service-adapter": { enabled: true, config: { hentAiService: { url: input.service.baseUrl, token: input.service.token, timeoutMs: 5000, preReplyMedia: false, watcher: false, conversation: { enabled: false, watcherCompatibility: false } } } },
+        "hent-ai-service-adapter": { enabled: true, config: { hentAiService: { url: input.service.baseUrl, token: input.service.token, timeoutMs: 5000, preReplyMedia: false, conversation: { enabled: false, watcherCompatibility: false } } } },
       },
     },
   };
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
         load: { paths: [join(checkoutRoot, "openclaw"), join(checkoutRoot, "openclaw/test/e2e-loopback-plugin")] },
         entries: {
           "hent-e2e-loopback": { enabled: true },
-          "hent-ai-service-adapter": { enabled: true, config: { hentAiService: { url: service.baseUrl, token: service.token, timeoutMs: 5000, preReplyMedia: true, watcher: true, conversation: { enabled: true, watcherCompatibility: true } } } },
+          "hent-ai-service-adapter": { enabled: true, config: { hentAiService: { url: service.baseUrl, token: service.token, timeoutMs: 5000, preReplyMedia: true, conversation: { enabled: true, watcherCompatibility: true } } } },
         },
       },
     };
@@ -460,7 +460,7 @@ async function main(): Promise<void> {
     assert.equal(resolve(hentPlugin.source), join(checkoutRoot, "openclaw", "index.ts"));
     assert.equal(pluginJson.find((plugin: any) => plugin.id === "hent-e2e-loopback")?.status, "loaded");
 
-    for (let index = 1; index <= 2; index += 1) {
+    for (let index = 1; index <= 3; index += 1) {
       const response = await fetch(`http://127.0.0.1:${capturePort}/inbound`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -471,31 +471,25 @@ async function main(): Promise<void> {
       while (deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length < index && Date.now() < deadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
     }
 
-    const ledgerDeadline = Date.now() + 20_000;
-    let ledger: any;
-    while (Date.now() < ledgerDeadline) {
-      ledger = service.db.db.prepare("SELECT status, required_chunk_ids_json, delivery_message_ids_json FROM conversation_delivery_ledger ORDER BY created_at DESC LIMIT 1").get();
-      if (ledger?.status === "committed") break;
-      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-    }
-    assert.equal(providerRequests.length, 2);
-    assert.equal(deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length, 2);
+    assert.equal(providerRequests.length, 3);
+    assert.equal(deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length, 3);
+    assert.match(JSON.stringify(providerRequests[2]), /Internal anti-fixation guidance/);
+    assert.match(JSON.stringify(providerRequests[2]), /Do not mention this guidance or the detector to the user/);
     const preReplyMedia = deliveries.filter((delivery) => delivery.kind === "media" && delivery.mediaBytes && sha256(delivery.mediaBytes) === sha256(service.preReplyBytes));
     const finalMedia = deliveries.filter((delivery) => delivery.kind === "media" && delivery.mediaBytes && sha256(delivery.mediaBytes) === sha256(service.finalBytes));
-    assert.equal(preReplyMedia.length, 2, "gateway did not deliver exact static pre-reply media twice");
-    assert.equal(finalMedia.length, 2, `gateway did not deliver exact semantically routed final media twice; deliveries=${JSON.stringify(deliveries.map((delivery) => ({ ...delivery, mediaBytes: delivery.mediaBytes ? sha256(delivery.mediaBytes) : undefined })), null, 2)}; verifierCalls=${service.verifierCalls()}; logs=${gatewayLogs}`);
-    assert.equal(ledger?.status, "committed", "watcher delivery ledger did not commit");
-    const requiredChunkIds = JSON.parse(ledger.required_chunk_ids_json);
-    const deliveryMessageIds = JSON.parse(ledger.delivery_message_ids_json);
-    assert(requiredChunkIds.length >= 2);
-    assert.equal(requiredChunkIds.length, Object.keys(deliveryMessageIds).length);
+    assert.equal(preReplyMedia.length, 3, "gateway did not deliver exact static pre-reply media three times");
+    assert.equal(finalMedia.length, 3, `gateway did not deliver exact semantically routed final media three times; deliveries=${JSON.stringify(deliveries.map((delivery) => ({ ...delivery, mediaBytes: delivery.mediaBytes ? sha256(delivery.mediaBytes) : undefined })), null, 2)}; verifierCalls=${service.verifierCalls()}; logs=${gatewayLogs}`);
+    const watcherChunks = deliveries.filter((delivery) => delivery.kind === "text" && delivery.text !== "FINAL-HAPPY-ROUTE");
+    assert.equal(watcherChunks.length, 0, "anti-fixation guidance leaked into user-visible delivery");
+    const ledgerCount = service.db.db.prepare("SELECT COUNT(*) AS count FROM conversation_delivery_ledger").get() as { count: number };
+    assert.equal(ledgerCount.count, 0);
 
     const isolatedEvidence = {
       child: { pid: gateway.pid, port: gatewayPort, stateRoot: tempRoot, disposableState: tempRoot.startsWith(tmpdir()), externalChannelCredentials: false, configuredChannels: ["qa-channel"], adapterSource: hentPlugin.source },
       service: { port: Number(new URL(service.baseUrl).port), health: (await (await fetch(`${service.baseUrl}/health`)).json()).ok, mappingEnabled: service.db.getChannelMapping(E2E_CHANNEL_ID)?.enabled, verifierCalls: service.verifierCalls() },
       provider: { port: providerPort, requests: providerRequests.length, credential: "local dummy only" },
       media: { preReplySha256: sha256(service.preReplyBytes), finalSha256: sha256(service.finalBytes), distinct: sha256(service.preReplyBytes) !== sha256(service.finalBytes), preReplyDeliveriesWithExactBytes: preReplyMedia.length, finalDeliveriesWithExactBytes: finalMedia.length },
-      delivery: { loopbackPort: capturePort, total: deliveries.length, finalReplies: deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length, watcherChunks: deliveries.filter((delivery) => delivery.kind === "text" && delivery.text !== "FINAL-HAPPY-ROUTE").map((delivery) => delivery.messageId), ledgerStatus: ledger.status, requiredChunkIds, deliveryMessageIds },
+      delivery: { loopbackPort: capturePort, total: deliveries.length, finalReplies: deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length, watcherChunks: [], internalSteerObserved: true, ledgerRows: 0 },
     };
     await stopChild(gateway);
     gateway = undefined;
