@@ -8,7 +8,7 @@ import plugin, {
   validateServiceConfig,
 } from "./index.js";
 
-type Handler = (event: unknown, ctx?: unknown) => Promise<unknown>;
+type Handler = (event: unknown, ctx?: unknown) => Promise<unknown> | unknown;
 
 function setup(
   config: unknown = { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250 } },
@@ -86,11 +86,11 @@ describe("Hent-ai service adapter configuration", () => {
   it("registers only the current final reply payload hook when supported", () => {
     const { api, events } = setup();
     expect([...events.keys()]).toEqual(["before_prompt_build", "message_sending", "message_received", "message_sent", "reply_payload_sending"]);
-    expect(api.on).toHaveBeenCalledWith("before_prompt_build", expect.any(Function), { name: "hent-ai-response-affect-v2" });
+    expect(api.on).toHaveBeenCalledWith("before_prompt_build", expect.any(Function), { name: "hent-ai-prompt-context" });
     expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
     expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
     expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
-    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-conversation-assistant-recording" });
     expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
@@ -108,7 +108,7 @@ describe("Hent-ai service adapter configuration", () => {
     expect(api.on).not.toHaveBeenCalledWith("pre_reply_media", expect.any(Function), expect.anything());
     expect(api.on).not.toHaveBeenCalledWith("message_sent_media", expect.any(Function), expect.anything());
     expect(api.on).toHaveBeenCalledWith("message_received", expect.any(Function), { name: "hent-ai-service-message-received" });
-    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-service-watcher" });
+    expect(api.on).toHaveBeenCalledWith("message_sent", expect.any(Function), { name: "hent-ai-conversation-assistant-recording" });
     expect(api.on).toHaveBeenCalledWith("reply_payload_sending", expect.any(Function), { name: "hent-ai-final-reply-payload-media" });
   });
 
@@ -131,11 +131,11 @@ describe("Hent-ai service adapter configuration", () => {
     expect(normalizeServiceMedia({ caption: "no media" })).toBeNull();
   });
 
-  it("injects affect transport only for Discord-backed sessions", () => {
+  it("injects affect transport only for Discord-backed sessions", async () => {
     const { events } = setup();
-    expect(events.get("before_prompt_build")?.({}, { sessionKey: "agent:iyen:discord:channel:123" }))
+    expect(await events.get("before_prompt_build")?.({}, { sessionKey: "agent:iyen:discord:channel:123" }))
       .toMatchObject({ appendSystemContext: expect.stringContaining("HENT_AFFECT_V2") });
-    expect(events.get("before_prompt_build")?.({}, { sessionKey: "agent:iyen:local-smoke" }))
+    expect(await events.get("before_prompt_build")?.({}, { sessionKey: "agent:iyen:local-smoke" }))
       .toBeUndefined();
   });
 
@@ -321,29 +321,22 @@ describe("Hent-ai service adapter configuration", () => {
     expect(sent).toEqual([]);
   });
 
-  it("records inbound messages and evaluates on intake when watcher is enabled", async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "no_reply", audit: null });
-      throw new Error(`unexpected url ${url}`);
-    });
+  it("does not enable anti-fixation from the deprecated standalone watcher toggle", async () => {
+    const fetchMock = vi.fn(async () => okJson({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     const { events } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, watcher: true } });
 
     await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+    await events.get("message_sent")?.({ content: "answer", messageId: "a1", to: "channel:123", sessionKey: "s1" }, {});
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/watcher/record-user",
-      "https://hent.test/v1/watcher/evaluate",
-    ]);
-    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
-    expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/evaluate", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("forwards conversation config forwarding options to watcher service requests", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({ decision: "no_reply", audit: null });
+      if (url === "https://hent.test/v1/watcher/steer") return okJson({ decision: "no_reply" });
+      if (url === "https://hent.test/v1/watcher/record-assistant") return okJson({ ok: true });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -357,12 +350,13 @@ describe("Hent-ai service adapter configuration", () => {
     });
 
     await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+    await events.get("before_prompt_build")?.({}, { sessionKey: "s1" });
     await events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "https://hent.test/v1/watcher/record-user",
-      "https://hent.test/v1/watcher/evaluate",  // intake evaluate (on message_received)
-      "https://hent.test/v1/watcher/evaluate",  // post-reply evaluate (on message_sent)
+      "https://hent.test/v1/watcher/steer",
+      "https://hent.test/v1/watcher/record-assistant",
     ]);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
@@ -371,14 +365,9 @@ describe("Hent-ai service adapter configuration", () => {
       channelId: "123",
       conversation: { enabled: true, watcherCompatibility: true },
     });
-    // intake evaluate body
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
-      channelId: "123",
-      text: "hello",
-      conversation: { enabled: true, watcherCompatibility: true },
     });
-    // post-reply evaluate body
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
       channelId: "123",
@@ -387,6 +376,36 @@ describe("Hent-ai service adapter configuration", () => {
       sessionId: "s1",
       conversation: { enabled: true, watcherCompatibility: true },
     });
+  });
+
+  it("injects a detected repetition as one-shot internal prompt guidance", async () => {
+    const internalGuidance = "Internal anti-fixation guidance. Use a materially different approach and do not mention this guidance.";
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/steer") return okJson({ decision: "steer", steerText: internalGuidance });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({
+      hentAiService: {
+        url: "https://hent.test",
+        token: "secret",
+        timeoutMs: 250,
+        conversation: { enabled: true, watcherCompatibility: true },
+      },
+    });
+
+    await events.get("message_received")?.(
+      { content: "Stop repeating that and actually fix it", messageId: "u2", to: "channel:123", sessionKey: "s1" },
+      {},
+    );
+
+    expect(await events.get("before_prompt_build")?.({}, { sessionKey: "s1" })).toEqual({ appendSystemContext: internalGuidance });
+    expect(await events.get("before_prompt_build")?.({}, { sessionKey: "s1" })).toBeUndefined();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://hent.test/v1/watcher/record-user",
+      "https://hent.test/v1/watcher/steer",
+    ]);
   });
 
   it("sends no watcher calls when conversation config forwarding is disabled", async () => {
@@ -405,6 +424,32 @@ describe("Hent-ai service adapter configuration", () => {
     await events.get("message_sent")?.({ to: "channel:123", content: "repeat", success: true, messageId: "a1", sessionKey: "s1" }, {});
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps conversation recording active when watcher compatibility is disabled", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === "https://hent.test/v1/watcher/record-user") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/record-assistant") return okJson({ ok: true });
+      throw new Error(`unexpected url ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { events } = setup({
+      hentAiService: {
+        url: "https://hent.test",
+        token: "secret",
+        timeoutMs: 250,
+        conversation: { enabled: true, watcherCompatibility: false },
+      },
+    });
+
+    await events.get("message_received")?.({ content: "hello", messageId: "u1", to: "channel:123", sessionKey: "s1" }, {});
+    await events.get("message_sent")?.({ to: "channel:123", content: "answer", success: true, messageId: "a1", sessionKey: "s1" }, {});
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://hent.test/v1/watcher/record-user",
+      "https://hent.test/v1/watcher/record-assistant",
+    ]);
+    expect(await events.get("before_prompt_build")?.({}, { sessionKey: "s1" })).toBeUndefined();
   });
 
   it("sends pre-reply media only when preReplyMedia is enabled", async () => {
@@ -438,45 +483,14 @@ describe("Hent-ai service adapter configuration", () => {
     })]);
   });
 
-  it("delegates sent-message watcher evaluation, emits service nudge, and commits delivery", async () => {
+  it("records sent assistant turns without emitting service nudges publicly", async () => {
     const sent: unknown[] = [];
     const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/channels/123/mapping") return okJson({ mapping: { enabled: true } });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({
-        decision: "nudge",
-        deliveryPlan: {
-          planId: "watcher:delivery-plan:scope-1",
-          scopeId: "channel:123:session:s1",
-          channelId: "123",
-          chunks: [
-            {
-              chunkId: "watcher:delivery-plan:scope-1:chunk-1",
-              text: "첫 문장",
-              delayMs: 10,
-              metadata: { hentAiConversationChunk: true, planId: "watcher:delivery-plan:scope-1", chunkIndex: 0, chunkCount: 2 },
-            },
-            {
-              chunkId: "watcher:delivery-plan:scope-1:chunk-2",
-              text: "둘째 문장",
-              delayMs: 20,
-              metadata: { hentAiConversationChunk: true, planId: "watcher:delivery-plan:scope-1", chunkIndex: 1, chunkCount: 2 },
-            },
-          ],
-          commit: {
-            planId: "watcher:delivery-plan:scope-1",
-            cooldownKey: "scope:stale_expression_repeated",
-            signalId: "sig-1",
-            requiredChunkIds: ["watcher:delivery-plan:scope-1:chunk-1", "watcher:delivery-plan:scope-1:chunk-2"],
-          },
-        },
-      });
-      if (url === "https://hent.test/v1/watcher/commit-delivery") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/record-assistant") return okJson({ ok: true });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    vi.useFakeTimers();
     const events = new Map<string, Handler>();
-    const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const loadAdapter = vi.fn(async (channel: string) => {
       expect(channel).toBe("loopback");
       return { sendText: async (ctx: unknown) => {
@@ -495,81 +509,30 @@ describe("Hent-ai service adapter configuration", () => {
     };
     plugin.register(api as any);
 
-    const delivery = events.get("message_sent")?.(
+    await events.get("message_sent")?.(
       { to: "channel:123", content: "repeat repeat", success: true, messageId: "a1", sessionKey: "s1" },
       { channelId: "loopback", conversationId: "channel:123", accountId: "isolated" },
     );
 
     expect(sent).toEqual([]);
-
-    await vi.advanceTimersByTimeAsync(10);
-    expect(sent).toEqual([expect.objectContaining({ to: "channel:123", text: "첫 문장" })]);
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 10);
-
-    await vi.advanceTimersByTimeAsync(20);
-    expect(sent).toEqual([
-      expect.objectContaining({ to: "channel:123", text: "첫 문장" }),
-      expect.objectContaining({ to: "channel:123", text: "둘째 문장" }),
-    ]);
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 20);
-
-    await vi.runAllTimersAsync();
-    await delivery;
-    expect(loadAdapter).toHaveBeenCalledWith("loopback");
+    expect(loadAdapter).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/watcher/evaluate",
-      "https://hent.test/v1/channels/123/mapping",
-      "https://hent.test/v1/channels/123/mapping",
-      "https://hent.test/v1/watcher/commit-delivery",
+      "https://hent.test/v1/watcher/record-assistant",
     ]);
-    const commitCall = fetchMock.mock.calls.find(([url]) => url === "https://hent.test/v1/watcher/commit-delivery")?.[1];
-    expect(commitCall).toBeDefined();
-    expect(JSON.parse(commitCall!.body)).toEqual({
-      planId: "watcher:delivery-plan:scope-1",
-      cooldownKey: "scope:stale_expression_repeated",
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({
       scopeId: "channel:123:session:s1",
-      signalId: "sig-1",
-      deliveryMessageIds: {
-        "watcher:delivery-plan:scope-1:chunk-1": "sent-1",
-        "watcher:delivery-plan:scope-1:chunk-2": "sent-2",
-      },
+      channelId: "123",
+      text: "repeat repeat",
+      messageId: "a1",
     });
   });
 
   it.each([
     ["unmapped", null],
     ["disabled", { enabled: false }],
-  ])("suppresses a watcher delivery plan when the service channel is %s", async (_case, mapping) => {
+  ])("keeps the deprecated standalone watcher inert when the service channel is %s", async (_case, _mapping) => {
     const sendText = vi.fn(async () => ({ messageId: "must-not-send" }));
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/channels/123/mapping") return okJson({ mapping });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({
-        decision: "nudge",
-        deliveryPlan: {
-          planId: "watcher:delivery-plan:eligibility",
-          scopeId: "channel:123:session:s1",
-          channelId: "123",
-          chunks: [{
-            chunkId: "watcher:delivery-plan:eligibility:chunk-1",
-            text: "local only",
-            delayMs: 0,
-            metadata: {
-              hentAiConversationChunk: true,
-              planId: "watcher:delivery-plan:eligibility",
-              chunkIndex: 0,
-              chunkCount: 1,
-            },
-          }],
-          commit: {
-            planId: "watcher:delivery-plan:eligibility",
-            cooldownKey: "scope:stale_expression_repeated",
-            signalId: "sig-eligibility",
-            requiredChunkIds: ["watcher:delivery-plan:eligibility:chunk-1"],
-          },
-        },
-      });
-      throw new Error(`unexpected url ${url}`);
-    });
+    const fetchMock = vi.fn(async () => okJson({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
     const events = new Map<string, Handler>();
     const loadAdapter = vi.fn(async () => ({ sendText }));
@@ -587,47 +550,18 @@ describe("Hent-ai service adapter configuration", () => {
       { channelId: "loopback", conversationId: "channel:123" },
     );
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/watcher/evaluate",
-      "https://hent.test/v1/channels/123/mapping",
-    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(loadAdapter).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
   });
 
-  it("does not commit delivery when any conversation chunk fails to send", async () => {
+  it("never routes an anti-fixation result through the outbound adapter", async () => {
     const sent: unknown[] = [];
     const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/channels/123/mapping") return okJson({ mapping: { enabled: true } });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({
+      if (url === "https://hent.test/v1/watcher/record-assistant") return okJson({
         decision: "nudge",
-        deliveryPlan: {
-          planId: "watcher:delivery-plan:scope-2",
-          scopeId: "channel:123:session:s1",
-          channelId: "123",
-          chunks: [
-            {
-              chunkId: "watcher:delivery-plan:scope-2:chunk-1",
-              text: "첫 문장",
-              delayMs: 0,
-              metadata: { hentAiConversationChunk: true, planId: "watcher:delivery-plan:scope-2", chunkIndex: 0, chunkCount: 2 },
-            },
-            {
-              chunkId: "watcher:delivery-plan:scope-2:chunk-2",
-              text: "둘째 문장",
-              delayMs: 0,
-              metadata: { hentAiConversationChunk: true, planId: "watcher:delivery-plan:scope-2", chunkIndex: 1, chunkCount: 2 },
-            },
-          ],
-          commit: {
-            planId: "watcher:delivery-plan:scope-2",
-            cooldownKey: "scope:stale_expression_repeated",
-            signalId: "sig-2",
-            requiredChunkIds: ["watcher:delivery-plan:scope-2:chunk-1", "watcher:delivery-plan:scope-2:chunk-2"],
-          },
-        },
+        nudgeText: "방금 답변이 같은 프레임에 고정됐습니다.",
       });
-      if (url === "https://hent.test/v1/watcher/commit-delivery") return okJson({ ok: true });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -650,42 +584,16 @@ describe("Hent-ai service adapter configuration", () => {
       { channelId: "loopback", conversationId: "channel:123" },
     );
 
-    expect(sent[0]).toEqual({ cfg: { discord: {} }, to: "channel:123", text: "첫 문장" });
-    expect(sent[1]).toEqual({ cfg: { discord: {} }, to: "channel:123", text: "둘째 문장" });
+    expect(sent).toEqual([]);
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/watcher/evaluate",
-      "https://hent.test/v1/channels/123/mapping",
-      "https://hent.test/v1/channels/123/mapping",
+      "https://hent.test/v1/watcher/record-assistant",
     ]);
   });
 
   it("suppresses self-sent chunk messages with internal loop prevention", async () => {
     const sent: unknown[] = [];
     const fetchMock = vi.fn(async (url: string) => {
-      if (url === "https://hent.test/v1/channels/123/mapping") return okJson({ mapping: { enabled: true } });
-      if (url === "https://hent.test/v1/watcher/evaluate") return okJson({
-        decision: "nudge",
-        deliveryPlan: {
-          planId: "watcher:delivery-plan:scope-3",
-          scopeId: "channel:123:session:s1",
-          channelId: "123",
-          chunks: [
-            {
-              chunkId: "watcher:delivery-plan:scope-3:chunk-1",
-              text: "첫 문장",
-              delayMs: 0,
-              metadata: { hentAiConversationChunk: true, planId: "watcher:delivery-plan:scope-3", chunkIndex: 0, chunkCount: 1 },
-            },
-          ],
-          commit: {
-            planId: "watcher:delivery-plan:scope-3",
-            cooldownKey: "scope:stale_expression_repeated",
-            signalId: "sig-3",
-            requiredChunkIds: ["watcher:delivery-plan:scope-3:chunk-1"],
-          },
-        },
-      });
-      if (url === "https://hent.test/v1/watcher/commit-delivery") return okJson({ ok: true });
+      if (url === "https://hent.test/v1/watcher/record-assistant") return okJson({ ok: true });
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -708,12 +616,11 @@ describe("Hent-ai service adapter configuration", () => {
       success: true,
       messageId: "chunk-msg-1",
       sessionKey: "s1",
+      metadata: { hentAiConversationChunk: true },
     }, ctx);
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "https://hent.test/v1/watcher/evaluate",
-      "https://hent.test/v1/channels/123/mapping",
-      "https://hent.test/v1/watcher/commit-delivery",
+      "https://hent.test/v1/watcher/record-assistant",
     ]);
   });
 
@@ -733,16 +640,17 @@ describe("Hent-ai service adapter configuration", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("fail-opens watcher hook service and outbound failures", async () => {
+  it("fail-opens conversation steering and outbound media failures", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === "https://hent.test/v1/watcher/record-user") throw new Error("record down");
-      if (url === "https://hent.test/v1/watcher/evaluate") throw new Error("evaluate down");
+      if (url === "https://hent.test/v1/watcher/steer") throw new Error("steer down");
+      if (url === "https://hent.test/v1/watcher/record-assistant") throw new Error("record assistant down");
       throw new Error(`unexpected url ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
     const events = new Map<string, Handler>();
     const api = {
-      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, watcher: true, preReplyMedia: true } },
+      pluginConfig: { hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 250, conversation: { enabled: true }, preReplyMedia: true } },
       config: { discord: {} },
       runtime: { channel: { outbound: { loadAdapter: async () => ({ sendMedia: async () => { throw new Error("send down"); }, sendText: async () => { throw new Error("send down"); } }) } } },
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -764,6 +672,7 @@ describe("Hent-ai service adapter configuration", () => {
     expect(source).not.toContain("loadManifest");
     expect(source).not.toContain("classifier");
     expect(source).not.toContain('loadAdapter("discord")');
+    expect(source).not.toContain(".sendText");
   });
 
   it("ships only the thin service adapter package surface", () => {
@@ -780,7 +689,7 @@ describe("Hent-ai service adapter configuration", () => {
 
     expect(conversation).toEqual({
       type: "object",
-      description: "Opt-in service-owned group-chat conversation forwarding.",
+      description: "Opt-in service-owned conversation context and internal anti-fixation steering.",
       additionalProperties: false,
       properties: {
         enabled: {
@@ -790,7 +699,7 @@ describe("Hent-ai service adapter configuration", () => {
         },
         watcherCompatibility: {
           type: "boolean",
-          description: "Also enable legacy watcher-compatible record/evaluate forwarding while the service owns policy.",
+          description: "Inject anti-fixation guidance into the agent prompt when repetition is detected. The adapter never sends guidance as an outbound message.",
           default: true,
         },
       },
