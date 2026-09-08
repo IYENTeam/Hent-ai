@@ -99,4 +99,7 @@ npm test
 npm pack --dry-run --json
 ```
 
-The tarball must include `dist/main.js` and `dist/index.js`.
+The tarball includes `dist/main.js`, `dist/index.js`, and the compiled shared JS
+under `dist/shared/`. `npm pack` builds these files through `prepack`; installed
+consumers need no sibling shared checkout or TypeScript loader. Check the CLI
+without generating images using `node dist/main.js --help` and `--version`.
