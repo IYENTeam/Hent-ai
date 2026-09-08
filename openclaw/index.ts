@@ -305,14 +305,16 @@ async function saveServiceMediaBuffer(buffer: Buffer, contentType: string): Prom
   return path;
 }
 
-async function hydrateLocalServiceMedia(media: OpenClawStage1Media, baseUrl: URL, fetchImpl: FetchLike): Promise<OpenClawStage1Media> {
+async function hydrateLocalServiceMedia(media: OpenClawStage1Media, baseUrl: URL, fetchImpl: FetchLike, signal: AbortSignal): Promise<OpenClawStage1Media> {
   const mediaUrl = new URL(media.mediaUrl, baseUrl);
   if (mediaUrl.origin !== baseUrl.origin) return media;
 
-  const response = await fetchImpl(mediaUrl, { method: "GET" });
+  signal.throwIfAborted();
+  const response = await fetchImpl(mediaUrl, { method: "GET", signal });
   if (!response.ok) throw new Error(`media fetch returned HTTP ${response.status}`);
   const contentType = response.headers.get("content-type") ?? media.contentType ?? "image/png";
   const buffer = Buffer.from(await response.arrayBuffer());
+  signal.throwIfAborted();
   return { ...media, mediaUrl: await saveServiceMediaBuffer(buffer, contentType), contentType };
 }
 
@@ -380,7 +382,7 @@ async function callHentAiService(params: {
       loggerWarn(params.logger, `hent-ai adapter: service media missing or malformed; skipping media${detail}`);
       return { media: null, diagnostics: diagnostic("service media missing or malformed") };
     }
-    const hydratedMedia = await hydrateLocalServiceMedia(media, params.baseUrl, fetchImpl);
+    const hydratedMedia = await hydrateLocalServiceMedia(media, params.baseUrl, fetchImpl, controller.signal);
 
     loggerInfo(params.logger, `hent-ai adapter: service returned media endpoint=${params.endpoint}`);
     const diagnostics = Array.isArray(root?.diagnostics)
@@ -496,10 +498,16 @@ export function extractEmbeddedResponseAffect(text: string): {
 }
 
 function applyMediaToPayload(payload: Record<string, unknown>, media: OpenClawStage1Media): Record<string, unknown> {
+  const urls = [...new Set([
+    ...(typeof payload.mediaUrl === "string" ? [payload.mediaUrl] : []),
+    ...(Array.isArray(payload.mediaUrls) ? payload.mediaUrls.filter((url): url is string => typeof url === "string") : []),
+    media.mediaUrl,
+    ...(media.mediaUrls ?? []),
+  ])];
   return {
     ...payload,
     mediaUrl: media.mediaUrl,
-    ...(media.mediaUrls ? { mediaUrls: media.mediaUrls } : {}),
+    ...(urls.length > 1 || media.mediaUrls ? { mediaUrls: urls } : {}),
     ...(media.sensitiveMedia !== undefined ? { sensitiveMedia: media.sensitiveMedia } : {}),
     ...(media.channelData ? { channelData: { ...(asRecord(payload.channelData) ?? {}), ...media.channelData } } : {}),
   };

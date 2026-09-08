@@ -269,6 +269,35 @@ describe("Hent-ai service adapter configuration", () => {
     expect(readFileSync(mediaUrl!)).toEqual(Buffer.from([1, 2, 3]));
   });
 
+  it.each(["headers", "body"])("bounds image hydration while waiting for %s", async (stage) => {
+    vi.useFakeTimers();
+    let imageSignal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, options: RequestInit) => {
+      if (url.toString().endsWith("/verdict")) return okJson({ verdict: { media: { url: "/static/emotion.png" } } });
+      imageSignal = options.signal;
+      const stalled = () => new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+      return stage === "headers" ? stalled() : { ok: true, headers: new Headers(), arrayBuffer: stalled };
+    }));
+    const { events, logger } = setup({ hentAiService: { url: "https://hent.test", token: "secret", timeoutMs: 10 } });
+    const payload = { text: "original reply", to: "channel:1" };
+    const pending = events.get("reply_payload_sending")!({ kind: "final", payload }, { messageId: "m" });
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(pending).resolves.toBeUndefined();
+    expect(payload.text).toBe("original reply");
+    expect(imageSignal?.aborted).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("timed out"));
+  });
+
+  it("keeps an existing single attachment when adding emotion media", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okJson({ verdict: { media: { url: "https://cdn.test/emotion.png" } } })));
+    const { events } = setup();
+    expect(await events.get("reply_payload_sending")!({ kind: "final", payload: { text: "report", to: "channel:1", mediaUrl: "/tmp/report.pdf" } })).toMatchObject({
+      payload: { mediaUrls: ["/tmp/report.pdf", "https://cdn.test/emotion.png"] },
+    });
+  });
+
   it.each([
     ["null", null],
     ["malformed", { verdict: { media: { caption: "missing url" } } }],
