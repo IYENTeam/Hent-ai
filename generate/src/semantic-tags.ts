@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { CANONICAL_EMOTIONS, type Emotion } from "@hent-ai/shared";
+import { CANONICAL_EMOTIONS, type Emotion } from "../../shared/emotions.js";
 import {
   SEMANTIC_CONTROLLED_VOCABULARIES,
   type SemanticGenerationItem,
