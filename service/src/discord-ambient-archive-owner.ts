@@ -2,11 +2,11 @@ import type { AdaptiveAmbientStore, Fence } from "./adaptive-ambient-store.js";
 
 const HEARTBEAT_MS = 10_000;
 type Timer = { readonly setInterval: (callback: () => void, ms: number) => unknown; readonly clearInterval: (handle: unknown) => void };
-type Scheduler = { readonly ready: Promise<unknown>; readonly stop: () => void };
+type Scheduler = { readonly ready: Promise<unknown>; readonly stop: () => void | Promise<void> };
 
 export type DiscordAmbientArchiveOwner = {
   readonly activate: () => Promise<boolean>;
-  readonly stop: () => void;
+  readonly stop: () => Promise<void>;
 };
 
 export function createDiscordAmbientArchiveOwner(options: {
@@ -24,6 +24,8 @@ export function createDiscordAmbientArchiveOwner(options: {
   let stopped = false;
   let scheduler: Scheduler | null = null;
   let controller: AbortController | null = null;
+  const drains = new Set<Promise<unknown>>();
+  let stopping: Promise<void> | null = null;
   const heartbeat = options.timer.setInterval(() => { void tick(); }, HEARTBEAT_MS);
 
   function matches(current: Fence): boolean {
@@ -32,7 +34,13 @@ export function createDiscordAmbientArchiveOwner(options: {
 
   function stopScheduler(): void {
     controller?.abort(); controller = null;
-    scheduler?.stop(); scheduler = null;
+    const current = scheduler;
+    scheduler = null;
+    if (current) {
+      const drain = Promise.allSettled([current.ready, Promise.resolve(current.stop())]);
+      drains.add(drain);
+      void drain.then(() => drains.delete(drain));
+    }
   }
 
   function lose(current: Fence): void {
@@ -88,14 +96,17 @@ export function createDiscordAmbientArchiveOwner(options: {
       if (!fence) return !hadInitialLease;
       return start(fence);
     },
-    stop(): void {
-      if (stopped) return;
+    stop(): Promise<void> {
+      if (stopping) return stopping;
       stopped = true;
       options.timer.clearInterval(heartbeat);
       const current = fence;
       fence = null;
       stopScheduler();
-      if (current) options.store.releaseLease(current);
+      stopping = Promise.allSettled([...drains]).then(() => {
+        if (current) options.store.releaseLease(current);
+      });
+      return stopping;
     },
   };
 }
