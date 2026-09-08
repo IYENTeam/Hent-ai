@@ -44,7 +44,7 @@ export type DiscordAmbientWorkerCore = {
 export function createDiscordAmbientWorkerCore(options: DiscordAmbientWorkerCoreOptions): DiscordAmbientWorkerCore {
   const clock = options.clock ?? Date.now;
   const scheduleHeartbeat = options.scheduleHeartbeat ?? defaultHeartbeat;
-  const controller = new AbortController();
+  let controller = new AbortController();
   let fence: Fence | null = options.initialFence ?? null;
   let cancelHeartbeat: (() => void) | null = null;
   let active: Promise<"aborted" | "disabled" | "ingested" | "lease_unavailable" | "seeded"> | null = null;
@@ -77,7 +77,14 @@ export function createDiscordAmbientWorkerCore(options: DiscordAmbientWorkerCore
 
   function ensureLease(): boolean {
     if (currentFence()) { startHeartbeat(); return true; }
-    if (controller.signal.aborted || stopping) return false;
+    if (stopping) return false;
+    // runOnce starts a new run only after the previous run has drained. A lost
+    // lease's signal stays aborted for its old work; a fresh claim gets a new one.
+    if (controller.signal.aborted) {
+      if (fence) options.store.releaseLease(fence);
+      fence = null;
+      controller = new AbortController();
+    }
     fence = options.store.acquireLease(options.leaseKey ?? LEGACY_LEASE_KEY, options.holderId);
     if (!fence) return false;
     startHeartbeat();
@@ -103,7 +110,8 @@ export function createDiscordAmbientWorkerCore(options: DiscordAmbientWorkerCore
     const cursor = options.store.cursor(options.scope);
     if (cursor === null) {
       const newest = ordered.at(-1);
-      if (newest && !options.store.setCursor(options.scope, newest.id, held)) return "aborted";
+      // Zero records a successful empty bootstrap and is below every message ID.
+      if (!options.store.setCursor(options.scope, newest?.id ?? "0", held)) return "aborted";
       return "seeded";
     }
     const forward = ordered.filter((message) => snowflakeOrder(message.id, cursor) > 0);
@@ -139,9 +147,12 @@ export function createDiscordAmbientWorkerCore(options: DiscordAmbientWorkerCore
       stopping = true;
       controller.abort(new Error("discord worker stopped"));
       cancelHeartbeat?.(); cancelHeartbeat = null;
-      if (active) await active;
-      if (fence) options.store.releaseLease(fence);
-      fence = null;
+      try {
+        if (active) await active;
+      } finally {
+        if (fence) options.store.releaseLease(fence);
+        fence = null;
+      }
     },
   };
 }

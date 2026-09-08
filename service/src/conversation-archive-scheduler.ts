@@ -16,30 +16,44 @@ export type ConversationArchiveSchedulerOptions = {
   readonly timer?: ArchiveTimer; readonly onError?: (error: unknown) => void;
 };
 export type ConversationArchivePassResult = { readonly claimedBatchCount: number; readonly completedBatchCount: number; readonly retryableBatchCount: number };
-export type ConversationArchiveScheduler = { readonly ready: Promise<ConversationArchivePassResult>; readonly run: () => Promise<ConversationArchivePassResult>; readonly stop: () => void };
+export type ConversationArchiveScheduler = { readonly ready: Promise<ConversationArchivePassResult>; readonly run: () => Promise<ConversationArchivePassResult>; readonly stop: () => Promise<void> };
 type ArchiveWork = { readonly batchKey: string; readonly summaryKey: string; readonly group: ConversationArchiveCandidateGroup };
 
 export function createConversationArchiveScheduler(options: ConversationArchiveSchedulerOptions): ConversationArchiveScheduler {
   const timer: ArchiveTimer = options.timer ?? { setInterval: (callback, intervalMs) => setInterval(callback, intervalMs), clearInterval: (handle) => clearInterval(handle as NodeJS.Timeout) };
   let running: Promise<ConversationArchivePassResult> | null = null;
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
+  const runOptions = { ...options, signal: controller.signal };
   const run = (): Promise<ConversationArchivePassResult> => {
     if (running !== null) return running;
-    running = runArchivePass(options).finally(() => { running = null; });
+    running = runArchivePass(runOptions).finally(() => { running = null; });
     return running;
   };
   const ready = run();
   const handle = timer.setInterval(() => { void run().catch((error: unknown) => options.onError?.(error)); }, ARCHIVE_INTERVAL_MS);
-  return { ready, run, stop: () => timer.clearInterval(handle) };
+  return { ready, run, stop: async () => {
+    abort();
+    timer.clearInterval(handle);
+    options.signal?.removeEventListener("abort", abort);
+    await running;
+  } };
 }
 
 async function runArchivePass(options: ConversationArchiveSchedulerOptions): Promise<ConversationArchivePassResult> {
   const cutoff = new Date(options.clock() - options.rawRetentionDays * MS_PER_DAY).toISOString();
   const result = { claimedBatchCount: 0, completedBatchCount: 0, retryableBatchCount: 0 };
+  if (options.signal?.aborted) return result;
   for (const batch of options.store.listClaimableArchiveBatches(options.clock())) {
+    if (options.signal?.aborted) return result;
     const work = persistedWork(options.store.loadArchiveBatchEvents(batch), batch);
     if (work) await processWork(options, work, result);
   }
+  if (options.signal?.aborted) return result;
   for (const group of options.store.listArchiveCandidateGroups(cutoff)) {
+    if (options.signal?.aborted) return result;
     const first = group.events[0]; const last = group.events.at(-1);
     if (first && last) await processWork(options, { batchKey: archiveBatchKey(group), summaryKey: `archive-summary-v1:${archiveBatchKey(group)}`, group }, result);
   }
