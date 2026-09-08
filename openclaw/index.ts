@@ -126,6 +126,11 @@ type ConversationDeliveryChunk = {
 };
 
 type ConversationDeliveryPlan = {
+  readonly dispatch?: {
+    readonly claimId: string;
+    readonly expiresAtMs: number;
+    readonly deliveryMessageIds: Readonly<Record<string, string>>;
+  };
   readonly planId: string;
   readonly scopeId: string;
   readonly channelId: string;
@@ -663,6 +668,12 @@ function parseMessageSentResponse(value: unknown): MessageSentServiceResponse | 
   const record = asRecord(value);
   if (!record) return null;
   const deliveryPlan = isConversationDeliveryPlan(record.deliveryPlan) ? record.deliveryPlan : undefined;
+  if (deliveryPlan?.dispatch) {
+    const dispatch = asRecord(deliveryPlan.dispatch);
+    const receipts = asRecord(dispatch?.deliveryMessageIds);
+    if (!isNonEmptyString(dispatch?.claimId) || typeof dispatch?.expiresAtMs !== "number" || !Number.isFinite(dispatch.expiresAtMs)
+      || !receipts || !Object.entries(receipts).every(([key, value]) => deliveryPlan.commit.requiredChunkIds.includes(key) && isNonEmptyString(value))) return null;
+  }
   const nudgeText = isNonEmptyString(record.nudgeText) ? record.nudgeText : undefined;
   return { deliveryPlan, nudgeText, audit: record.audit };
 }
@@ -678,36 +689,51 @@ async function sendConversationDeliveryPlan(
   suppressMaxSize: number,
   logger?: Logger,
 ): Promise<void> {
-  const deliveryMessageIds: Record<string, string> = {};
+  const deliveryMessageIds: Record<string, string> = { ...response.dispatch?.deliveryMessageIds };
   const requiredChunkIds = new Set(response.commit.requiredChunkIds);
-  for (const chunk of response.chunks) {
-    await safeSleep(chunk.delayMs);
-    if (!await serviceChannelEligible({ ...baseConfig, channelId, logger })) return;
-    const sentMessageId = await sender?.sendText?.(target, chunk.text);
-    if (sentMessageId && requiredChunkIds.has(chunk.chunkId)) {
-      deliveryMessageIds[chunk.chunkId] = sentMessageId;
-      addToSuppressSet(suppressMessageIds, sentMessageId, suppressMaxSize);
+  const progress = async (action: "begin" | "receipt" | "release", chunkId?: string, messageId?: string): Promise<boolean> => {
+    if (!response.dispatch) return true;
+    const result = await callJsonService({ ...baseConfig, endpoint: "/v1/watcher/delivery-progress",
+      body: { planId: response.planId, claimId: response.dispatch.claimId, action, chunkId, messageId }, logger });
+    return asRecord(result)?.ok === true;
+  };
+  try {
+    for (const chunk of response.chunks) {
+      if (deliveryMessageIds[chunk.chunkId]) continue;
+      if (!sender?.sendText) return;
+      await safeSleep(chunk.delayMs);
+      if (!await serviceChannelEligible({ ...baseConfig, channelId, logger })) return;
+      if (!await progress("begin", chunk.chunkId)) return;
+      const sentMessageId = await sender.sendText(target, chunk.text);
+      if (!sentMessageId) return;
+      if (requiredChunkIds.has(chunk.chunkId)) {
+        deliveryMessageIds[chunk.chunkId] = sentMessageId;
+        addToSuppressSet(suppressMessageIds, sentMessageId, suppressMaxSize);
+        if (!await progress("receipt", chunk.chunkId, sentMessageId)) return;
+      }
     }
+
+    const allChunkIds = response.commit.requiredChunkIds.every((chunkId) => deliveryMessageIds[chunkId]);
+    if (!allChunkIds) return;
+
+    const responseJson = await callJsonService({
+      baseUrl: baseConfig.baseUrl,
+      token: baseConfig.token,
+      timeoutMs: baseConfig.timeoutMs,
+      endpoint: "/v1/watcher/commit-delivery",
+      body: {
+        planId: response.commit.planId,
+        cooldownKey: response.commit.cooldownKey,
+        scopeId,
+        signalId: response.commit.signalId,
+        deliveryMessageIds,
+      },
+      logger,
+    });
+    if (!responseJson) return;
+  } finally {
+    await progress("release");
   }
-
-  const allChunkIds = response.commit.requiredChunkIds.every((chunkId) => deliveryMessageIds[chunkId]);
-  if (!allChunkIds) return;
-
-  const responseJson = await callJsonService({
-    baseUrl: baseConfig.baseUrl,
-    token: baseConfig.token,
-    timeoutMs: baseConfig.timeoutMs,
-    endpoint: "/v1/watcher/commit-delivery",
-    body: {
-      planId: response.commit.planId,
-      cooldownKey: response.commit.cooldownKey,
-      scopeId,
-      signalId: response.commit.signalId,
-      deliveryMessageIds,
-    },
-    logger,
-  });
-  if (!responseJson) return;
 }
 
 
@@ -982,6 +1008,7 @@ export default definePluginEntry({
           timeoutMs: config.timeoutMs,
           endpoint: "/v1/watcher/evaluate",
           body: {
+            trigger: "user",
             scopeId: scope.scopeId,
             channelId,
             text: content,

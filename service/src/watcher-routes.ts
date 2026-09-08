@@ -1,4 +1,5 @@
 import type { ConversationRuntime } from "./conversation-runtime.js";
+import type { RuntimeCommitDeliveryResult } from "./conversation-runtime-delivery.js";
 
 type WatcherRouteRequest = {
   readonly method: string | undefined;
@@ -15,12 +16,14 @@ type WatcherRouteResponse = {
 const WATCHER_RECORD_USER_PATH = "/v1/watcher/record-user";
 const WATCHER_EVALUATE_PATH = "/v1/watcher/evaluate";
 const WATCHER_COMMIT_DELIVERY_PATH = "/v1/watcher/commit-delivery";
+const WATCHER_DELIVERY_PROGRESS_PATH = "/v1/watcher/delivery-progress";
 
 export function isWatcherRoute(method: string | undefined, pathname: string): boolean {
   return method === "POST" && (
     pathname === WATCHER_RECORD_USER_PATH
     || pathname === WATCHER_EVALUATE_PATH
     || pathname === WATCHER_COMMIT_DELIVERY_PATH
+    || pathname === WATCHER_DELIVERY_PROGRESS_PATH
   );
 }
 
@@ -35,6 +38,16 @@ export async function handleWatcherRoute(request: WatcherRouteRequest): Promise<
       return await handleEvaluate(record, request.runtime);
     case WATCHER_COMMIT_DELIVERY_PATH:
       return handleCommitDelivery(record, request.runtime);
+    case WATCHER_DELIVERY_PROGRESS_PATH: {
+      const planId = watcherString(record.planId);
+      const claimId = watcherString(record.claimId);
+      const action = record.action;
+      if (!planId || !claimId || (action !== "begin" && action !== "receipt" && action !== "release")) {
+        return badRequestResponse("planId, claimId and a delivery progress action are required");
+      }
+      const ok = request.runtime.deliveryProgress({ planId, claimId, action, chunkId: watcherString(record.chunkId), messageId: watcherString(record.messageId) });
+      return { status: ok ? 200 : 409, body: { ok } };
+    }
     default:
       return null;
   }
@@ -66,10 +79,14 @@ async function handleEvaluate(record: Record<string, unknown>, runtime: Conversa
   if (!scopeId || !channelId || !text || !messageId) {
     return badRequestResponse("scopeId, channelId, text, and messageId are required");
   }
+  if (record.trigger !== undefined && record.trigger !== "user" && record.trigger !== "assistant") {
+    return badRequestResponse("trigger must be user or assistant");
+  }
 
   return {
     status: 200,
     body: await runtime.evaluate({
+      trigger: record.trigger,
       scopeId,
       channelId,
       text,
@@ -98,8 +115,8 @@ function handleCommitDelivery(record: Record<string, unknown>, runtime: Conversa
     return badRequestResponse("cooldownKey, scopeId, signalId, and deliveryMessageId are required");
   }
 
-  runtime.commitDelivery({ cooldownKey, scopeId, signalId, deliveryMessageId });
-  return { status: 200, body: { ok: true } };
+  const response = commitResponse(runtime.commitDelivery({ cooldownKey, scopeId, signalId, deliveryMessageId }));
+  return response.status === 200 ? { status: 200, body: { ok: true } } : response;
 }
 
 function handleDeliveryPlanCommit(record: Record<string, unknown>, runtime: ConversationRuntime): WatcherRouteResponse {
@@ -113,6 +130,10 @@ function handleDeliveryPlanCommit(record: Record<string, unknown>, runtime: Conv
   }
 
   const result = runtime.commitDeliveryPlan({ planId, cooldownKey, scopeId, signalId, deliveryMessageIds });
+  return commitResponse(result);
+}
+
+function commitResponse(result: RuntimeCommitDeliveryResult): WatcherRouteResponse {
   switch (result.status) {
     case "committed":
     case "idempotent":

@@ -338,6 +338,7 @@ describe("Hent-ai service adapter configuration", () => {
     ]);
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/record-user", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenCalledWith("https://hent.test/v1/watcher/evaluate", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).trigger).toBe("user");
   });
 
   it("forwards conversation config forwarding options to watcher service requests", async () => {

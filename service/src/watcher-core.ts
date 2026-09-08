@@ -292,13 +292,13 @@ export function detectStaleRepetition(
   const window = messages.filter((m) => m.senderRole === "agent").slice(-windowN);
   if (window.length < 2) return [];
 
-  const maxSim = maxPairwiseSimilarity(window.map((m) => m.text));
+  const last = window[window.length - 1]!;
+  const maxSim = Math.max(...window.slice(0, -1).map((message) => similarity(message.text, last.text)));
   const persistence = trailingTopicRun(window.map((m) => inferTopic(m.text)));
   const repetition = approxGte(maxSim, simThreshold);
   const stuck = persistence >= persistenceK && approxGte(maxSim, floor);
   if (!repetition && !stuck) return [];
 
-  const last = window[window.length - 1]!;
   const staleFrame = inferTopic(last.text);
   return [
     {

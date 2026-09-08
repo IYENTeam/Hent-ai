@@ -82,6 +82,12 @@ describe("OpenClaw adapter real-service loopback E2E", () => {
     await hooks.get("message_received")?.({ ...inbound, messageId: "user-2" }, ctx);
     expect(sentMedia).toHaveLength(2);
     expect(sentMedia.every((entry) => sha256(entry.bytes) === sha256(runtime!.preReplyBytes))).toBe(true);
+    expect(sentTexts).toHaveLength(0);
+    for (const messageId of ["assistant-1", "assistant-2"]) {
+      await hooks.get("message_sent")?.({
+        ...inbound, messageId, to: `channel:${E2E_CHANNEL_ID}`, success: true,
+      }, ctx);
+    }
     expect(sentTexts.length).toBeGreaterThanOrEqual(2);
     expect(sentTexts.every((entry) => entry.to === `channel:${E2E_CHANNEL_ID}`)).toBe(true);
 

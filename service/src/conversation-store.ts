@@ -65,12 +65,11 @@ export class ConversationStore {
         channel_id = excluded.channel_id,
         thread_id = excluded.thread_id,
         session_id = excluded.session_id,
-        author_role = excluded.author_role,
         text = excluded.text,
-        event_ts = excluded.event_ts,
         observed_at = excluded.observed_at,
         bot_self_loop = excluded.bot_self_loop,
-        metadata_json = excluded.metadata_json`)
+        metadata_json = excluded.metadata_json
+      WHERE conversation_raw_events.author_role = excluded.author_role`)
       .run(
         input.scopeId,
         input.channelId,
@@ -95,6 +94,13 @@ export class ConversationStore {
     return this.serviceDb.db.prepare("SELECT * FROM conversation_raw_events WHERE scope_id = ? ORDER BY event_ts, id")
       .all(scopeId)
       .map((row) => rawEventFromRow(requireRowRecord(row, "conversation_raw_events")));
+  }
+
+  listRecentRawEvents(scopeId: string, limit: number): ConversationRawEvent[] {
+    return this.serviceDb.db.prepare("SELECT * FROM conversation_raw_events WHERE scope_id = ? ORDER BY event_ts DESC, id DESC LIMIT ?")
+      .all(scopeId, limit)
+      .map((row) => rawEventFromRow(requireRowRecord(row, "conversation_raw_events")))
+      .reverse();
   }
 
   listActiveRawEvents(scopeId: string): ConversationRawEvent[] {

@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { ServiceDatabase } from "./db.js";
 import type { ConversationServiceConfig } from "./conversation-config.js";
 import { recordConversationUserIntake, type ConversationIntakeContext } from "./conversation-context.js";
 import type { ConversationDeliveryPlanResponse } from "./conversation-delivery-plan.js";
+import { ConversationDeliveryDispatch, type DeliveryProgressInput } from "./conversation-delivery-dispatch.js";
 import {
   evaluateConversationContextProvider,
   type ConversationEvaluateDiagnostics,
@@ -54,6 +56,7 @@ export type WatcherRecordUserResult = {
 };
 
 export type WatcherEvaluateInput = {
+  readonly trigger?: "user" | "assistant";
   readonly scopeId: string;
   readonly channelId: string;
   readonly text: string;
@@ -94,6 +97,7 @@ export type WatcherCommitDeliveryInput = {
 
 export class ConversationRuntime {
   private readonly store: ConversationStore;
+  private readonly dispatch: ConversationDeliveryDispatch;
 
   constructor(
     private readonly serviceDb: ServiceDatabase,
@@ -101,6 +105,7 @@ export class ConversationRuntime {
     private readonly options: ConversationRuntimeOptions = {},
   ) {
     this.store = createConversationStore(serviceDb);
+    this.dispatch = new ConversationDeliveryDispatch(serviceDb);
   }
 
   recordUser(input: WatcherRecordUserInput): WatcherRecordUserResult {
@@ -108,7 +113,7 @@ export class ConversationRuntime {
       return { ok: true, context: { status: "disabled", diagnostics: ["conversation_disabled"] } };
     }
     const now = new Date().toISOString();
-    const messageId = input.id ?? this.syntheticUserMessageId(input.scopeId);
+    const messageId = input.id ?? `intake-${randomUUID()}`;
     const channelId = channelIdForScope(input.scopeId, input.channelId);
     const context = recordConversationUserIntake({
       store: this.store,
@@ -132,7 +137,7 @@ export class ConversationRuntime {
   async evaluate(input: WatcherEvaluateInput): Promise<WatcherEvaluateResult> {
     if (!this.config.enabled) return { decision: "no_reply", audit: null };
     const now = new Date();
-    this.recordAssistantEvent(input, now);
+    if (input.trigger !== "user") this.recordAssistantEvent(input, now);
 
     const nowIso = now.toISOString();
     const messages = this.recentMessages(input.scopeId);
@@ -149,7 +154,7 @@ export class ConversationRuntime {
       return { decision: "no_reply", audit: null, diagnostics: { context: contextProviderResult.diagnostics } };
     }
 
-    const signal = evaluateFixation(messages, input.scopeId)[0];
+    const signal = evaluateFixation(messages, input.scopeId, { now: nowIso })[0];
     if (!signal) {
       return contextProviderResult
         ? { decision: "no_reply", audit: null, diagnostics: { context: contextProviderResult.diagnostics } }
@@ -179,7 +184,7 @@ export class ConversationRuntime {
     });
     const nudgeText = audit.allowed ? `방금 답변이 같은 프레임에 고정됐습니다. ${signal.suggestedPivot}` : undefined;
     const deliveryPlan = audit.allowed && nudgeText
-      ? createRuntimeDeliveryPlan({
+      ? this.dispatch.claim(legacyDeliveryPlanId(input.scopeId, signal.signalId), input.scopeId, Date.now(), () => createRuntimeDeliveryPlan({
         store: this.store,
         config: this.config,
         planId: legacyDeliveryPlanId(input.scopeId, signal.signalId),
@@ -189,25 +194,31 @@ export class ConversationRuntime {
         cooldownKey,
         createdAt: nowIso,
         text: nudgeText,
-      })
+      }), { key: cooldownKey, ms: cooldownMs })
       : undefined;
 
     return {
-      decision: audit.allowed ? "nudge" : "no_reply",
-      nudgeText,
+      decision: deliveryPlan ? "nudge" : "no_reply",
+      ...(deliveryPlan ? { nudgeText } : {}),
       ...(deliveryPlan ? { deliveryPlan } : {}),
-      audit,
+      audit: audit.allowed && !deliveryPlan
+        ? { ...audit, allowed: false, reason: "delivery_pending", suppressedReason: "delivery_pending" }
+        : audit,
       context,
       ...(contextProviderResult ? { diagnostics: { context: contextProviderResult.diagnostics } } : {}),
     };
   }
 
-  commitDelivery(input: WatcherCommitDeliveryInput): void {
+  deliveryProgress(input: DeliveryProgressInput): boolean {
+    return this.dispatch.progress(input, Date.now());
+  }
+
+  commitDelivery(input: WatcherCommitDeliveryInput): RuntimeCommitDeliveryResult {
     const planId = legacyDeliveryPlanId(input.scopeId, input.signalId);
     const existing = this.store.getDeliveryPlan(planId);
     if (!existing) this.createMissingLegacyPlan(planId, input);
     const requiredChunkIds = existing?.requiredChunkIds.length ? existing.requiredChunkIds : [LEGACY_DELIVERY_CHUNK_ID];
-    this.commitDeliveryPlan({
+    return this.commitDeliveryPlan({
       planId,
       cooldownKey: input.cooldownKey,
       scopeId: input.scopeId,
@@ -255,7 +266,7 @@ export class ConversationRuntime {
   }
 
   private recentMessages(scopeId: string): RawConversationMessage[] {
-    return this.store.listRawEvents(scopeId).slice(-WATCHER_WINDOW_N).map((event) => ({
+    return this.store.listRecentRawEvents(scopeId, WATCHER_WINDOW_N).map((event) => ({
       id: event.messageId,
       senderRole: senderRoleForAuthor(event.authorRole),
       ts: event.eventTs,
@@ -263,10 +274,6 @@ export class ConversationRuntime {
       threadId: event.threadId ?? undefined,
       sessionId: event.sessionId ?? undefined,
     }));
-  }
-
-  private syntheticUserMessageId(scopeId: string): string {
-    return `u-${this.store.listRawEvents(scopeId).length + 1}`;
   }
 
   private hasCommittedSignal(scopeId: string, signalId: string): boolean {
