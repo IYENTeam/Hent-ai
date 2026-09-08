@@ -15,6 +15,11 @@ export type ConversationDeliveryChunk = {
 };
 
 export type ConversationDeliveryPlanResponse = {
+  readonly dispatch?: {
+    readonly claimId: string;
+    readonly expiresAtMs: number;
+    readonly deliveryMessageIds: Readonly<Record<string, string>>;
+  };
   readonly planId: string;
   readonly scopeId: string;
   readonly channelId: string;

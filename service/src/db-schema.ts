@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { ADAPTIVE_SCHEMA_SQL } from "./db-schema-adaptive.js";
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -176,6 +176,17 @@ CREATE TABLE IF NOT EXISTS conversation_delivery_ledger (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_delivery_scope ON conversation_delivery_ledger(scope_id, created_at);
+
+CREATE TABLE IF NOT EXISTS conversation_delivery_dispatch (
+  plan_id TEXT PRIMARY KEY REFERENCES conversation_delivery_ledger(plan_id),
+  scope_id TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  claim_id TEXT NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  in_flight_chunk_id TEXT,
+  receipts_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_dispatch_scope ON conversation_delivery_dispatch(scope_id, expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS conversation_gate_state (
   scope_id TEXT NOT NULL,
