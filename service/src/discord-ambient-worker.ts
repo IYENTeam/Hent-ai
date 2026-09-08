@@ -97,7 +97,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     if (startupController.signal.aborted) return;
     store.recordUnfencedDiagnostic(fence, reason);
     startupController.abort(new Error(reason));
-    archiveOwner.stop();
+    void archiveOwner.stop();
     cancelStartupHeartbeats();
   };
   for (const scope of [...eligible].sort(compareScope)) {
@@ -117,7 +117,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     if (await archiveOwner.activate() && !startupController.signal.aborted) return true;
     cancelStartupHeartbeats();
     for (const fence of scopeFences.values()) store.releaseLease(fence);
-    archiveOwner.stop();
+    await archiveOwner.stop();
     db.close();
     logger.log("error", "discord_ambient_archive_startup_failed", { reason: "archive_startup_failed" });
     return false;
@@ -140,7 +140,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
   } catch {
     cancelStartupHeartbeats();
     for (const fence of scopeFences.values()) store.releaseLease(fence);
-    archiveOwner.stop();
+    await archiveOwner.stop();
     db.close(); logger.log("error", "discord_ambient_worker_disabled", { reasons: "discord_identity_or_scope_validation_failed" }); return disabled();
   }
   if (!await startArchive()) return disabled();
@@ -163,7 +163,7 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     } });
     cores.push(core); logger.log("info", "discord_ambient_scope_started", scopeFields(scope, "ready"));
   }
-  if (cores.length === 0) { archiveOwner.stop(); db.close(); return disabled(); }
+  if (cores.length === 0) { await archiveOwner.stop(); db.close(); return disabled(); }
   let active: Promise<void> | null = null;
   let stopped = false;
   let stopPromise: Promise<void> | null = null;
@@ -173,11 +173,13 @@ export async function startDiscordAmbientWorker(env: Env = process.env, dependen
     stopPromise = (async () => {
       stopped = true;
       timer.clearInterval(handle);
-      archiveOwner.stop();
+      const archiveStop = archiveOwner.stop();
       const coreStops = cores.map((core) => core.stop());
-      if (active) await active.catch(() => undefined);
-      await Promise.all(coreStops);
+      const results = await Promise.allSettled([archiveStop, ...coreStops, ...(active ? [active] : [])]);
       db.close();
+      if (results.some((result) => result.status === "rejected")) {
+        logger.log("error", "discord_ambient_shutdown_failed", { reason: "work_drain_failed" });
+      }
     })();
     return stopPromise;
   };
@@ -197,9 +199,12 @@ function archiveScopeAuthorized(config: DiscordAmbientWorkerConfig, db: ServiceD
   const scope = config.scopes.find((candidate) => scopeId === `discord:${candidate.guildId}:${candidate.channelId}`);
   return scope !== undefined && isDiscordParticipantScopeAllowed({ enabled: true, allowlist: config.scopes, diagnostics: [] }, scope, db.getChannelMapping(scope.channelId));
 }
-function standby(stopArchive: () => void, closeDb: () => void): DiscordAmbientWorker {
-  let stopped = false;
-  return { status: "running", runOnce: async () => undefined, stop: async () => { if (!stopped) { stopped = true; stopArchive(); closeDb(); } } };
+function standby(stopArchive: () => Promise<void>, closeDb: () => void): DiscordAmbientWorker {
+  let stopping: Promise<void> | null = null;
+  return { status: "running", runOnce: async () => undefined, stop: () => {
+    stopping ??= stopArchive().finally(closeDb);
+    return stopping;
+  } };
 }
 function pendingPlanIds(store: AdaptiveAmbientStore, scope: DiscordParticipantScope): readonly string[] { return store.pendingDeliveryPlanIds(scope); }
 function leaseKey(scope: DiscordParticipantScope): string { return `discord-ambient-worker:${scope.guildId}:${scope.channelId}`; }

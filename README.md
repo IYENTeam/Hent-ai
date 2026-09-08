@@ -87,10 +87,10 @@ codex login
 
 # Install and run
 cd generate && npm install && npm run build
-node dist/cli.js --character "cute orange cat"
+node dist/main.js generate --character "cute orange cat"
 
 # Or with an existing base image (skips base generation)
-node dist/cli.js --character "cute orange cat" --base ./my-base.png
+node dist/main.js generate --character "cute orange cat" --base ./my-base.png
 ```
 
 The tool first generates a base character image, then uses it as a reference to generate 6 emotion variants — ensuring style consistency across all images. Output: `base.png`, `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, and `focused.png` in the `assets/` directory.

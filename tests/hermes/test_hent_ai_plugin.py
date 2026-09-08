@@ -14,6 +14,18 @@ spec.loader.exec_module(plugin)
 
 
 class HermesPluginTests(unittest.TestCase):
+    def test_media_attachment_preserves_code_and_significant_whitespace(self):
+        original = '```python\nif True:\n    if True:\n        print("two  spaces")\n```\n\nline  \n\ttab'
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "neutral.png"
+            image.write_bytes(b"png")
+            transformed = plugin.build_transformed_response(original, platform="discord", assets_dir=Path(tmp))
+            self.assertEqual(transformed, original + f"\n\nMEDIA:{image.resolve()}")
+
+    def test_removing_media_line_preserves_other_line_bytes(self):
+        original = '```yaml\nroot:\n  nested: "two  spaces"\n```\nline  \n'
+        self.assertEqual(plugin.strip_media_directives(original + 'MEDIA:/tmp/old.png\nnext'), original + 'next')
+
     def test_detects_happy_completion(self):
         self.assertEqual(plugin.detect_emotion("Task completed successfully"), "happy")
 
