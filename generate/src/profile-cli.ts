@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { ProfileDatabase } from "@hent-ai/shared/db";
+import { ProfileDatabase } from "../../shared/db.js";
 
 function usage(): never {
   console.log(`
