@@ -112,7 +112,7 @@ describe("final-response application use case", () => {
           filename: "semantic-neutral.png",
           contentType: "image/png",
           url: "/static/sets/set/semantic-neutral.png",
-          sensitiveMedia: true,
+          sensitiveMedia: false,
           metadata: { storageKey: "sets/set/semantic-neutral.png" },
         },
       },

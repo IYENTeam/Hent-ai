@@ -90,7 +90,7 @@ describe("final-response verifier boundary", () => {
 
     await withServer(db, verifier, async (baseUrl) => {
       expect(FINAL_VERDICT_SCHEMA_VERSION).toBe("FinalEmotionVerdictV1");
-      expect(SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION).toBe("ServiceMediaResponseV1");
+      expect(SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION).toBe("ServiceMediaResponseV2-ExplicitSensitivity");
       expect(VERIFIER_CACHE_POLICY_VERSION).toBe("VerifierCachePolicyV4-NormalizedAffect");
       expect(ASSET_POLICY_VERSION).toBe("ServiceAssetPolicyV2-AffectSpaceV2");
       expect(finalResponseFixture.versions).toEqual({

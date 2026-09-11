@@ -34,7 +34,7 @@ export function mediaResponseForChannel(db: ServiceDatabase, channelId: string |
       filename: asset.filename,
       contentType: asset.contentType,
       url: asset.objectUrl,
-      sensitiveMedia: true,
+      sensitiveMedia: false,
       metadata: { storageKey: asset.storageKey },
     },
   };
