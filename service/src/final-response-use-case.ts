@@ -6,7 +6,7 @@ import type { SemanticAssetMedia, SemanticAssetRouter } from "./semantic-assets/
 import type { FinalResponseVerifier, VerifierJudgment } from "./verifier.js";
 
 export const FINAL_VERDICT_SCHEMA_VERSION = "FinalEmotionVerdictV1";
-export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV1";
+export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV2-ExplicitSensitivity";
 export const VERIFIER_CACHE_POLICY_VERSION = "VerifierCachePolicyV4-NormalizedAffect";
 export const ASSET_POLICY_VERSION = "ServiceAssetPolicyV2-AffectSpaceV2";
 
@@ -17,7 +17,7 @@ export type ServiceMedia = {
   filename: string;
   contentType: string;
   url: string;
-  sensitiveMedia: true;
+  sensitiveMedia: boolean;
   metadata: { storageKey: string };
 };
 
@@ -130,7 +130,7 @@ function serviceMediaFrom(media: SemanticAssetMedia): ServiceMedia {
     filename: media.filename,
     contentType: media.contentType,
     url: media.objectUrl,
-    sensitiveMedia: true,
+    sensitiveMedia: false,
     metadata: { storageKey: media.storageKey },
   };
 }

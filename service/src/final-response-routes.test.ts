@@ -46,7 +46,7 @@ describe("final-response route adapter", () => {
           filename: "neutral.png",
           contentType: "image/png",
           url: "/static/sets/legacy/neutral.png",
-          sensitiveMedia: true,
+          sensitiveMedia: false,
           metadata: { storageKey: "sets/legacy/neutral.png" },
         },
       },

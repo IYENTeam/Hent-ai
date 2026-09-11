@@ -76,6 +76,8 @@ Requests use bearer auth and JSON bodies containing the OpenClaw hook context. S
 
 OpenClaw calls `reply_payload_sending` before final payload delivery. The adapter calls the service verdict endpoint and attaches `verdict.media` to the payload. OpenClaw owns the final text send and payload delivery mechanics; the Hent-ai service owns media selection, policy, profile/channel lookup, and verdict state.
 
+Ordinary Hent-ai emotion assets are returned with `sensitiveMedia: false` so durable final delivery can attach them. Assets explicitly classified as sensitive must retain `sensitiveMedia: true`; compatible OpenClaw hosts reject those attachments while preserving the reply text.
+
 Expected service response:
 
 ```json
