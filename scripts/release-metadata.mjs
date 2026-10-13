@@ -25,7 +25,7 @@ export function parseReleaseVersion(value) {
 export function buildReleasePlan(input) {
   const version = parseReleaseVersion(input.version);
   if (version !== input.packageVersion) {
-    throw new ReleaseMetadataError(`version ${version} does not equal openclaw package version ${input.packageVersion}`);
+    throw new ReleaseMetadataError(`version ${version} does not equal kit package version ${input.packageVersion}`);
   }
   if (!commitShaPattern.test(input.targetSha) || !commitShaPattern.test(input.mainSha)) {
     throw new ReleaseMetadataError("target and main SHA must be full lowercase commit SHAs");
@@ -113,7 +113,7 @@ function githubReleaseExists(root, repository, tag) {
 export async function inspectRelease(argv, options = {}) {
   const root = options.root ?? defaultRoot;
   const args = parseArguments(argv);
-  const packageJson = JSON.parse(await readFile(resolve(root, "openclaw/package.json"), "utf8"));
+  const packageJson = JSON.parse(await readFile(resolve(root, "kit/cli/package.json"), "utf8"));
   const version = parseReleaseVersion(args.version);
   const tag = `v${version}`;
   const mainSha = gitValue(root, ["rev-parse", "--verify", `${args.mainRef}^{commit}`]);
