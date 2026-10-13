@@ -7,6 +7,7 @@
 // RESUME replays missed events itself. DM channels cannot be backfilled (no channel list to
 // page through), so DMs missed while disconnected without a successful RESUME are lost.
 
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { hentHome } from "../config.ts";
@@ -26,6 +27,7 @@ import {
   type NewInboxEvent,
   SentLedger,
 } from "./journal.ts";
+import { Deliverer, type Exec } from "./deliver.ts";
 import { type BridgeHooks, startBridgeServer } from "./server.ts";
 import { type KeychainReader, readDiscordToken, ensureBridgeSecret } from "./token.ts";
 
@@ -148,6 +150,7 @@ export type StartBridgeOptions = {
   readonly gateway?: Pick<GatewayOptions, "reconnectDelayMs" | "invalidSessionDelayMs" | "random">;
   readonly readKeychain?: KeychainReader;
   readonly sendRetryDelayMs?: number;
+  readonly deliver?: { readonly exec?: Exec; readonly backoffMs?: readonly number[]; readonly paneConfirmMs?: number; readonly findTranscript?: ConstructorParameters<typeof Deliverer>[0]["findTranscript"]; readonly disabled?: boolean };
 };
 
 export type BridgeHandle = {
@@ -194,9 +197,11 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   let buffered: NewInboxEvent[] = [];
   let syncChain: Promise<void> = Promise.resolve();
 
+  let deliverer: Deliverer | null = null;
   journal.onAppend((event) => {
     events.emit("journaled", event);
     try {
+      deliverer?.onJournaled(event);
       hooks.onJournaled?.(event);
     } catch (error) {
       log("BRIDGE_HOOK_FAILED", { hook: "onJournaled", name: error instanceof Error ? error.name : "error" });
@@ -206,6 +211,12 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   const config = new ChannelConfigWatcher(paths.channels, log, () => {
     if (gatewayState === "connected") queueSync(false);
   });
+
+  const channelMode = (channelId: string, guildId: string | null): "reply" | "ambient" | "observe" | null => {
+    const found = config.current.channels.find((c) => c.channelId === channelId);
+    if (found) return found.mode;
+    return guildId === null && config.current.dms ? "reply" : null;
+  };
 
   const allowed = (channelId: string, guildId: string | null): boolean => {
     const current = config.current;
@@ -368,12 +379,34 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     discord: () => discord,
     clock,
     log,
-    hooks,
+    hooks: {
+      ...hooks,
+      onSessionSet: (session) => {
+        deliverer?.onSessionSet();
+        hooks.onSessionSet?.(session);
+      },
+    },
     ...(opts.sendRetryDelayMs !== undefined ? { sendRetryDelayMs: opts.sendRetryDelayMs } : {}),
   });
   const boundPort = server.port ?? port;
   log("BRIDGE_LISTENING", { host: "127.0.0.1", port: boundPort });
   config.start(opts.configPollMs ?? 2_000);
+  if (!opts.deliver?.disabled) {
+    deliverer = new Deliverer({
+      journal,
+      handled,
+      sessionPath: paths.session,
+      deliveredPath: join(paths.state, "delivered.jsonl"),
+      channelMode,
+      clock,
+      log,
+      ...(opts.deliver?.exec ? { exec: opts.deliver.exec } : {}),
+      ...(opts.deliver?.backoffMs ? { backoffMs: opts.deliver.backoffMs } : {}),
+      ...(opts.deliver?.paneConfirmMs !== undefined ? { paneConfirmMs: opts.deliver.paneConfirmMs } : {}),
+      ...(opts.deliver?.findTranscript ? { findTranscript: opts.deliver.findTranscript } : {}),
+    });
+    deliverer.start();
+  }
   void lookForToken();
 
   return {
@@ -388,6 +421,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       stopped = true;
       if (tokenTimer) clearTimeout(tokenTimer);
       config.stop();
+      deliverer?.stop();
       gateway?.stop();
       await server.stop(true);
       await syncChain;

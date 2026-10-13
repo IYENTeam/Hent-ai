@@ -1,0 +1,306 @@
+// Push delivery (plan todo 9, ADR-0002 "Push delivery"): every journaled inbound message in a
+// reply/ambient channel (or an allowed DM) is injected into the brain session, one at a time in
+// seq order. Pane mode types one line into the agent's tmux pane and confirms it from the session
+// transcript; headless mode runs one resumed turn and confirms it from the handled ledger.
+// Anything unconfirmed is retried with backoff, so nothing is lost while the session restarts.
+
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { Clock } from "../run.ts";
+import type { InboxEvent, SessionRequest } from "./contract.ts";
+import { appendPrivateLine, type BridgeLog, type HandledLedger, type Journal } from "./journal.ts";
+
+export type ExecResult = { readonly code: number; readonly stdout: string };
+export type Exec = (argv: readonly string[], opts?: { readonly cwd?: string; readonly timeoutMs?: number }) => Promise<ExecResult>;
+
+export const realExec: Exec = async (argv, opts = {}) => {
+  let proc;
+  try {
+    proc = Bun.spawn([...argv], { cwd: opts.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  } catch {
+    return { code: 127, stdout: "" };
+  }
+  const timer = opts.timeoutMs ? setTimeout(() => proc.kill(), opts.timeoutMs) : null;
+  const [stdout] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  const code = await proc.exited;
+  if (timer) clearTimeout(timer);
+  return { code, stdout };
+};
+
+export type ChannelModeLookup = (channelId: string, guildId: string | null) => "reply" | "ambient" | "observe" | null;
+
+export type DeliverDeps = {
+  readonly journal: Journal;
+  readonly handled: HandledLedger;
+  readonly sessionPath: string;
+  readonly deliveredPath: string;
+  readonly channelMode: ChannelModeLookup;
+  readonly clock: Clock;
+  readonly log: BridgeLog;
+  readonly exec?: Exec;
+  readonly findTranscript?: (session: StoredSession) => string | null;
+  readonly backoffMs?: readonly number[];
+  readonly paneConfirmMs?: number;
+  readonly headlessTimeoutMs?: number;
+  readonly staleUnhandledMs?: number;
+};
+
+export type StoredSession = SessionRequest & { readonly updatedAt?: string };
+
+type DeliveredRecord = { readonly messageId: string; readonly seq: number; readonly mode: "pane" | "headless"; readonly at: string };
+
+const HISTORY_GAP_MS = 10 * 60_000;
+const HISTORY_COUNT = 30;
+
+export const readSession = (path: string): StoredSession | null => {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as StoredSession;
+    return typeof value.sessionId === "string" && (value.agent === "claude" || value.agent === "codex") ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const walkFind = (dir: string, match: (name: string) => boolean, depth = 5): string | null => {
+  if (depth < 0 || !existsSync(dir)) return null;
+  let best: { path: string; mtime: number } | null = null;
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    let st;
+    try {
+      st = statSync(path);
+    } catch {
+      continue;
+    }
+    const found = st.isDirectory() ? walkFind(path, match, depth - 1) : match(name) ? path : null;
+    if (found) {
+      const mtime = statSync(found).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path: found, mtime };
+    }
+  }
+  return best?.path ?? null;
+};
+
+/** Claude Code: ~/.claude/projects/<slug>/<sessionId>.jsonl; Codex: ~/.codex/sessions/**\/rollout-*<sessionId>*.jsonl. */
+export const defaultFindTranscript = (session: StoredSession, home = homedir()): string | null =>
+  session.agent === "claude"
+    ? walkFind(join(home, ".claude", "projects"), (n) => n === `${session.sessionId}.jsonl`, 2)
+    : walkFind(join(home, ".codex", "sessions"), (n) => n.endsWith(".jsonl") && n.includes(session.sessionId));
+
+export const formatPrompt = (event: InboxEvent, history: readonly InboxEvent[]): string => {
+  const slim = (e: InboxEvent) => ({ messageId: e.messageId, author: e.authorName, self: e.authorIsSelf, content: e.content, at: e.createdAt });
+  const historyPart = history.length > 0 ? `[hent] HISTORY ${JSON.stringify(history.map(slim))} ` : "";
+  return `${historyPart}[hent] INBOUND ${JSON.stringify(event)}`;
+};
+
+export const headlessArgv = (session: StoredSession, prompt: string): string[] =>
+  session.agent === "claude"
+    ? ["claude", "-p", "--resume", session.sessionId, prompt, "--allowedTools=Bash(hent:*)"]
+    : ["codex", "exec", "resume", "--skip-git-repo-check", "-c", "sandbox_workspace_write.network_access=true", session.sessionId, prompt];
+
+export class Deliverer {
+  private readonly queue: InboxEvent[] = [];
+  private readonly delivered = new Map<string, DeliveredRecord>();
+  private readonly reinjected = new Set<string>();
+  private readonly lastDeliveredAt = new Map<string, number>();
+  private readonly exec: Exec;
+  private readonly findTranscript: (session: StoredSession) => string | null;
+  private running = false;
+  private stopped = false;
+  private wake: (() => void) | null = null;
+  private staleTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly deps: DeliverDeps) {
+    this.exec = deps.exec ?? realExec;
+    this.findTranscript = deps.findTranscript ?? ((s) => defaultFindTranscript(s));
+    try {
+      for (const line of readFileSync(deps.deliveredPath, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line) as DeliveredRecord;
+        if (typeof record.messageId === "string") this.delivered.set(record.messageId, record);
+      }
+    } catch {
+      this.delivered.clear();
+    }
+  }
+
+  eligible(event: InboxEvent): boolean {
+    if (event.kind !== "message_create" || event.authorIsSelf) return false;
+    const mode = this.deps.channelMode(event.channelId, event.guildId);
+    if (mode === null || mode === "observe") return false;
+    return !this.deps.handled.get(event.messageId);
+  }
+
+  start(): void {
+    for (const event of this.deps.journal.after(0, Number.MAX_SAFE_INTEGER)) {
+      if (this.eligible(event) && !this.delivered.has(event.messageId)) this.queue.push(event);
+    }
+    this.staleTimer = setInterval(() => this.checkStale(), 60_000);
+    this.kick();
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.staleTimer) clearInterval(this.staleTimer);
+    this.wake?.();
+  }
+
+  onJournaled(event: InboxEvent): void {
+    if (!this.eligible(event) || this.delivered.has(event.messageId)) return;
+    if (this.queue.some((e) => e.messageId === event.messageId)) return;
+    this.queue.push(event);
+    this.kick();
+  }
+
+  onSessionSet(): void {
+    const pending = this.deps.journal
+      .after(0, Number.MAX_SAFE_INTEGER)
+      .filter((e) => this.delivered.has(e.messageId) && this.eligible(e) && !this.reinjected.has(e.messageId));
+    for (const event of pending) {
+      this.reinjected.add(event.messageId);
+      this.delivered.delete(event.messageId);
+      if (!this.queue.some((e) => e.messageId === event.messageId)) this.queue.push(event);
+    }
+    this.queue.sort((a, b) => a.seq - b.seq);
+    if (pending.length > 0) this.deps.log("BRIDGE_REINJECT", { count: pending.length });
+    this.wake?.();
+    this.kick();
+  }
+
+  pendingCount(): number {
+    return this.queue.length;
+  }
+
+  private checkStale(): void {
+    const session = readSession(this.deps.sessionPath);
+    if (!session || session.mode !== "pane" || !session.pane) return;
+    const staleMs = this.deps.staleUnhandledMs ?? 10 * 60_000;
+    void this.paneAlive(session.pane).then((alive) => {
+      if (alive) return;
+      const now = this.deps.clock.now();
+      for (const record of this.delivered.values()) {
+        if (record.mode !== "pane" || this.reinjected.has(record.messageId)) continue;
+        if (now - Date.parse(record.at) < staleMs || this.deps.handled.get(record.messageId)) continue;
+        const event = this.deps.journal.findCreate(record.messageId);
+        if (!event) continue;
+        this.reinjected.add(record.messageId);
+        this.delivered.delete(record.messageId);
+        this.queue.push(event);
+      }
+      this.queue.sort((a, b) => a.seq - b.seq);
+      this.kick();
+    });
+  }
+
+  private kick(): void {
+    if (this.running || this.stopped) return;
+    this.running = true;
+    void this.loop().finally(() => {
+      this.running = false;
+      if (this.queue.length > 0 && !this.stopped) this.kick();
+    });
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this.wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+    this.wake = null;
+  }
+
+  private async loop(): Promise<void> {
+    const backoff = this.deps.backoffMs ?? [5_000, 30_000, 120_000, 300_000];
+    let attempt = 0;
+    while (!this.stopped && this.queue.length > 0) {
+      const event = this.queue[0]!;
+      if (!this.eligible(event)) {
+        this.queue.shift();
+        continue;
+      }
+      const result = await this.deliverOne(event);
+      if (result.ok) {
+        this.queue.shift();
+        attempt = 0;
+        continue;
+      }
+      const delay = backoff[Math.min(attempt, backoff.length - 1)]!;
+      this.deps.log("BRIDGE_DELIVER_RETRY", { messageId: event.messageId, reason: result.reason, delayMs: delay });
+      attempt += 1;
+      await this.sleep(delay);
+    }
+  }
+
+  private historyFor(event: InboxEvent): InboxEvent[] {
+    const last = this.lastDeliveredAt.get(event.channelId);
+    if (last !== undefined && this.deps.clock.now() - last < HISTORY_GAP_MS) return [];
+    return this.deps.journal.history(event.channelId, HISTORY_COUNT + 1).filter((e) => e.seq < event.seq).slice(-HISTORY_COUNT);
+  }
+
+  private record(event: InboxEvent, mode: "pane" | "headless"): void {
+    const record: DeliveredRecord = { messageId: event.messageId, seq: event.seq, mode, at: new Date(this.deps.clock.now()).toISOString() };
+    this.delivered.set(event.messageId, record);
+    this.lastDeliveredAt.set(event.channelId, this.deps.clock.now());
+    appendPrivateLine(this.deps.deliveredPath, JSON.stringify(record));
+    this.deps.log("BRIDGE_DELIVERED", { messageId: event.messageId, seq: event.seq, mode });
+  }
+
+  private async paneAlive(pane: string): Promise<boolean> {
+    const res = await this.exec(["tmux", "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"], { timeoutMs: 5_000 });
+    if (res.code !== 0) return false;
+    const [dead, command = ""] = res.stdout.trim().split(" ");
+    return dead === "0" && !/^(bash|zsh|sh|fish|login)$/.test(command);
+  }
+
+  private async deliverOne(event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const session = readSession(this.deps.sessionPath);
+    if (!session) return { ok: false, reason: "no_session" };
+    const prompt = formatPrompt(event, this.historyFor(event));
+    if (session.mode === "pane" && session.pane && (await this.paneAlive(session.pane))) {
+      const ok = await this.deliverPane(session, session.pane, prompt, event);
+      if (ok) {
+        this.record(event, "pane");
+        return { ok: true };
+      }
+      return { ok: false, reason: "pane_unconfirmed" };
+    }
+    return this.deliverHeadless(session, prompt, event);
+  }
+
+  private async deliverPane(session: StoredSession, pane: string, prompt: string, event: InboxEvent): Promise<boolean> {
+    const transcript = this.findTranscript(session);
+    const before = transcript && existsSync(transcript) ? statSync(transcript).size : 0;
+    const typed = await this.exec(["tmux", "send-keys", "-t", pane, "-l", prompt], { timeoutMs: 5_000 });
+    if (typed.code !== 0) return false;
+    const entered = await this.exec(["tmux", "send-keys", "-t", pane, "Enter"], { timeoutMs: 5_000 });
+    if (entered.code !== 0) return false;
+    const deadline = this.deps.clock.now() + (this.deps.paneConfirmMs ?? 10_000);
+    while (this.deps.clock.now() < deadline) {
+      const path = transcript ?? this.findTranscript(session);
+      if (path && existsSync(path)) {
+        const size = statSync(path).size;
+        if (size > before) {
+          const tail = readFileSync(path, "utf8").slice(path === transcript ? before : 0);
+          if (tail.includes(event.messageId)) return true;
+        }
+      }
+      if (this.deps.handled.get(event.messageId)) return true;
+      await this.deps.clock.sleep(250);
+    }
+    return false;
+  }
+
+  private async deliverHeadless(session: StoredSession, prompt: string, event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const argv = headlessArgv(session, prompt);
+    this.deps.log("BRIDGE_HEADLESS_TURN", { agent: session.agent, messageId: event.messageId });
+    const res = await this.exec(argv, { cwd: session.cwd, timeoutMs: this.deps.headlessTimeoutMs ?? 10 * 60_000 });
+    if (res.code !== 0) return { ok: false, reason: `headless_exit_${res.code}` };
+    if (!this.deps.handled.get(event.messageId)) return { ok: false, reason: "headless_unhandled" };
+    this.record(event, "headless");
+    return { ok: true };
+  }
+}

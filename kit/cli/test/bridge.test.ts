@@ -36,7 +36,7 @@ const startFake = (): FakeDiscord => {
 const launch = async (fake: FakeDiscord, home: string, extra: { env?: Record<string, string | undefined>; hooks?: BridgeHooks; tokenRetryMs?: number } = {}): Promise<Setup> => {
   const logs: string[] = [];
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: TOKEN, HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl, ...extra.env };
-  const bridge = await startBridge({
+  const bridge = await startBridge({ deliver: { disabled: true },
     env,
     port: 0,
     logSink: (line) => logs.push(line),
