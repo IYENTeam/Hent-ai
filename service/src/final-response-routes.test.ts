@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ServiceDatabase } from "./db.js";
 import { finalResponseRequestFromBody, finalVerdictForBody } from "./final-response-routes.js";
+import { responseAffect } from "./service-test-helpers.js";
 
 function registerLegacyAsset(db: ServiceDatabase): void {
   db.upsertAssetSet({ id: "legacy", name: "Legacy" });
@@ -27,21 +28,15 @@ describe("final-response route adapter", () => {
     })).toEqual({ channelId: "c1", finalText: "Task complete thanks", validEmotions: ["neutral"] });
   });
 
-  it("preserves legacy one-image selection and the outward V1 result shape", async () => {
+  it("falls back to legacy one-image selection for an untagged set and keeps the outward V1 result shape", async () => {
     const db = new ServiceDatabase();
     registerLegacyAsset(db);
-    const result = await finalVerdictForBody(db, {
-      verify: async (request) => {
-        expect(request.finalText).toBe("A calm reply");
-        return { emotion: "neutral", confidence: 0.7, reason: "legacy" };
-      },
-    }, { context: { channelId: "c1", content: "A calm reply MEDIA:/tmp/ignored.png" } });
+    const affect = responseAffect();
+    const result = await finalVerdictForBody(db, { context: { channelId: "c1", content: "A calm reply MEDIA:/tmp/ignored.png", responseAffect: affect } });
 
     expect(result).toEqual({
       verdict: {
-        emotion: "neutral",
-        confidence: 0.7,
-        reason: "legacy",
+        affect,
         media: {
           filename: "neutral.png",
           contentType: "image/png",

@@ -478,7 +478,7 @@ async function main(): Promise<void> {
     const preReplyMedia = deliveries.filter((delivery) => delivery.kind === "media" && delivery.mediaBytes && sha256(delivery.mediaBytes) === sha256(service.preReplyBytes));
     const finalMedia = deliveries.filter((delivery) => delivery.kind === "media" && delivery.mediaBytes && sha256(delivery.mediaBytes) === sha256(service.finalBytes));
     assert.equal(preReplyMedia.length, 3, "gateway did not deliver exact static pre-reply media three times");
-    assert.equal(finalMedia.length, 3, `gateway did not deliver exact semantically routed final media three times; deliveries=${JSON.stringify(deliveries.map((delivery) => ({ ...delivery, mediaBytes: delivery.mediaBytes ? sha256(delivery.mediaBytes) : undefined })), null, 2)}; verifierCalls=${service.verifierCalls()}; logs=${gatewayLogs}`);
+    assert.equal(finalMedia.length, 3, `gateway did not deliver exact semantically routed final media three times; deliveries=${JSON.stringify(deliveries.map((delivery) => ({ ...delivery, mediaBytes: delivery.mediaBytes ? sha256(delivery.mediaBytes) : undefined })), null, 2)}; logs=${gatewayLogs}`);
     const watcherChunks = deliveries.filter((delivery) => delivery.kind === "text" && delivery.text !== "FINAL-HAPPY-ROUTE");
     assert.equal(watcherChunks.length, 0, "anti-fixation guidance leaked into user-visible delivery");
     const ledgerCount = service.db.db.prepare("SELECT COUNT(*) AS count FROM conversation_delivery_ledger").get() as { count: number };
@@ -486,7 +486,7 @@ async function main(): Promise<void> {
 
     const isolatedEvidence = {
       child: { pid: gateway.pid, port: gatewayPort, stateRoot: tempRoot, disposableState: tempRoot.startsWith(tmpdir()), externalChannelCredentials: false, configuredChannels: ["qa-channel"], adapterSource: hentPlugin.source },
-      service: { port: Number(new URL(service.baseUrl).port), health: (await (await fetch(`${service.baseUrl}/health`)).json()).ok, mappingEnabled: service.db.getChannelMapping(E2E_CHANNEL_ID)?.enabled, verifierCalls: service.verifierCalls() },
+      service: { port: Number(new URL(service.baseUrl).port), health: (await (await fetch(`${service.baseUrl}/health`)).json()).ok, mappingEnabled: service.db.getChannelMapping(E2E_CHANNEL_ID)?.enabled },
       provider: { port: providerPort, requests: providerRequests.length, credential: "local dummy only" },
       media: { preReplySha256: sha256(service.preReplyBytes), finalSha256: sha256(service.finalBytes), distinct: sha256(service.preReplyBytes) !== sha256(service.finalBytes), preReplyDeliveriesWithExactBytes: preReplyMedia.length, finalDeliveriesWithExactBytes: finalMedia.length },
       delivery: { loopbackPort: capturePort, total: deliveries.length, finalReplies: deliveries.filter((delivery) => delivery.text === "FINAL-HAPPY-ROUTE").length, watcherChunks: [], internalSteerObserved: true, ledgerRows: 0 },
