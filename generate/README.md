@@ -16,7 +16,7 @@ npm run setup:affect -- \
   --apply
 ```
 
-Omit `--apply` for a free preflight. The applied command launches Codex in an external writable setup directory, generates exactly 100 accepted images, tags each accepted image immediately from anonymous pixel input, resumes immutable receipts, migrates to `HENT_AI_ASSET_ROOT`, and performs available service/OpenClaw checks. See [`../references/codex-image-generation-and-tagging.md`](../references/codex-image-generation-and-tagging.md) for the complete contract.
+Omit `--apply` for a free preflight. The applied command launches Codex in an external writable setup directory, generates exactly 100 accepted images, tags each accepted image immediately from anonymous pixel input, resumes immutable receipts, migrates to `HENT_AI_ASSET_ROOT`, and performs available service checks. See [`../references/codex-image-generation-and-tagging.md`](../references/codex-image-generation-and-tagging.md) for the complete contract.
 
 ## Install
 
@@ -85,7 +85,7 @@ Verify the deployed pool from the repository root:
 node scripts/verify-affect-assets.mjs ~/.hent-ai/assets <target-set-id>
 ```
 
-Back up the service DB and service-manager configuration before import or channel remapping. Change `HENT_AI_ASSET_ROOT` only after import succeeds, then verify live API routing, exact static bytes, and OpenClaw delivery. Runtime images, affect records, and the live manifest are deployment data and must not be committed to this repository.
+Back up the service DB and service-manager configuration before import or channel remapping. Change `HENT_AI_ASSET_ROOT` only after import succeeds, then verify live API routing, exact static bytes, and delivery through `hent send`. Runtime images, affect records, and the live manifest are deployment data and must not be committed to this repository.
 
 ## Compatibility and provenance
 
