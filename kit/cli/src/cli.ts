@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-// hent - Hent-ai session kit CLI. Subcommands are filled in by later todos of the
-// session-owned-messenger plan; until then each one reports that it is not implemented.
+// hent - Hent-ai session kit CLI.
 
 import { runBridgeCli } from "./bridge/index.ts";
+import { cmdBridgeInstall, cmdChannels, cmdHistory, cmdInbox, cmdMedia, cmdMemory, cmdSend, cmdSession, cmdSkip, cmdTyping } from "./commands.ts";
 
-const IMPLEMENTED: ReadonlySet<string> = new Set(["bridge"]);
+const IMPLEMENTED: ReadonlySet<string> = new Set(["bridge", "session", "send", "skip", "media", "typing", "channels", "memory", "inbox", "history"]);
 
 const SUBCOMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["bridge", "run the token-owning Discord bridge"],
@@ -30,7 +30,29 @@ export const main = (argv: readonly string[]): number | Promise<number> => {
     console.log(usage());
     return 0;
   }
-  if (cmd === "bridge") return runBridgeCli(argv.slice(1));
+  const rest = argv.slice(1);
+  switch (cmd) {
+    case "bridge":
+      return rest[0] === "install" ? cmdBridgeInstall() : runBridgeCli(rest);
+    case "send":
+      return cmdSend(rest);
+    case "media":
+      return cmdMedia(rest);
+    case "typing":
+      return cmdTyping(rest);
+    case "skip":
+      return cmdSkip(rest);
+    case "session":
+      return cmdSession(rest);
+    case "inbox":
+      return cmdInbox(rest);
+    case "history":
+      return cmdHistory(rest);
+    case "channels":
+      return cmdChannels(rest);
+    case "memory":
+      return cmdMemory(rest);
+  }
   if (SUBCOMMANDS.some(([name]) => name === cmd)) {
     console.error(`hent ${cmd}: not yet implemented`);
     return 2;
