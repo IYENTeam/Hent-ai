@@ -33,7 +33,7 @@ export type HentE2eRuntime = {
 };
 
 export async function startHentE2eRuntime(options: { token?: string; port?: number } = {}): Promise<HentE2eRuntime> {
-  const root = await mkdtemp(join(tmpdir(), "hent-openclaw-e2e-"));
+  const root = await mkdtemp(join(tmpdir(), "hent-e2e-"));
   const assetRoot = join(root, "assets");
   const dbPath = join(root, "service.sqlite");
   const preReplyPath = join(assetRoot, PRE_REPLY_STORAGE_KEY);
