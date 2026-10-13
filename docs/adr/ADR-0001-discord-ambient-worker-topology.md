@@ -1,3 +1,5 @@
+> Superseded by [ADR-0002](ADR-0002-session-brain-bridge.md) (2026-10-13): the session is the brain, a token-owning bridge holds the Discord connection, and the service no longer runs a Discord worker.
+
 # ADR-0001: Separate Discord ambient worker from the HTTP API
 
 - Status: accepted
