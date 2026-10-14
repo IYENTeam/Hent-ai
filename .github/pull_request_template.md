@@ -8,6 +8,6 @@
 
 ## Architecture Boundary
 
-- [ ] This change keeps OpenClaw service-thin: no local classifier, manifest scan, profile DB read, generation call, direct Discord REST, or delivery orchestration.
+- [ ] This change keeps the service token-free: no Discord code or messenger token in `service/`; the session kit (`kit/`) stays dependency-free and fails open.
 - [ ] If this changes service-owned classifier/profile/channel/asset/delivery behavior, an owner-approved architecture decision is linked.
 - [ ] If this changes emotion contract behavior, `tests/fixtures/emotion-contract-v1.json` and all parity tests are updated.

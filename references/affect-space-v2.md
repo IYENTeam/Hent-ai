@@ -20,7 +20,7 @@ The caller, not the model, binds `source.model`, `source.taggedAt`, `source.imag
 
 ## Response-time Routing
 
-The verifier returns `ResponseAffectV2` with the same 24 dimensions. The router:
+The session states `ResponseAffectV2` with the same 24 dimensions (`hent send --affect`). The router:
 
 1. loads every valid `VisualAffectV2` candidate in the channel's mapped set;
 2. computes normalized weighted Euclidean distance in the shared ordered space;

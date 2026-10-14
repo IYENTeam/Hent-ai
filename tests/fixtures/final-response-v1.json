@@ -7,9 +7,6 @@
   },
   "validVerdict": {
     "verdict": {
-      "emotion": "neutral",
-      "confidence": 0.88,
-      "reason": "remote_verifier",
       "media": {
         "filename": "neutral.png",
         "contentType": "image/png",
@@ -23,6 +20,6 @@
   },
   "nullVerdict": {
     "verdict": null,
-    "diagnostics": [{ "skipped": true, "reason": "verifier_emotion_invalid" }]
+    "diagnostics": [{ "skipped": true, "reason": "missing_response_affect" }]
   }
 }

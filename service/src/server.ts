@@ -2,17 +2,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
-import type { FinalResponseVerifier } from "./verifier.js";
-import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
-import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
-import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
 import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalResponseRequestFromBody, mediaResponseForChannel } from "./final-response-routes.js";
 import { createFinalResponseUseCase } from "./final-response-use-case.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
-import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -25,11 +20,7 @@ export type HentAiServerOptions = {
   db: ServiceDatabase;
   token: string;
   assetRoot?: string;
-  verifier: FinalResponseVerifier;
   semanticAssetRouter?: SemanticAssetRouter;
-  conversationConfig?: ConversationServiceConfig;
-  conversationContextProvider?: ConversationContextProvider;
-  conversationRuntime?: ConversationRuntime;
 };
 
 export function redactBearerToken(value: string): string {
@@ -103,10 +94,7 @@ function serveStatic(db: ServiceDatabase, assetRoot: string | undefined, pathnam
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const semanticAssetRouter = options.semanticAssetRouter
     ?? new DeterministicSemanticAssetRouter(new ServiceDatabaseSemanticAssetRepository(options.db));
-  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, verifier: options.verifier, assetRouter: semanticAssetRouter });
-  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
-    ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
-  });
+  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, assetRouter: semanticAssetRouter });
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -131,17 +119,6 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
         return;
       }
-      if (isWatcherRoute(req.method, url.pathname)) {
-        const result = await handleWatcherRoute({
-          method: req.method,
-          pathname: url.pathname,
-          body: await readJsonBody(req),
-          runtime: conversationRuntime,
-        });
-        if (!result) return notFound(res);
-        sendJson(res, result.status, result.body);
-        return;
-      }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {
         sendJson(res, 200, { profiles: options.db.listProfiles() });
         return;
@@ -161,6 +138,10 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       if (profileMatch && req.method === "PATCH") {
         const body = await readJsonBody(req) as Parameters<ServiceDatabase["updateProfile"]>[1];
         sendJson(res, 200, { profile: options.db.updateProfile(decodeURIComponent(profileMatch[1]!), body) });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/channels") {
+        sendJson(res, 200, { channels: options.db.listChannelSettings() });
         return;
       }
       if (req.method === "GET" && url.pathname === "/v1/channels/cron-enabled") {

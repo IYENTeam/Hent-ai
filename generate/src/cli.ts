@@ -166,7 +166,6 @@ Limits:
   - Max 3 reference images per request (auto-resized to 768px)
   - 90s timeout per generation call
   - Safety rephrase is NOT available in CLI mode (no LLM provider).
-    Use OpenClaw onboarding for automatic prompt rephrasing on policy rejections.
 
 Prerequisites:
   Log in with Codex CLI first: codex login

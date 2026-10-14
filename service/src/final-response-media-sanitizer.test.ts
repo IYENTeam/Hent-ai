@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ServiceDatabase } from "./db.js";
-import { request, withServer } from "./service-test-helpers.js";
-import type { VerifierRequest } from "./verifier.js";
+import { request, responseAffect, withServer } from "./service-test-helpers.js";
 
 function registerNeutralAsset(db: ServiceDatabase): void {
   db.upsertAssetSet({ id: "set", name: "Set" });
@@ -15,6 +14,16 @@ function registerNeutralAsset(db: ServiceDatabase): void {
   });
   db.upsertAsset({ id: "asset-neutral", assetSetId: "set", emotion: "neutral", filename: "neutral.png", storageObjectId, contentHash: "neutral-hash" });
   db.setChannelMapping("c1", { enabled: true, assetSetId: "set" });
+}
+
+const affect = responseAffect();
+
+function withAffect(body: Record<string, unknown>): Record<string, unknown> {
+  return { ...body, responseAffect: affect };
+}
+
+function verdictCacheRows(db: ServiceDatabase): unknown {
+  return db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get();
 }
 
 describe("final-response MEDIA sanitizer", () => {
@@ -51,57 +60,31 @@ describe("final-response MEDIA sanitizer", () => {
     },
   ];
 
-  it.each(mediaSanitizationCases)("strips MEDIA directives before verifier input for $name", async ({ body, expectedFinalText }) => {
+  it.each(mediaSanitizationCases)("strips MEDIA directives before the verdict cache key for $name", async ({ body, expectedFinalText }) => {
     const db = new ServiceDatabase();
     registerNeutralAsset(db);
-    const requests: VerifierRequest[] = [];
 
     await withServer(db, async (baseUrl) => {
-      const response = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify(body) });
+      const unsafe = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify(withAffect(body)) });
+      expect(unsafe.status).toBe(200);
+      expect(await unsafe.json()).toMatchObject({ verdict: { affect, media: { filename: "neutral.png" } } });
 
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ verdict: { emotion: "neutral", media: { filename: "neutral.png" } } });
-      expect(requests.map((verifierRequest) => verifierRequest.finalText)).toEqual([expectedFinalText]);
-    }, { verifier: { verify: async (verifierRequest) => {
-      requests.push(verifierRequest);
-      return { emotion: "neutral", confidence: 0.9, reason: "sanitized" };
-    } } });
+      const safe = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify(withAffect({ channelId: "c1", finalText: expectedFinalText, validEmotions: ["neutral"] })) });
+      expect(safe.status).toBe(200);
+      expect(verdictCacheRows(db)).toEqual({ count: 1 });
+    });
   });
 
-  it("skips media-only final-response input without calling the verifier", async () => {
+  it("skips media-only final-response input without caching", async () => {
     const db = new ServiceDatabase();
     registerNeutralAsset(db);
-    const requests: VerifierRequest[] = [];
 
     await withServer(db, async (baseUrl) => {
-      const response = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify({ context: { channelId: "c1", content: "MEDIA:/tmp/not-owned.png", validEmotions: ["neutral"] } }) });
+      const response = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify(withAffect({ context: { channelId: "c1", content: "MEDIA:/tmp/not-owned.png", validEmotions: ["neutral"] } })) });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ verdict: null, diagnostics: [{ skipped: true, reason: "no_final_text_or_valid_emotions" }] });
-      expect(requests).toEqual([]);
-      expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 0 });
-    }, { verifier: { verify: async (verifierRequest) => {
-      requests.push(verifierRequest);
-      return { emotion: "neutral" };
-    } } });
-  });
-
-  it("reuses one verifier call and cache row for sanitized-equivalent unsafe and safe prose", async () => {
-    const db = new ServiceDatabase();
-    registerNeutralAsset(db);
-    const requests: VerifierRequest[] = [];
-
-    await withServer(db, async (baseUrl) => {
-      const unsafe = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify({ context: { channelId: "c1", content: "Task complete MEDIA:/tmp/not-owned.png", validEmotions: ["neutral"] } }) });
-      const safe = await request(baseUrl, "/v1/final-response/verdict", { method: "POST", body: JSON.stringify({ context: { channelId: "c1", content: "Task complete", validEmotions: ["neutral"] } }) });
-
-      expect(unsafe.status).toBe(200);
-      expect(safe.status).toBe(200);
-      expect(requests.map((verifierRequest) => verifierRequest.finalText)).toEqual(["Task complete"]);
-      expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
-    }, { verifier: { verify: async (verifierRequest) => {
-      requests.push(verifierRequest);
-      return { emotion: "neutral", confidence: 0.9, reason: "cached_sanitized" };
-    } } });
+      expect(verdictCacheRows(db)).toEqual({ count: 0 });
+    });
   });
 });

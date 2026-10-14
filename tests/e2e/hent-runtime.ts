@@ -3,12 +3,10 @@ import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ServiceDatabase } from "../../service/src/db.js";
-import { DEFAULT_CONVERSATION_CONFIG } from "../../service/src/conversation-config.js";
 import { listen, createHentAiServer } from "../../service/src/server.js";
 import {
   AFFECT_DIMENSIONS,
   AFFECT_SPACE_VERSION,
-  RESPONSE_AFFECT_SCHEMA_VERSION,
   VISUAL_AFFECT_SCHEMA_VERSION,
   affectVectorFromDimensions,
   type AffectDimensionsV2,
@@ -31,12 +29,11 @@ export type HentE2eRuntime = {
   readonly finalBytes: Buffer;
   readonly preReplyBytes: Buffer;
   readonly token: string;
-  readonly verifierCalls: () => number;
   readonly stop: () => Promise<void>;
 };
 
 export async function startHentE2eRuntime(options: { token?: string; port?: number } = {}): Promise<HentE2eRuntime> {
-  const root = await mkdtemp(join(tmpdir(), "hent-openclaw-e2e-"));
+  const root = await mkdtemp(join(tmpdir(), "hent-e2e-"));
   const assetRoot = join(root, "assets");
   const dbPath = join(root, "service.sqlite");
   const preReplyPath = join(assetRoot, PRE_REPLY_STORAGE_KEY);
@@ -109,41 +106,7 @@ export async function startHentE2eRuntime(options: { token?: string; port?: numb
     cronEnabled: false,
   });
 
-  let verifierCallCount = 0;
-  const server = createHentAiServer({
-    db,
-    token: options.token ?? E2E_TOKEN,
-    assetRoot,
-    verifier: {
-      async verify() {
-        verifierCallCount += 1;
-        return {
-          emotion: "happy",
-          confidence: 0.99,
-          reason: "deterministic affect e2e verifier",
-          affect: {
-            schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION,
-            affectSpaceVersion: AFFECT_SPACE_VERSION,
-            dimensions: happyDimensions,
-            confidence: 0.99,
-          },
-        };
-      },
-    },
-    conversationConfig: {
-      ...DEFAULT_CONVERSATION_CONFIG,
-      enabled: true,
-      minDelayMs: 0,
-      maxDelayMs: 0,
-      maxChunks: 4,
-      maxChunkChars: 32,
-      cooldownMs: 60_000,
-      budgetPerHour: 20,
-      minHumanIdleMs: 0,
-      confidenceThreshold: 0.5,
-      diagnostics: [],
-    },
-  });
+  const server = createHentAiServer({ db, token: options.token ?? E2E_TOKEN, assetRoot });
   let binding: Awaited<ReturnType<typeof listen>>;
   try {
     binding = await listen(server, options.port ?? 0, "127.0.0.1");
@@ -162,7 +125,6 @@ export async function startHentE2eRuntime(options: { token?: string; port?: numb
     finalBytes,
     preReplyBytes,
     token: options.token ?? E2E_TOKEN,
-    verifierCalls: () => verifierCallCount,
     async stop() {
       if (stopped) return;
       stopped = true;

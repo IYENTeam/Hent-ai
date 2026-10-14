@@ -8,7 +8,6 @@ __pycache__/
 target/
 dist/
 build/
-openclaw/index.js
 
 # OMX runtime-local state
 .omx/cache/

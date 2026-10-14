@@ -131,6 +131,24 @@ export class ServiceDatabase {
     }));
   }
 
+  listChannelSettings(): Array<{ channelId: string; profileId: string | null; mode: string | null; enabled: boolean | null; cronEnabled: boolean | null; assetSetId: string | null; settings: unknown; updatedAt: string }> {
+    return this.db.prepare(`SELECT s.channel_id, m.profile_id, m.mode, s.enabled, s.cron_enabled, s.asset_set_id, s.settings_json, s.updated_at
+      FROM channel_settings s LEFT JOIN channel_mappings m ON m.channel_id = s.channel_id
+      ORDER BY s.channel_id`).all().map((value) => {
+      const row = value as Record<string, unknown>;
+      return {
+        channelId: String(row.channel_id),
+        profileId: (row.profile_id as string | null) ?? null,
+        mode: (row.mode as string | null) ?? null,
+        enabled: row.enabled == null ? null : Number(row.enabled) === 1,
+        cronEnabled: row.cron_enabled == null ? null : Number(row.cron_enabled) === 1,
+        assetSetId: (row.asset_set_id as string | null) ?? null,
+        settings: typeof row.settings_json === "string" ? JSON.parse(row.settings_json) as unknown : null,
+        updatedAt: String(row.updated_at),
+      };
+    });
+  }
+
   cronEnabledRevision(): string {
     const row = this.db.prepare(`SELECT COALESCE(MAX(COALESCE(updated_at, created_at)), '') AS revision
       FROM channel_settings

@@ -84,7 +84,7 @@ jobs:
             local pr_number="${{ github.event.pull_request.number }}"
             local repo="${{ github.repository }}"
 
-            if jq -e --arg label "$OWNER_REVIEW_LABEL" '.pull_request.labels[]?.name == $label' "$GITHUB_EVENT_PATH" >/dev/null; then
+            if jq -e --arg label "$OWNER_REVIEW_LABEL" 'any(.pull_request.labels[]?; .name == $label)' "$GITHUB_EVENT_PATH" >/dev/null; then
               echo "✅ Owner review gate satisfied by label: $OWNER_REVIEW_LABEL ($reason)"
               return 0
             fi
@@ -112,18 +112,10 @@ jobs:
             return 1
           }
 
-          # Check if configSchema changed (potential breaking for existing users)
-          if echo "$CHANGED" | grep -Fxq "openclaw/openclaw.plugin.json"; then
+          # Check if the session kit's runtime surface changed (bridge owns the messenger token)
+          if echo "$CHANGED" | grep -Eq "^kit/cli/src/bridge/|^kit/cli/package.json$"; then
             OWNER_GATE_REQUIRED=1
-            if ! require_owner_review "Plugin manifest changed. Verify backward compatibility of configSchema."; then
-              exit 1
-            fi
-          fi
-
-          # Check if entry point signature changed
-          if echo "$CHANGED" | grep -Fxq "openclaw/index.ts"; then
-            OWNER_GATE_REQUIRED=1
-            if ! require_owner_review "Plugin entry point changed. Ensure definePluginEntry contract is preserved."; then
+            if ! require_owner_review "Session kit bridge or package changed. Verify token handling and zero runtime dependencies."; then
               exit 1
             fi
           fi
