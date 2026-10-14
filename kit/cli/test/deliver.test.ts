@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
-import { Deliverer, defaultFindTranscript, type Exec, formatPrompt, headlessArgv, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
+import { Deliverer, defaultFindTranscript, type Exec, formatPrompt, headlessArgv, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
 import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
 import { realClock } from "../src/run.ts";
 
@@ -315,13 +315,17 @@ test("an unrelated node process in a codex pane is not taken for the agent", asy
   h.deliverer.stop();
 });
 
-test("assistant text that mentions the INBOUND marker and id does not confirm receipt", () => {
-  const prompt = formatPrompt({ ...event("wanted-id", "payload"), seq: 1 } as InboxEvent, []);
-  const assistant = JSON.stringify({ type: "assistant", message: { role: "assistant", content: `I saw [hent] INBOUND earlier; wanted-id is pending. ${prompt}` } });
-  expect(transcriptReceived(assistant, "wanted-id")).toBe(false);
-  expect(transcriptReceived(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }), "wanted-id")).toBe(true);
+test("receipt needs the exact injected line in a user-input record", () => {
+  const wanted = { ...event("wanted-id", "payload"), seq: 1 } as InboxEvent;
+  const prompt = formatPrompt(wanted, []);
+  const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
+  const assistant = JSON.stringify({ type: "assistant", message: { role: "assistant", content: prompt } });
+  expect(transcriptReceived(assistant, wanted)).toBe(false);
+  expect(transcriptReceived(user('I saw [hent] INBOUND earlier; {"messageId":"wanted-id"} is pending'), wanted)).toBe(false);
+  expect(transcriptReceived(user(inboundLine({ ...wanted, content: "other payload" })), wanted)).toBe(false);
+  expect(transcriptReceived(user(prompt), wanted)).toBe(true);
   const codexUser = JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } });
-  expect(transcriptReceived(codexUser, "wanted-id")).toBe(true);
+  expect(transcriptReceived(codexUser, wanted)).toBe(true);
 });
 
 test("typing without a submitted user record leaves the event unconfirmed", async () => {

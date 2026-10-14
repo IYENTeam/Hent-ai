@@ -99,18 +99,20 @@ const userInputTexts = (record: unknown): string[] => {
   return content.map((part) => asObject(part)?.text).filter((text): text is string => typeof text === "string");
 };
 
-/** True when `chunk` (JSONL) holds a user-input record carrying the INBOUND line for `messageId`. */
-export const transcriptReceived = (chunk: string, messageId: string): boolean => {
-  const marker = `"messageId":"${messageId}"`;
-  for (const line of chunk.split("\n")) {
-    if (!line.includes(messageId)) continue;
+export const inboundLine = (event: InboxEvent): string => `[hent] INBOUND ${JSON.stringify(event)}`;
+
+/** True when `chunk` (JSONL) holds a user-input record containing exactly the injected INBOUND line for `event`. */
+export const transcriptReceived = (chunk: string, event: InboxEvent): boolean => {
+  const line = inboundLine(event);
+  for (const raw of chunk.split("\n")) {
+    if (!raw.includes(event.messageId)) continue;
     let record: unknown;
     try {
-      record = JSON.parse(line);
+      record = JSON.parse(raw);
     } catch {
       continue;
     }
-    if (userInputTexts(record).some((text) => text.includes("[hent] INBOUND ") && text.includes(marker))) return true;
+    if (userInputTexts(record).some((text) => text.includes(line))) return true;
   }
   return false;
 };
@@ -154,7 +156,7 @@ export const defaultFindTranscript = (session: StoredSession, home = homedir()):
 export const formatPrompt = (event: InboxEvent, history: readonly InboxEvent[]): string => {
   const slim = (e: InboxEvent) => ({ messageId: e.messageId, author: e.authorName, self: e.authorIsSelf, content: e.content, at: e.createdAt });
   const historyPart = history.length > 0 ? `[hent] HISTORY ${JSON.stringify(history.map(slim))} ` : "";
-  return `${historyPart}[hent] INBOUND ${JSON.stringify(event)}`;
+  return `${historyPart}${inboundLine(event)}`;
 };
 
 export const headlessArgv = (session: StoredSession, prompt: string): string[] =>
@@ -376,7 +378,7 @@ export class Deliverer {
         if (size > before) {
           // `before` is a byte size; slice the bytes, not the decoded string (multi-byte text shifts char offsets).
           const tail = readFileSync(path).subarray(path === transcript ? before : 0).toString("utf8");
-          if (transcriptReceived(tail, event.messageId)) return true;
+          if (transcriptReceived(tail, event)) return true;
         }
       }
       if (this.deps.handled.get(event.messageId)) return true;
