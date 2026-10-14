@@ -225,7 +225,9 @@ test("a headless turn that runs the real `hent skip` against the bridge is deliv
 
 test.if(process.platform === "darwin")("the launchd plist renders without a token and passes plutil -lint", async () => {
   const home = tempHome("hent-rr-plist-");
-  const plist = LAUNCHD_TEMPLATE("/opt/bun/bin/bun", "/x/kit/cli/src/cli.ts", home);
+  const plist = LAUNCHD_TEMPLATE("/opt/bun/bin/bun", "/x/kit/cli/src/cli.ts", home, "/Users/me");
+  // The user's ~/.local/bin comes first so headless turns run the same agent CLI as the live session.
+  expect(plist).toContain("<key>PATH</key><string>/Users/me/.local/bin:/opt/homebrew/bin:");
   const path = join(home, "ai.hent.bridge.plist");
   writeFileSync(path, plist);
   const lint = Bun.spawn(["plutil", "-lint", path], { stdout: "pipe" });

@@ -37,3 +37,18 @@ prompt.
   stdin. The turn counts as delivered only if it ends with `hent send --reply-to` or `hent skip`.
 
 No hooks are needed.
+
+## Restricted brain session (public channels)
+
+For a channel open to guests, start the session so it can only answer:
+
+```
+claude --session-id <id> --permission-mode dontAsk \
+  --allowedTools "Bash(hent send:*)" "Bash(hent skip:*)" "Bash(hent typing:*)" "Bash(hent history:*)" \
+    "Bash(hent media:*)" "Bash(hent session set:*)" "Read(//$HOME/.hent/**)" "Read(//$HOME/.claude/skills/hent-mode/**)" "Skill" \
+  --disallowedTools WebFetch WebSearch Write Edit NotebookEdit -- "hent mode ..."
+```
+
+`dontAsk` denies anything not listed without a prompt, so the pane never blocks. Absolute paths in
+`Read(...)` rules need two leading slashes (`Read(//Users/me/.hent/**)`) or `~/`; a single leading
+slash is relative to the settings file and silently matches nothing.
