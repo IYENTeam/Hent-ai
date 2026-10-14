@@ -84,7 +84,7 @@ jobs:
             local pr_number="${{ github.event.pull_request.number }}"
             local repo="${{ github.repository }}"
 
-            if jq -e --arg label "$OWNER_REVIEW_LABEL" '.pull_request.labels[]?.name == $label' "$GITHUB_EVENT_PATH" >/dev/null; then
+            if jq -e --arg label "$OWNER_REVIEW_LABEL" 'any(.pull_request.labels[]?; .name == $label)' "$GITHUB_EVENT_PATH" >/dev/null; then
               echo "✅ Owner review gate satisfied by label: $OWNER_REVIEW_LABEL ($reason)"
               return 0
             fi
