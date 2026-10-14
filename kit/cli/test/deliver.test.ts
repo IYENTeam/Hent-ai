@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
@@ -288,6 +288,12 @@ test("inputLine tells an empty prompt from typed input and from no prompt at all
   expect(inputLine("› draft reply")).toBe("typed");
   expect(inputLine("│ > typed │")).toBe("typed");
   expect(inputLine("unrelated node server is running")).toBe("none");
+});
+
+test("inputLine reads a real Claude Code 2.1 screen (❯ prompt, dim placeholder)", () => {
+  const screen = (name: string) => readFileSync(new URL(`./fixtures/claude-2.1-screen-${name}.ansi`, import.meta.url), "utf8");
+  expect(inputLine(screen("empty"))).toBe("empty");
+  expect(inputLine(screen("typed"))).toBe("typed");
 });
 
 test("a pane showing no input prompt is treated as busy, never typed into", async () => {

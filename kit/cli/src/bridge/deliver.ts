@@ -68,13 +68,13 @@ const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 const DIM_RUN = /\x1b\[(?:2|90|38;5;24\d)m[^\x1b]*/g;
 
 /**
- * Reads the agent's input line (the last "> " / "› " prompt on screen): "empty", "typed" when it
+ * Reads the agent's input line (the last ">", "›" (Codex) or "❯" (Claude Code 2.x) prompt on screen): "empty", "typed" when it
  * already holds text, or "none" when no prompt is visible (the agent is busy or it is not an agent).
  */
 export const inputLine = (screen: string): "empty" | "typed" | "none" => {
   const lines = screen.split("\n").map((line) => line.replace(DIM_RUN, "").replace(ANSI, ""));
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const match = lines[i]!.match(/^[\s│|]*[>›]\s?(.*?)[\s│|]*$/);
+    const match = lines[i]!.match(/^[\s│|]*[>›❯]\s?(.*?)[\s│|]*$/);
     if (match) return match[1]!.trim().length > 0 ? "typed" : "empty";
   }
   return "none";
