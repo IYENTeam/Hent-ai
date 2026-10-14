@@ -119,13 +119,15 @@ test("hent skip records a deliberate non-reply", async () => {
   expect(readFileSync(join(env.HENT_HOME!, "state", "handled.jsonl"), "utf8")).toContain('"how":"skipped"');
 });
 
-test("hent session set registers a pane from TMUX_PANE, or headless", async () => {
+test("hent session set registers the herdr pane it runs in, and refuses without one", async () => {
   const { env } = await setup();
-  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp"], { ...env, TMUX_PANE: "%7" })).toBe(0);
+  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp"], { ...env, HERDR_PANE_ID: "w1:p7" })).toBe(0);
   const session = JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"));
-  expect(session).toMatchObject({ agent: "claude", sessionId: "abc-123", mode: "pane", pane: "%7", cwd: "/tmp" });
-  expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp", "--headless"], { ...env, TMUX_PANE: "%7" })).toBe(0);
-  expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", mode: "headless", pane: null });
+  expect(session).toMatchObject({ agent: "claude", sessionId: "abc-123", pane: "w1:p7", cwd: "/tmp" });
+  expect(session.mode).toBeUndefined();
+  expect(await cmdSession(["set", "--agent", "codex", "--session-id", "def-456", "--cwd", "/tmp", "--pane", "w2:p1"], env)).toBe(0);
+  expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", pane: "w2:p1" });
+  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp"], env)).toBe(2);
 });
 
 test("a stopped bridge makes hent send exit 4 with BRIDGE_DOWN", async () => {

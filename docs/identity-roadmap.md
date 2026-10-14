@@ -50,8 +50,8 @@ Hent-ai has three runtime parts and a **shared contract** ([ADR-0002](adr/ADR-00
 ### Bridge - `hent bridge` owns the messenger connection
 
 - Holds the Discord token (`~/.hent/discord.token`, 0600) and the gateway connection.
-- Journals every inbound message and pushes each one into the brain session (tmux pane or headless
-  resumed turn), retrying until the session replies or skips.
+- Journals every inbound message and pushes each one into the brain session (an
+  interactive agent in a herdr pane), retrying until the session replies or skips.
 - Sends what the session asks (`/v1/send`, idempotent on nonce). Never calls the Hent-ai service.
 
 ### Brain - a Claude Code or Codex session with `hent-mode`

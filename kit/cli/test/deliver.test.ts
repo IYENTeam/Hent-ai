@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
-import { agentWorking, Deliverer, defaultFindTranscript, type Exec, formatPrompt, headlessArgv, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
+import { agentWorking, Deliverer, defaultFindTranscript, type Exec, formatPrompt, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
 import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
 import { realClock } from "../src/run.ts";
 
@@ -29,6 +29,7 @@ const event = (messageId: string, content: string, over: Partial<NewInboxEvent> 
 });
 
 type Harness = ReturnType<typeof harness>;
+type FakeAgent = { agent: string; agent_status: string } | null;
 
 const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambient" | "observe"; backoffMs?: number[] } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "hent-deliver-"));
@@ -45,57 +46,33 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
   mkdirSync(projectDir, { recursive: true });
   const transcript = join(projectDir, `${sessionId}.jsonl`);
   writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: "이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200) } })}\n`);
-  let swallowEnters = 0;
+  // Fake herdr: `agent get` reports the pane occupant, `agent read` the screen, `agent prompt` submits a line.
+  let agent: FakeAgent = { agent: session?.agent ?? "claude", agent_status: "idle" };
   let paneScreen: string | null = null;
-  let herdrPane: { agent: string; agent_status: string } | null = { agent: "claude", agent_status: "idle" };
-  const calls: string[][] = [];
-  let paneAlive = true;
-  let headlessCode = 0;
-  let headlessHandles = true;
-  let paneWrites = true;
   let paneInput = "";
-  let paneCommand = "claude";
+  let paneWrites = true;
+  let promptFails = false;
   let queueInput = false;
   const queued: string[] = [];
+  const calls: string[][] = [];
   const exec: Exec = async (argv) => {
     calls.push([...argv]);
-    if (argv[0] === "tmux" && argv[1] === "display-message") return { code: paneAlive ? 0 : 1, stdout: paneAlive ? `0 ${paneCommand}\n` : "" };
-    const screen = () => paneScreen ?? `some output\n\x1b[2m-- hint --\x1b[0m\n> ${paneInput}\n`;
-    const submit = (line: string) => {
+    if (argv[0] !== "herdr" || argv[1] !== "agent") return { code: 127, stdout: "" };
+    if (argv[2] === "get") return agent ? { code: 0, stdout: JSON.stringify({ result: { agent: { pane_id: argv[3], ...agent }, type: "agent_info" } }) } : { code: 1, stdout: "" };
+    if (argv[2] === "read") return { code: agent ? 0 : 1, stdout: paneScreen ?? `some output\n\x1b[2m-- hint --\x1b[0m\n> ${paneInput}\n` };
+    if (argv[2] === "prompt") {
+      if (promptFails || !agent) return { code: 1, stdout: "" };
+      const line = argv[4]!;
       // A working agent queues the submitted line and writes its user record only when it reads it.
-      if (queueInput) {
-        queued.push(line);
-        return;
+      if (queueInput) queued.push(line);
+      else {
+        // A pane that "does not write" still produces agent output quoting the line, which must not count as receipt.
+        const record = paneWrites ? { type: "user", message: { role: "user", content: line } } : { type: "assistant", message: { role: "assistant", content: `echo: ${line}` } };
+        appendFileSync(transcript, `${JSON.stringify(record)}\n`);
       }
-      // A pane that "does not write" still produces agent output quoting the line, which must not count as receipt.
-      const record = paneWrites ? { type: "user", message: { role: "user", content: line } } : { type: "assistant", message: { role: "assistant", content: `echo: ${line}` } };
-      appendFileSync(transcript, `${JSON.stringify(record)}\n`);
-    };
-    if (argv[0] === "tmux" && argv[1] === "capture-pane") return { code: 0, stdout: screen() };
-    // The fake input line: typed text shows after "> " until an Enter submits it; a pending paste swallows Enters.
-    const enter = () => {
-      if (swallowEnters > 0) {
-        swallowEnters -= 1;
-        return;
-      }
-      if (paneInput) submit(paneInput);
-      paneInput = "";
-    };
-    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "-l") paneInput += argv[5]!;
-    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "Enter") enter();
-    if (argv[0] === "herdr" && argv[2] === "send-text") paneInput += argv[4]!;
-    if (argv[0] === "herdr" && argv[2] === "send-keys" && argv[4] === "enter") enter();
-    if (argv[0] === "herdr" && argv[2] === "get") return herdrPane ? { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: argv[3], ...herdrPane } } }) } : { code: 1, stdout: "" };
-    if (argv[0] === "herdr" && argv[2] === "read") return { code: 0, stdout: screen() };
-    if (argv[0] === "claude" || argv[0] === "codex") {
-      if (headlessCode === 0 && headlessHandles) {
-        const prompt = argv.find((a) => a.includes("[hent] INBOUND"))!;
-        const id = JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)).messageId as string;
-        handled.mark({ messageId: id, how: "skipped", at: new Date().toISOString() });
-      }
-      return { code: headlessCode, stdout: "" };
+      return { code: 0, stdout: "" };
     }
-    return { code: 0, stdout: "" };
+    return { code: 1, stdout: "" };
   };
   const logLines: string[] = [];
   const deliverer = new Deliverer({
@@ -111,8 +88,6 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     backoffMs: opts.backoffMs ?? [5],
     paneConfirmMs: 500,
     busyRetryMs: 10,
-    pasteSettleMs: 200,
-    reEnterMs: 50,
   });
   journal.onAppend((e) => deliverer.onJournaled(e));
   deliverer.start();
@@ -123,24 +98,16 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     handled,
     deliverer,
     calls,
-    setPane: (alive: boolean) => (paneAlive = alive),
+    setAgent: (next: FakeAgent) => (agent = next),
     setPaneWrites: (writes: boolean) => (paneWrites = writes),
     setPaneInput: (text: string) => (paneInput = text),
-    setPaneCommand: (cmd: string) => (paneCommand = cmd),
     setPaneScreen: (text: string | null) => (paneScreen = text),
-    swallowNextEnters: (n: number) => (swallowEnters = n),
+    setPromptFails: (fails: boolean) => (promptFails = fails),
     setQueueInput: (on: boolean) => (queueInput = on),
     readQueued: () => {
       for (const line of queued.splice(0)) appendFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: line } })}\n`);
     },
-    setHerdrPane: (info: { agent: string; agent_status: string } | null) => (herdrPane = info),
-    appendTranscript: (record: unknown) => appendFileSync(transcript, `${JSON.stringify(record)}\n`),
-    setHeadless: (code: number, handles = true) => {
-      headlessCode = code;
-      headlessHandles = handles;
-    },
-    injected: () => calls.filter((c) => (c[0] === "tmux" && c[4] === "-l") || (c[0] === "herdr" && c[2] === "send-text")).map((c) => (c[0] === "tmux" ? c[5]! : c[4]!)),
-    headless: () => calls.filter((c) => c[0] === "claude" || c[0] === "codex"),
+    injected: () => calls.filter((c) => c[0] === "herdr" && c[2] === "prompt").map((c) => c[4]!),
     logs: () => logLines,
   };
 };
@@ -154,8 +121,7 @@ const settle = async (h: Harness, predicate: () => boolean, ms = 3000): Promise<
   h.deliverer.pendingCount();
 };
 
-const pane: StoredSession = { agent: "claude", sessionId: "11111111-2222-3333-4444-555555555555", mode: "pane", pane: "%1", cwd: "/tmp" };
-const headlessSession: StoredSession = { agent: "claude", sessionId: "11111111-2222-3333-4444-555555555555", mode: "headless", pane: null, cwd: "/tmp" };
+const pane: StoredSession = { agent: "claude", sessionId: "11111111-2222-3333-4444-555555555555", pane: "w1:p1", cwd: "/tmp" };
 
 test("three events are injected into the pane in seq order", async () => {
   const h = harness(pane);
@@ -179,39 +145,17 @@ test("self messages and observe channels are never injected", async () => {
   h2.deliverer.stop();
 });
 
-test("a dead pane falls back to a headless resumed turn that must handle the event", async () => {
+test("with no live agent in the pane, events stay queued (never run elsewhere) until it is back", async () => {
   const h = harness(pane);
-  h.setPane(false);
+  h.setAgent(null);
   h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.handled.get("m1") !== undefined && h.deliverer.pendingCount() === 0);
-  const argv = h.headless()[0]!;
-  expect(argv.slice(0, 4)).toEqual(["claude", "-p", "--resume", pane.sessionId]);
-  expect(argv.at(-1)).toBe("--allowedTools=Bash(hent:*)");
-  h.deliverer.stop();
-});
-
-test("headless exit 1 is retried and the event is delivered exactly once", async () => {
-  const h = harness(headlessSession);
-  h.setHeadless(1);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.headless().length >= 2);
-  h.setHeadless(0);
-  await settle(h, () => h.deliverer.pendingCount() === 0);
-  await Bun.sleep(30);
-  const successes = h.headless().length;
-  expect(successes).toBeGreaterThanOrEqual(3);
-  expect(h.handled.get("m1")?.how).toBe("skipped");
-  await Bun.sleep(30);
-  expect(h.headless().length).toBe(successes);
-  h.deliverer.stop();
-});
-
-test("a headless turn that exits 0 without handling the event stays pending", async () => {
-  const h = harness(headlessSession);
-  h.setHeadless(0, false);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.headless().length >= 2);
-  expect(h.deliverer.pendingCount()).toBe(1);
+  await settle(h, () => h.logs().filter((l) => l.includes("no_agent_in_pane")).length >= 2);
+  expect(h.injected()).toEqual([]);
+  expect(h.calls.every((c) => c[0] === "herdr")).toBe(true);
+  h.setAgent({ agent: "claude", agent_status: "idle" });
+  h.deliverer.onSessionSet();
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
+  expect(h.injected().length).toBe(1);
   h.deliverer.stop();
 });
 
@@ -238,7 +182,6 @@ test("bridge restart resumes undelivered events and does not repeat delivered on
   h.journal.append(event("m1", "one"));
   await settle(h, () => h.injected().length === 1);
   h.deliverer.stop();
-  h.setPane(false);
   h.journal.append(event("m2", "two"));
   const journal2 = Journal.open(h.paths, Date.now(), () => {});
   const calls: string[][] = [];
@@ -252,15 +195,16 @@ test("bridge restart resumes undelivered events and does not repeat delivered on
     log: () => {},
     exec: async (argv) => {
       calls.push([...argv]);
-      if (argv[0] === "tmux" && argv[1] === "display-message") return { code: 1, stdout: "" };
-      if (argv[0] === "claude") h.handled.mark({ messageId: "m2", how: "replied", at: new Date().toISOString() });
+      if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "claude", agent_status: "idle" } } }) };
+      if (argv[2] === "read") return { code: 0, stdout: "> \n" };
+      if (argv[2] === "prompt") h.handled.mark({ messageId: "m2", how: "replied", at: new Date().toISOString() });
       return { code: 0, stdout: "" };
     },
     backoffMs: [5],
   });
   d2.start();
   await settle(h, () => h.handled.get("m2") !== undefined);
-  const prompts = calls.filter((c) => c[0] === "claude").map((c) => c[4]!);
+  const prompts = calls.filter((c) => c[2] === "prompt").map((c) => c[4]!);
   expect(prompts.length).toBe(1);
   expect(prompts[0]).toContain('"messageId":"m2"');
   d2.stop();
@@ -291,18 +235,42 @@ test("a pane with unfinished typed input waits, then delivers once the input is 
   h.journal.append(event("m1", "hi"));
   await Bun.sleep(80);
   expect(h.injected()).toEqual([]);
-  expect(h.headless()).toEqual([]);
   h.setPaneInput("");
   await settle(h, () => h.injected().length === 1);
   h.deliverer.stop();
 });
 
-test("a pane running another program (vim) is never typed into", async () => {
+test("a pane where herdr sees another agent is never typed into", async () => {
   const h = harness(pane);
-  h.setPaneCommand("vim");
+  h.setAgent({ agent: "codex", agent_status: "idle" });
   h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.headless().length >= 1);
+  await settle(h, () => h.logs().some((l) => l.includes("no_agent_in_pane")));
   expect(h.injected()).toEqual([]);
+  h.deliverer.stop();
+});
+
+test("an agent herdr reports as working or blocked on a question waits", async () => {
+  for (const status of ["working", "blocked", "unknown"]) {
+    const h = harness(pane);
+    h.setAgent({ agent: "claude", agent_status: status });
+    h.journal.append(event("m1", "hi"));
+    await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
+    expect(h.injected()).toEqual([]);
+    h.setAgent({ agent: "claude", agent_status: "done" });
+    await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
+    expect(h.injected().length).toBe(1);
+    h.deliverer.stop();
+  }
+});
+
+test("a rejected herdr prompt is retried, not counted as delivered", async () => {
+  const h = harness(pane);
+  h.setPromptFails(true);
+  h.journal.append(event("m1", "hi"));
+  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
+  expect(h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED"))).toBe(false);
+  h.setPromptFails(false);
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
   h.deliverer.stop();
 });
 
@@ -332,16 +300,6 @@ test("hent session set restarts the backoff, so the new session is tried right a
   expect(h.logs().find((l) => l.includes("pane_unconfirmed"))).toContain('"delayMs":5');
   h.setPaneWrites(true);
   await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")), 1_000);
-  h.deliverer.stop();
-});
-
-test("an Enter swallowed by a still-settling paste is pressed once more, and the event is delivered once", async () => {
-  const h = harness(pane);
-  h.swallowNextEnters(1);
-  h.journal.append(event("m1", "long pasted prompt"));
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.logs().filter((l) => l.startsWith("BRIDGE_PANE_REENTER")).length).toBe(1);
-  expect(h.injected().length).toBe(1);
   h.deliverer.stop();
 });
 
@@ -383,16 +341,6 @@ test("a pane showing no input prompt is treated as busy, never typed into", asyn
   h.journal.append(event("m1", "hi"));
   await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
   expect(h.injected()).toEqual([]);
-  expect(h.headless()).toEqual([]);
-  h.deliverer.stop();
-});
-
-test("an unrelated node process in a codex pane is not taken for the agent", async () => {
-  const h = harness({ ...pane, agent: "codex" });
-  h.setPaneCommand("node");
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.headless().length >= 1);
-  expect(h.injected()).toEqual([]);
   h.deliverer.stop();
 });
 
@@ -418,28 +366,6 @@ test("typing without a submitted user record leaves the event unconfirmed", asyn
   h.deliverer.stop();
 });
 
-test("a herdr pane is used through herdr: idle agent gets the line, a working agent waits", async () => {
-  const h = harness({ ...pane, pane: "w1:p7" });
-  h.setHerdrPane({ agent: "claude", agent_status: "working" });
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
-  expect(h.injected()).toEqual([]);
-  h.setHerdrPane({ agent: "claude", agent_status: "idle" });
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.calls.filter((c) => c[0] === "herdr" && c[2] === "send-text").map((c) => c[3])).toEqual(["w1:p7"]);
-  expect(h.calls.some((c) => c[0] === "tmux")).toBe(false);
-  h.deliverer.stop();
-});
-
-test("a herdr pane running a different agent falls back to headless", async () => {
-  const h = harness({ ...pane, pane: "w1:p7" });
-  h.setHerdrPane({ agent: "codex", agent_status: "idle" });
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.headless().length >= 1);
-  expect(h.injected()).toEqual([]);
-  h.deliverer.stop();
-});
-
 test("transcripts are found where Claude Code and Codex write them", () => {
   const home = mkdtempSync(join(tmpdir(), "hent-find-"));
   dirs.push(home);
@@ -449,20 +375,23 @@ test("transcripts are found where Claude Code and Codex write them", () => {
   const codex = join(home, ".codex", "sessions", "2026", "10", "14");
   mkdirSync(codex, { recursive: true });
   writeFileSync(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"), "");
-  expect(defaultFindTranscript({ agent: "claude", sessionId: "aaaa-bbbb", mode: "pane", pane: "%1", cwd: "/x" }, home)).toBe(join(claude, "aaaa-bbbb.jsonl"));
-  expect(defaultFindTranscript({ agent: "codex", sessionId: "cccc-dddd", mode: "pane", pane: "%1", cwd: "/x" }, home)).toBe(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"));
+  expect(defaultFindTranscript({ agent: "claude", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/x" }, home)).toBe(join(claude, "aaaa-bbbb.jsonl"));
+  expect(defaultFindTranscript({ agent: "codex", sessionId: "cccc-dddd", pane: "w1:p1", cwd: "/x" }, home)).toBe(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"));
 });
 
-test("prompt text carries quotes, newlines and $( verbatim as one argv element", () => {
-  const e: InboxEvent = { seq: 1, ...event("m1", 'say "hi"\nthen $(id) `x`') };
-  const prompt = formatPrompt(e, []);
+test("prompt text carries quotes, newlines and $( verbatim as one herdr argv element", async () => {
+  const content = 'say "hi"\nthen $(id) `x`';
+  const prompt = formatPrompt({ seq: 1, ...event("m1", content) }, []);
   expect(prompt.includes("\n")).toBe(false);
-  expect(JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)).content).toBe('say "hi"\nthen $(id) `x`');
-  const argv = headlessArgv(headlessSession, prompt);
-  expect(argv[4]).toBe(prompt);
-  const codex = headlessArgv({ ...headlessSession, agent: "codex" }, prompt);
-  expect(codex.slice(0, 4)).toEqual(["codex", "exec", "resume", "--skip-git-repo-check"]);
-  expect(codex.at(-1)).toBe(prompt);
+  expect(JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)).content).toBe(content);
+  const h = harness(pane);
+  h.journal.append(event("m1", content));
+  await settle(h, () => h.injected().length === 1);
+  const call = h.calls.find((c) => c[2] === "prompt")!;
+  expect(call.slice(0, 4)).toEqual(["herdr", "agent", "prompt", "w1:p1"]);
+  expect(call.length).toBe(5);
+  expect(JSON.parse(call[4]!.slice(call[4]!.indexOf("[hent] INBOUND ") + 15)).content).toBe(content);
+  h.deliverer.stop();
 });
 
 test("history is prefixed after a quiet gap", () => {

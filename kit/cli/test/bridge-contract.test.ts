@@ -200,18 +200,19 @@ describe("edit / typing / handled / session", () => {
     expectErr(parseHandledRequest({ messageId: "m1", how: "ignored" }), /replied\|skipped/);
   });
   test("session", () => {
-    expect(
-      parseSessionRequest({ agent: "claude", sessionId: "3f2a-uuid", mode: "pane", pane: "hent-qa:0.1", cwd: "/Users/iyen/work" }),
-    ).toEqual({ ok: true, value: { agent: "claude", sessionId: "3f2a-uuid", mode: "pane", pane: "hent-qa:0.1", cwd: "/Users/iyen/work" } });
-    expect(parseSessionRequest({ agent: "codex", sessionId: "s1", mode: "headless", cwd: "/tmp" })).toEqual({
+    expect(parseSessionRequest({ agent: "claude", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" })).toEqual({
       ok: true,
-      value: { agent: "codex", sessionId: "s1", mode: "headless", pane: null, cwd: "/tmp" },
+      value: { agent: "claude", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" },
     });
-    expectErr(parseSessionRequest({ agent: "gpt", sessionId: "s1", mode: "headless", cwd: "/tmp" }), /agent/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", mode: "pane", cwd: "/tmp" }), /pane is required/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", mode: "headless", cwd: "relative" }), /absolute/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s 1", mode: "headless", cwd: "/tmp" }), /sessionId/);
+    expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp" }).ok).toBe(true);
+    expectErr(parseSessionRequest({ agent: "gpt", sessionId: "s1", pane: "w1:p3", cwd: "/tmp" }), /agent/);
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", cwd: "/tmp" }), /pane/);
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "%0", cwd: "/tmp" }), /herdr pane id/);
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", mode: "headless", cwd: "/tmp" }), /mode/);
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", cwd: "relative" }), /absolute/);
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s 1", pane: "w1:p3", cwd: "/tmp" }), /sessionId/);
   });
+
 });
 
 describe("inbox event and responses", () => {

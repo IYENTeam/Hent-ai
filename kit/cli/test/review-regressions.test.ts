@@ -201,32 +201,34 @@ test("channels import falls back to the read-only service DB when /v1/channels i
   expect(await cmdChannels(["import"], { HENT_HOME: autoHome, HOME: "/nonexistent-home", HENT_URL: env.HENT_URL, HENT_SERVICE_TOKEN: "t" })).toBe(2);
 });
 
-test("a headless turn that runs the real `hent skip` against the bridge is delivered exactly once", async () => {
+test("a herdr agent that runs the real `hent skip` for its prompt is delivered exactly once", async () => {
   const calls: string[][] = [];
   let envForChild: Record<string, string> = {};
   const exec = async (argv: readonly string[]) => {
     calls.push([...argv]);
-    if (argv[0] === "tmux") return { code: 1, stdout: "" };
-    const prompt = argv.find((a) => a.includes("[hent] INBOUND"))!;
+    if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "claude", agent_status: "idle" } } }) };
+    if (argv[2] === "read") return { code: 0, stdout: "> \n" };
+    if (argv[2] !== "prompt") return { code: 1, stdout: "" };
+    const prompt = argv[4]!;
     const id = (JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)) as { messageId: string }).messageId;
     const child = Bun.spawn(["bun", CLI, "skip", id], { env: { ...process.env, ...envForChild }, stdout: "pipe", stderr: "pipe" });
-    return { code: await child.exited, stdout: await new Response(child.stdout).text() };
+    return { code: await child.exited, stdout: "" };
   };
   const { fake, bridge, home, env } = await setup({ deliver: true, exec });
   envForChild = env;
-  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp", "--headless"], env)).toBe(0);
-  const question = await inbound(fake, bridge, "headless please");
+  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w1:p1"], env)).toBe(0);
+  const question = await inbound(fake, bridge, "please answer");
   await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_DELIVERED") && line.includes(question.id), 10_000);
-  const turns = calls.filter((c) => c[0] === "claude");
-  expect(turns.length).toBe(1);
-  expect(turns[0]!.slice(0, 4)).toEqual(["claude", "-p", "--resume", "abc-123"]);
+  const prompts = calls.filter((c) => c[2] === "prompt");
+  expect(prompts.length).toBe(1);
+  expect(prompts[0]!.slice(0, 4)).toEqual(["herdr", "agent", "prompt", "w1:p1"]);
   expect(handledIds(home)).toContain(question.id);
 });
 
 test.if(process.platform === "darwin")("the launchd plist renders without a token and passes plutil -lint", async () => {
   const home = tempHome("hent-rr-plist-");
   const plist = LAUNCHD_TEMPLATE("/opt/bun/bin/bun", "/x/kit/cli/src/cli.ts", home, "/Users/me");
-  // The user's ~/.local/bin comes first so headless turns run the same agent CLI as the live session.
+  // The user's ~/.local/bin comes first so the bridge runs the same herdr as the live session.
   expect(plist).toContain("<key>PATH</key><string>/Users/me/.local/bin:/opt/homebrew/bin:");
   const path = join(home, "ai.hent.bridge.plist");
   writeFileSync(path, plist);

@@ -1,8 +1,9 @@
 // Push delivery (plan todo 9, ADR-0002 "Push delivery"): every journaled inbound message in a
 // reply/ambient channel (or an allowed DM) is injected into the brain session, one at a time in
-// seq order. Pane mode types one line into the agent's pane (herdr when the pane id is a herdr id,
-// else tmux) and confirms it from a user-input record in the session transcript; headless mode runs one resumed turn and confirms it from the handled ledger.
-// Anything unconfirmed is retried with backoff, so nothing is lost while the session restarts.
+// seq order. The brain is an interactive Claude Code or Codex session in a herdr pane: herdr reports
+// whether the agent is idle, `herdr agent prompt` submits the line, and a user-input record in the
+// session transcript confirms it. While no live agent answers in the registered pane, events stay
+// queued and are retried with backoff, so nothing is lost while the session restarts.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -42,28 +43,16 @@ export type DeliverDeps = {
   readonly findTranscript?: (session: StoredSession) => string | null;
   readonly backoffMs?: readonly number[];
   readonly paneConfirmMs?: number;
-  readonly headlessTimeoutMs?: number;
   readonly staleUnhandledMs?: number;
   readonly busyRetryMs?: number;
-  readonly pasteSettleMs?: number;
-  readonly reEnterMs?: number;
 };
 
 export type StoredSession = SessionRequest & { readonly updatedAt?: string };
 
-type DeliveredRecord = { readonly messageId: string; readonly seq: number; readonly mode: "pane" | "headless"; readonly at: string };
+type DeliveredRecord = { readonly messageId: string; readonly seq: number; readonly mode: "pane"; readonly at: string };
 
 const HISTORY_GAP_MS = 10 * 60_000;
 const BUSY_RETRY_MS = 2_000;
-
-// Claude Code sets its process title to its version (e.g. "2.1.296"); the Codex CLI runs as codex.
-const AGENT_COMMANDS: Readonly<Record<StoredSession["agent"], RegExp>> = {
-  claude: /^(claude|\d+\.\d+\.\d+)$/,
-  codex: /^codex(-[\w-]+)?$/,
-};
-
-/** tmux pane ids look like `%3`; anything else (e.g. `w1:p97`) is a herdr pane id. */
-export const isTmuxPane = (pane: string): boolean => pane.startsWith("%");
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 // Placeholder hints in an empty prompt are drawn dim (SGR 2) or as grey (90/38;5;24x); they are not typed input.
@@ -139,7 +128,7 @@ const HISTORY_COUNT = 30;
 export const readSession = (path: string): StoredSession | null => {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as StoredSession;
-    return typeof value.sessionId === "string" && (value.agent === "claude" || value.agent === "codex") ? value : null;
+    return typeof value.sessionId === "string" && typeof value.pane === "string" && (value.agent === "claude" || value.agent === "codex") ? value : null;
   } catch {
     return null;
   }
@@ -176,11 +165,6 @@ export const formatPrompt = (event: InboxEvent, history: readonly InboxEvent[]):
   const historyPart = history.length > 0 ? `[hent] HISTORY ${JSON.stringify(history.map(slim))} ` : "";
   return `${historyPart}${inboundLine(event)}`;
 };
-
-export const headlessArgv = (session: StoredSession, prompt: string): string[] =>
-  session.agent === "claude"
-    ? ["claude", "-p", "--resume", session.sessionId, prompt, "--allowedTools=Bash(hent:*)"]
-    : ["codex", "exec", "resume", "--skip-git-repo-check", "-c", "sandbox_workspace_write.network_access=true", session.sessionId, prompt];
 
 export class Deliverer {
   private readonly queue: InboxEvent[] = [];
@@ -261,13 +245,13 @@ export class Deliverer {
 
   private checkStale(): void {
     const session = readSession(this.deps.sessionPath);
-    if (!session || session.mode !== "pane" || !session.pane) return;
+    if (!session) return;
     const staleMs = this.deps.staleUnhandledMs ?? 10 * 60_000;
     void this.paneAgent(session.pane, session.agent).then((state) => {
       if (state !== "gone") return;
       const now = this.deps.clock.now();
       for (const record of this.delivered.values()) {
-        if (record.mode !== "pane" || this.reinjected.has(record.messageId)) continue;
+        if (this.reinjected.has(record.messageId)) continue;
         if (now - Date.parse(record.at) < staleMs || this.deps.handled.get(record.messageId)) continue;
         const event = this.deps.journal.findCreate(record.messageId);
         if (!event) continue;
@@ -334,36 +318,31 @@ export class Deliverer {
     return this.deps.journal.history(event.channelId, HISTORY_COUNT + 1).filter((e) => e.seq < event.seq).slice(-HISTORY_COUNT);
   }
 
-  private record(event: InboxEvent, mode: "pane" | "headless"): void {
-    const record: DeliveredRecord = { messageId: event.messageId, seq: event.seq, mode, at: new Date(this.deps.clock.now()).toISOString() };
+  private record(event: InboxEvent): void {
+    const record: DeliveredRecord = { messageId: event.messageId, seq: event.seq, mode: "pane", at: new Date(this.deps.clock.now()).toISOString() };
     this.delivered.set(event.messageId, record);
     this.injected.delete(event.messageId);
     this.lastDeliveredAt.set(event.channelId, this.deps.clock.now());
     appendPrivateLine(this.deps.deliveredPath, JSON.stringify(record));
-    this.deps.log("BRIDGE_DELIVERED", { messageId: event.messageId, seq: event.seq, mode });
+    this.deps.log("BRIDGE_DELIVERED", { messageId: event.messageId, seq: event.seq, pane: true });
   }
 
+  /**
+   * "ok" when herdr sees the registered agent idle in the pane with an empty input line; "busy" while
+   * it works, waits on a question, or holds text the user is typing; "gone" when no such agent is there.
+   */
   private async paneAgent(pane: string, agent: StoredSession["agent"]): Promise<"ok" | "gone" | "busy"> {
-    if (!isTmuxPane(pane)) {
-      const res = await this.exec(["herdr", "pane", "get", pane], { timeoutMs: 5_000 });
-      if (res.code !== 0) return "gone";
-      let info: JsonObject | null = null;
-      try {
-        info = asObject(asObject(asObject(JSON.parse(res.stdout))?.result)?.pane);
-      } catch {
-        info = null;
-      }
-      if (!info || info.agent !== agent) return "gone";
-      if (info.agent_status !== "idle" && info.agent_status !== "done") return "busy";
-      const screen = await this.exec(["herdr", "pane", "read", pane, "--source", "visible", "--format", "ansi"], { timeoutMs: 5_000 });
-      if (screen.code !== 0) return "gone";
-      return !agentWorking(screen.stdout) && inputLine(screen.stdout) === "empty" ? "ok" : "busy";
-    }
-    const res = await this.exec(["tmux", "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"], { timeoutMs: 5_000 });
+    const res = await this.exec(["herdr", "agent", "get", pane], { timeoutMs: 5_000 });
     if (res.code !== 0) return "gone";
-    const [dead, command = ""] = res.stdout.trim().split(" ");
-    if (dead !== "0" || !AGENT_COMMANDS[agent].test(command)) return "gone";
-    const screen = await this.exec(["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"], { timeoutMs: 5_000 });
+    let info: JsonObject | null = null;
+    try {
+      info = asObject(asObject(asObject(JSON.parse(res.stdout))?.result)?.agent);
+    } catch {
+      info = null;
+    }
+    if (!info || info.agent !== agent) return "gone";
+    if (info.agent_status !== "idle" && info.agent_status !== "done") return "busy";
+    const screen = await this.exec(["herdr", "agent", "read", pane, "--source", "visible", "--format", "ansi"], { timeoutMs: 5_000 });
     if (screen.code !== 0) return "gone";
     return !agentWorking(screen.stdout) && inputLine(screen.stdout) === "empty" ? "ok" : "busy";
   }
@@ -371,35 +350,19 @@ export class Deliverer {
   private async deliverOne(event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
     const session = readSession(this.deps.sessionPath);
     if (!session) return { ok: false, reason: "no_session" };
-    const prompt = formatPrompt(event, this.historyFor(event));
-    if (session.mode === "pane" && session.pane) {
-      // An earlier injection the agent queued instead of reading at once: confirm it, never type it twice.
-      if (this.receivedEarlier(session, event)) {
-        this.record(event, "pane");
-        return { ok: true };
-      }
-      const state = await this.paneAgent(session.pane, session.agent);
-      if (state === "busy") return { ok: false, reason: "pane_busy" };
-      if (state === "ok") {
-        if (await this.deliverPane(session, session.pane, prompt, event)) {
-          this.record(event, "pane");
-          return { ok: true };
-        }
-        return { ok: false, reason: "pane_unconfirmed" };
-      }
+    // An earlier injection the agent queued instead of reading at once: confirm it, never type it twice.
+    if (this.receivedEarlier(session, event)) {
+      this.record(event);
+      return { ok: true };
     }
-    return this.deliverHeadless(session, prompt, event);
-  }
-
-  private async readInputLine(pane: string): Promise<"empty" | "typed" | "none" | null> {
-    const argv = isTmuxPane(pane) ? ["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"] : ["herdr", "pane", "read", pane, "--source", "visible", "--format", "ansi"];
-    const screen = await this.exec(argv, { timeoutMs: 5_000 });
-    return screen.code === 0 ? inputLine(screen.stdout) : null;
-  }
-
-  private async pressEnter(pane: string): Promise<boolean> {
-    const argv = isTmuxPane(pane) ? ["tmux", "send-keys", "-t", pane, "Enter"] : ["herdr", "pane", "send-keys", pane, "enter"];
-    return (await this.exec(argv, { timeoutMs: 5_000 })).code === 0;
+    const state = await this.paneAgent(session.pane, session.agent);
+    if (state === "busy") return { ok: false, reason: "pane_busy" };
+    if (state === "gone") return { ok: false, reason: "no_agent_in_pane" };
+    if (await this.deliverPane(session, formatPrompt(event, this.historyFor(event)), event)) {
+      this.record(event);
+      return { ok: true };
+    }
+    return { ok: false, reason: "pane_unconfirmed" };
   }
 
   private receivedSince(path: string | null, offset: number, event: InboxEvent): boolean {
@@ -415,41 +378,17 @@ export class Deliverer {
     return this.receivedSince(prior.path ?? this.findTranscript(session), prior.path ? prior.offset : 0, event);
   }
 
-  private async deliverPane(session: StoredSession, pane: string, prompt: string, event: InboxEvent): Promise<boolean> {
+  private async deliverPane(session: StoredSession, prompt: string, event: InboxEvent): Promise<boolean> {
     const transcript = this.findTranscript(session);
     const before = transcript && existsSync(transcript) ? statSync(transcript).size : 0;
     this.injected.set(event.messageId, { path: transcript, offset: before });
-    const typedArgv = isTmuxPane(pane) ? ["tmux", "send-keys", "-t", pane, "-l", prompt] : ["herdr", "pane", "send-text", pane, prompt];
-    if ((await this.exec(typedArgv, { timeoutMs: 5_000 })).code !== 0) return false;
-    // A long line arrives as a bracketed paste the agent folds into "[Pasted text #n]" chunks; an
-    // Enter that lands before the paste settles is swallowed. Wait until the input line shows text.
-    const pasteDeadline = this.deps.clock.now() + (this.deps.pasteSettleMs ?? 3_000);
-    while ((await this.readInputLine(pane)) !== "typed" && this.deps.clock.now() < pasteDeadline) await this.deps.clock.sleep(100);
-    if (!(await this.pressEnter(pane))) return false;
+    // herdr submits through the agent surface: bracketed paste, then Enter once the paste settled.
+    if ((await this.exec(["herdr", "agent", "prompt", session.pane, prompt], { timeoutMs: 15_000 })).code !== 0) return false;
     const deadline = this.deps.clock.now() + (this.deps.paneConfirmMs ?? 10_000);
-    const reEnterAt = this.deps.clock.now() + (this.deps.reEnterMs ?? 3_000);
-    let reEntered = false;
     while (this.deps.clock.now() < deadline) {
       if (this.receivedEarlier(session, event)) return true;
-      // Still sitting in the input line after the first Enter: submit it once more.
-      if (!reEntered && this.deps.clock.now() >= reEnterAt && (await this.readInputLine(pane)) === "typed") {
-        reEntered = true;
-        this.deps.log("BRIDGE_PANE_REENTER", { messageId: event.messageId });
-        await this.pressEnter(pane);
-        continue;
-      }
       await this.deps.clock.sleep(250);
     }
     return false;
-  }
-
-  private async deliverHeadless(session: StoredSession, prompt: string, event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const argv = headlessArgv(session, prompt);
-    this.deps.log("BRIDGE_HEADLESS_TURN", { agent: session.agent, messageId: event.messageId });
-    const res = await this.exec(argv, { cwd: session.cwd, timeoutMs: this.deps.headlessTimeoutMs ?? 10 * 60_000 });
-    if (res.code !== 0) return { ok: false, reason: `headless_exit_${res.code}` };
-    if (!this.deps.handled.get(event.messageId)) return { ok: false, reason: "headless_unhandled" };
-    this.record(event, "headless");
-    return { ok: true };
   }
 }

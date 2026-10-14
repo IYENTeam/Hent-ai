@@ -125,13 +125,12 @@ export interface HandledRequest {
 }
 
 export type SessionAgent = "claude" | "codex";
-export type SessionMode = "pane" | "headless";
 
+/** The brain is an interactive agent in a herdr pane (`pane` is a herdr pane id such as `w1:p3`). */
 export interface SessionRequest {
   agent: SessionAgent;
   sessionId: string;
-  mode: SessionMode;
-  pane: string | null;
+  pane: string;
   cwd: string;
 }
 
@@ -186,6 +185,8 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const CONSUMER = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const UINT = /^(0|[1-9]\d{0,15})$/;
+const HERDR_PANE = /^[A-Za-z0-9]{1,16}:p[0-9]{1,9}$/;
+
 // Control characters are rejected in pane targets and cwd (argv safety, no terminal injection).
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
@@ -383,20 +384,15 @@ export function parseHandledRequest(input: unknown): ParseResult<HandledRequest>
 export function parseSessionRequest(input: unknown): ParseResult<SessionRequest> {
   return run(() => {
     const obj = asObject(input, "session request");
-    onlyKeys(obj, ["agent", "sessionId", "mode", "pane", "cwd"], "session request");
+    onlyKeys(obj, ["agent", "sessionId", "pane", "cwd"], "session request");
     const agent = oneOf(obj, "agent", ["claude", "codex"] as const);
     const sessionId = str(obj, "sessionId");
     if (!SESSION_ID.test(sessionId)) fail("sessionId must match [A-Za-z0-9._-]{1,128}");
-    const mode = oneOf(obj, "mode", ["pane", "headless"] as const);
-    let pane: string | null = null;
-    if (obj.pane !== undefined && obj.pane !== null) {
-      pane = str(obj, "pane");
-      if (pane.length === 0 || pane.length > 128 || CONTROL.test(pane)) fail("pane must be 1-128 printable chars");
-    }
-    if (mode === "pane" && pane === null) fail("pane is required when mode is pane");
+    const pane = str(obj, "pane");
+    if (!HERDR_PANE.test(pane)) fail("pane must be a herdr pane id like w1:p3");
     const cwd = str(obj, "cwd");
     if (!cwd.startsWith("/") || cwd.length > 4096 || CONTROL.test(cwd)) fail("cwd must be an absolute path");
-    return { agent, sessionId, mode, pane, cwd };
+    return { agent, sessionId, pane, cwd };
   });
 }
 

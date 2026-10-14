@@ -95,12 +95,13 @@ The bridge runs as the LaunchAgent `ai.hent.bridge` (`hent bridge install` rende
 `~/Library/LaunchAgents/ai.hent.bridge.plist`; it contains no token). Health: `GET
 http://127.0.0.1:8789/v1/health`.
 
-Brain session: start Claude Code or Codex with the `hent-mode` skill, then run
-`hent session set --agent claude|codex --session-id <id> --cwd <dir> [--pane <pane>]`. Every inbound
-message is pushed into that pane, or, when no pane is live, run as a headless resumed turn:
-
-- Claude Code: `claude -p --resume <id> "<prompt>" --allowedTools="Bash(hent:*)"` (stdin `/dev/null`).
-- Codex: `codex exec resume --skip-git-repo-check <id> "<prompt>"` (with network access for localhost).
+Brain session: an interactive Claude Code or Codex session in a herdr pane (herdr is required; there
+is no tmux or headless path). `kit/brain.sh start [--agent claude|codex] [--resume]` creates the
+`hent-brain` herdr workspace, starts the agent with restricted permissions, and has it run
+`hent session set` (the pane comes from `$HERDR_PANE_ID`); `kit/brain.sh stop` closes it. The bridge
+pushes each inbound message with `herdr agent prompt` once herdr reports the agent idle with an
+empty input line, and confirms it from the session transcript. While no agent is in the pane,
+messages stay queued and are delivered after the next `hent session set`.
 
 ## Affect asset routing and static media
 

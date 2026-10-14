@@ -295,23 +295,27 @@ export const cmdSkip = (args: readonly string[], env: Env = process.env): Promis
 };
 
 export const cmdSession = (args: readonly string[], env: Env = process.env): Promise<number> => {
-  const flags = parseFlags(args, ["headless"]);
+  const flags = parseFlags(args, []);
   if (flags.positional[0] !== "set") {
-    console.error("usage: hent session set --agent claude|codex --session-id ID --cwd DIR [--pane PANE | --headless]");
+    console.error("usage: hent session set --agent claude|codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID]");
     return Promise.resolve(2);
   }
   const agent = flags.values.get("agent");
   const sessionId = flags.values.get("session-id");
   const cwd = flags.values.get("cwd") ?? process.cwd();
-  const pane = flags.bools.has("headless") ? undefined : (flags.values.get("pane") ?? env.HERDR_PANE_ID ?? env.TMUX_PANE);
+  const pane = flags.values.get("pane") ?? env.HERDR_PANE_ID;
   if ((agent !== "claude" && agent !== "codex") || !sessionId) {
     console.error("hent session set: --agent claude|codex and --session-id are required");
     return Promise.resolve(2);
   }
-  const body = { agent, sessionId, cwd, mode: pane ? "pane" : "headless", pane: pane ?? null };
+  if (!pane) {
+    console.error("hent session set: run inside a herdr pane ($HERDR_PANE_ID) or pass --pane");
+    return Promise.resolve(2);
+  }
+  const body = { agent, sessionId, cwd, pane };
   return simpleBridgeCall(env, async (b) => {
     await b.json("POST", BRIDGE_ROUTES.session, body);
-    console.log(`SESSION_SET agent=${agent} mode=${body.mode}${pane ? ` pane=${pane}` : ""}`);
+    console.log(`SESSION_SET agent=${agent} pane=${pane}`);
   });
 };
 
@@ -466,8 +470,8 @@ export const cmdChannels = async (args: readonly string[], env: Env = process.en
   }
 };
 
-// Headless turns spawn `claude`/`codex` from this PATH: the user's ~/.local/bin (where the native
-// installers put the current CLI) must win over an older Homebrew copy that may fail to refresh auth.
+// The bridge runs `herdr` from this PATH: the user's ~/.local/bin (where the native installers put
+// current CLIs) must win over older Homebrew copies.
 export const LAUNCHD_TEMPLATE = (bun: string, cli: string, home: string, userHome = homedir()): string => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

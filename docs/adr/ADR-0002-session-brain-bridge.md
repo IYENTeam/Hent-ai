@@ -45,7 +45,7 @@ The bridge reads `~/.hent/discord.token`, which must be mode 0600 or the bridge 
 | `POST /v1/edit` | `{channelId, messageId, text}` | `{messageId}` |
 | `POST /v1/typing` | `{channelId}` | `204` |
 | `POST /v1/handled` | `{messageId, how: "replied" \| "skipped"}` | `204` |
-| `POST /v1/session` | `{agent: "claude" \| "codex", sessionId, mode: "pane" \| "headless", pane?, cwd}` | `204`; writes `~/.hent/session.json` and re-injects pending-handling events |
+| `POST /v1/session` | `{agent: "claude" \| "codex", sessionId, pane, cwd}` (`pane` is a herdr pane id) | `204`; writes `~/.hent/session.json` and re-injects pending-handling events |
 | `GET /v1/health` | none | `{gateway: "connected" \| "reconnecting" \| "fatal", botUserId \| null, lastSeq, consumers: [{name, cursor, leaseExpiresAt \| null}]}` |
 
 Rules the parsers enforce:
@@ -53,7 +53,7 @@ Rules the parsers enforce:
 - Request bodies and queries are strict: unknown or duplicated keys are rejected with `400 {error: "invalid_request", message}`. Response parsers (used by the CLI) ignore unknown keys so the bridge can add fields without breaking older CLIs.
 - IDs (`channelId`, `messageId`, ...) match `[A-Za-z0-9_-]{1,64}`: Discord snowflakes in production, readable names in fixtures, and never anything that can alter a REST path.
 - `text` is at most 2000 characters (one Discord message; `hent send` chunks before calling the bridge). JSON sends need non-empty text; a multipart send may have empty text because the file is the content. The file is at most 8 MiB.
-- `mode: "pane"` requires `pane`; `cwd` is an absolute path (headless turns run there because `--resume` lookup may be per project directory).
+- `pane` is a herdr pane id (`w1:p3`); `cwd` is an absolute path. The brain is always an interactive agent in a herdr pane (2026-10-14: the tmux and headless paths were removed; herdr reports the agent state and submits prompts).
 
 ### Cursor and lease (inbox)
 
