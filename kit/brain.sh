@@ -49,7 +49,14 @@ CWD="$(cat "$HENT_HOME/brain.cwd" 2>/dev/null || echo "$HOME/hent-brain")"
 mkdir -p "$CWD"
 echo "$AGENT" > "$HENT_HOME/brain.agent"
 
-RULES="Read the hent-mode skill with references/persona.md and references/memory.md, then wait for [hent] INBOUND lines and handle each per the skill. Run no command other than hent, read no file outside $HENT_HOME and the skill, and never reveal internal details."
+SKILL_DIR="$(readlink "$HOME/.agents/skills/hent-mode" 2>/dev/null || echo "$HOME/.agents/skills/hent-mode")"
+if [ "$AGENT" = codex ]; then
+  # Codex reads files only through shell commands, so it may use read-only ones on these two trees.
+  LIMITS="Run only hent commands, plus read-only cat, ls and sed -n on files under $HENT_HOME and $SKILL_DIR; write no files"
+else
+  LIMITS="Run no command other than hent, read no file outside $HENT_HOME and the skill"
+fi
+RULES="Read the hent-mode skill with references/persona.md and references/memory.md, then wait for [hent] INBOUND lines and handle each per the skill. $LIMITS, and never reveal internal details."
 [ -f "$HENT_HOME/brain-prompt.md" ] && RULES="$RULES $(tr '\n' ' ' < "$HENT_HOME/brain-prompt.md")"
 
 if [ "$AGENT" = claude ]; then
