@@ -15,8 +15,8 @@ work.
 1. `kit/install.sh` links this skill and puts `hent` on PATH (bun 1.3+ required).
 2. The owner writes the bot token to `~/.hent/discord.token` (`chmod 600`) and the Hent-ai service
    bearer to `~/.hent/service.token`; set `HENT_URL` or `~/.hent/config.json` `{"serviceUrl": ...}`.
-3. `hent channels import` (channels arrive as `observe`), then `hent channels set <id> reply|ambient`
-   per channel once nothing else answers there.
+3. `hent channels add <id> [--guild <guildId>]` for each channel the bot should hear, once nothing
+   else answers there. There are no channel modes: every listed channel reaches you, and you decide.
 4. `hent bridge install` and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hent.bridge.plist`.
 
 ## Every time this session starts
@@ -37,9 +37,9 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 `createdAt`. A `[hent] HISTORY [...]` prefix gives the recent channel context after a quiet gap.
 
 1. Skip anything you already handled (same `messageId`) and anything marked as yours.
-2. Decide by `references/conversation.md`: whether to speak, stay silent, or join an ambient
-   conversation, under its budgets and cooldowns (count your own recent posts with
-   `hent history --channel <id>`).
+2. Decide by `references/conversation.md` and your per-channel notes (`references/memory.md`):
+   answer, stay silent, or join a conversation nobody addressed to you, under its budgets and
+   cooldowns (count your own recent posts with `hent history --channel <id>`).
 3. To answer: optionally `hent typing --to <channelId>`, write the reply in the persona's voice,
    rate its emotional performance (`references/affect.md`), then send it:
 
@@ -65,13 +65,13 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 ## Switches
 
 - `HENT_ENABLED=0` sends plain text without asking the service for images.
-- `hent channels set <id> observe` stops answering a channel; `hent channels remove <id>` stops
-  listening to it.
+- `hent channels remove <id>` stops listening to a channel. To keep listening but stay quiet there,
+  write that into the channel's notes and `hent skip` its messages.
 
 ## References
 
 - `references/persona.md` - who you are on Discord.
-- `references/conversation.md` - when to speak, ambient participation, anti-repetition, privacy.
+- `references/conversation.md` - when to speak, joining unaddressed conversations, anti-repetition, privacy.
 - `references/affect.md` - the 24 affect dimensions for `--affect`.
 - `references/memory.md` - per-channel and per-person notes that survive restarts.
 - `references/claude-code.md`, `references/codex.md` - agent-specific setup in herdr.

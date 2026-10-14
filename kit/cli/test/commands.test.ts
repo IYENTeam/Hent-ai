@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
-import { chunkText, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, importedChannels, readChannels } from "../src/commands.ts";
+import { parseChannelConfig } from "../src/bridge/index.ts";
+import { chunkText, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, readChannels } from "../src/commands.ts";
 import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
@@ -43,7 +44,7 @@ const setup = async (): Promise<{ fake: FakeDiscord; bridge: BridgeHandle; env: 
   cleanups.push(() => fake.stop());
   const home = mkdtempSync(join(tmpdir(), "hent-cmd-"));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: fake.guildId, mode: "reply" }], dms: false }));
+  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: fake.guildId }], dms: false }));
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl };
   const bridge = await startBridge({ deliver: { disabled: true }, env, port: 0, logSink: () => {}, configPollMs: 50, sendRetryDelayMs: 10 });
   cleanups.push(() => bridge.stop());
@@ -148,23 +149,17 @@ test("long text is chunked at 2000 chars and the image rides on the last chunk",
   expect(second!.attachments.length).toBe(1);
 });
 
-test("channels: import lands as observe with tunables, set flips one, remove drops it", async () => {
+test("channels: add lists a channel once with no mode, remove drops it, a legacy mode key is refused by the bridge", async () => {
   const home = mkdtempSync(join(tmpdir(), "hent-ch-"));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   const env = { HENT_HOME: home };
-  const next = importedChannels(
-    [
-      { channelId: CH, enabled: true, settings: { ambientBudgetPerHour: 5, unrelated: 1 } },
-      { channelId: "100000000000000002", enabled: false },
-      { channelId: "not-a-snowflake", enabled: true },
-    ],
-    { channels: [], dms: false },
-  );
-  expect(next.channels).toEqual([{ channelId: CH, guildId: null, mode: "observe", tunables: { ambientBudgetPerHour: 5 } }]);
-  writeFileSync(join(home, "channels.json"), JSON.stringify(next));
-  expect(await cmdChannels(["set", CH, "reply"], env)).toBe(0);
-  expect(readChannels(env).channels[0]!.mode).toBe("reply");
+  expect(await cmdChannels(["add", CH, "--guild", "900000000000000001"], env)).toBe(0);
+  expect(await cmdChannels(["add", CH], env)).toBe(0);
+  expect(readChannels(env).channels).toEqual([{ channelId: CH, guildId: "900000000000000001" }]);
   expect((statSync(join(home, "channels.json")).mode & 0o777).toString(8)).toBe("600");
+  expect(await cmdChannels(["set", CH, "reply"], env)).toBe(2);
+  expect(await cmdChannels(["import"], env)).toBe(2);
+  expect(parseChannelConfig({ channels: [{ channelId: CH, guildId: null, mode: "observe" }], dms: false }).ok).toBe(false);
   expect(await cmdChannels(["remove", CH], env)).toBe(0);
   expect(readChannels(env).channels).toEqual([]);
 });

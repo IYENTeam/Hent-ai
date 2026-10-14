@@ -85,9 +85,9 @@ docs or logs.
 | --- | --- | --- |
 | Discord bot token | `~/.hent/discord.token` (0600; optional Keychain via `HENT_TOKEN_SOURCE=keychain`; `HENT_DISCORD_TOKEN` env for tests) | `hent bridge` only |
 | Service URL | `HENT_URL` or `~/.hent/config.json` `serviceUrl` | `hent send`, `hent media` |
-| Service API bearer | `~/.hent/service.token` (0600; `HENT_SERVICE_TOKEN` env overrides for tests) | `hent send`, `hent media`, `hent channels import` |
+| Service API bearer | `~/.hent/service.token` (0600; `HENT_SERVICE_TOKEN` env overrides for tests) | `hent send`, `hent media` |
 | Bridge local API secret | `~/.hent/bridge.secret` (created by the bridge) | every `hent` command that talks to the bridge |
-| Channels | `~/.hent/channels.json` (`hent channels list/add/set/remove/import`) | `hent bridge` |
+| Channels | `~/.hent/channels.json` (`hent channels list/add/remove/dms`); every listed channel reaches the session, which decides whether to answer | `hent bridge` |
 | Brain session | `~/.hent/session.json` (`hent session set`) | `hent bridge` push delivery |
 | Global image switch | `HENT_ENABLED=0` (plain sends, no service call) | `hent send` |
 
@@ -186,9 +186,9 @@ Owner-gated: run only after the PR is merged and the owner says go. Each step is
    old service still runs from. Verify the service plist `ProgramArguments` before editing it.
 1. Write `~/.hent/discord.token` (0600) with the same bot token OpenClaw uses, and confirm the
    MESSAGE_CONTENT privileged intent is enabled in the developer portal. Write `~/.hent/service.token`.
-2. `hent channels import --from-db ~/.hent-ai/data/hent-ai-service.db` (read-only; the old service has no
-   `/v1/channels`; after the new service is deployed `--from-service <url>` also works): every channel
-   lands as `observe` (journaled, never answered) and `dms:false`.
+2. (Done 2026-10-14; channel modes and `hent channels import` were removed afterwards.) A channel
+   enters the bridge only when it is added with `hent channels add`, and from then on every message
+   there reaches the session.
 3. `hent bridge install`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hent.bridge.plist`;
    `/v1/health` must report `connected`.
 4. Start the brain session with `hent-mode` and run `hent session set`.
@@ -196,7 +196,7 @@ Owner-gated: run only after the PR is merged and the owner says go. Each step is
    rest go in one batch to limit gateway restarts. For each channel: remove it from OpenClaw's Discord
    channel allowlist in `~/.openclaw/openclaw.json` (back up first) and restart the gateway only when
    idle; if it is in the ambient worker allowlist (`HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST`), remove it
-   there and restart or stop that worker; then `hent channels set <channel> reply|ambient`. Verify one
+   there and restart or stop that worker; then `hent channels add <channel>`. Verify one
    reply with an image from the session and no OpenClaw or ambient-worker reply in that channel. DMs
    stay with OpenClaw unless the owner moves them explicitly.
    5b. List `channel_settings` ids that are not Discord snowflakes (for example Slack); they lose media
@@ -207,8 +207,7 @@ Owner-gated: run only after the PR is merged and the owner says go. Each step is
    ~/.hent/memory`, and redeploy the service from the release directory without `HENT_AI_DISCORD_*`,
    `HENT_AI_CONVERSATION_*`, `HENT_AI_WATCH_CHANNELS` or `HENT_AI_VERIFIER_*`.
 
-Rollback per channel: `hent channels set <channel> observe`, restore the OpenClaw allowlist entry, and
-restore the ambient-worker allowlist entry if it had one.
+Rollback per channel: `hent channels remove <channel>` and restore the OpenClaw allowlist entry.
 
 ## Deploy
 
@@ -240,7 +239,7 @@ For Discord threads, repeat the mapping for the thread id if replies are deliver
 ### Validate attachment path
 
 Release proof is the kit suite (fake Discord + fixture service) plus the macmini local gate. For a live
-check, use a dedicated test channel in `reply` mode: one human message must produce
+check, use a dedicated test channel added with `hent channels add`: one human message must produce
 `SENT <id> media=yes` from `hent send` and a bot reply with an attachment that references it. A
 production-channel check needs explicit owner approval.
 

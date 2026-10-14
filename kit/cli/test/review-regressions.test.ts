@@ -54,7 +54,7 @@ const setup = async (opts: { http?: Http; guildId?: string | null; deliver?: boo
   cleanups.push(() => fake.stop());
   const home = tempHome("hent-rr-");
   const guildId = opts.guildId === undefined ? fake.guildId : opts.guildId;
-  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId, mode: "reply" }], dms: false }));
+  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId }], dms: false }));
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl };
   const logs: string[] = [];
   const bridge = await startBridge({
@@ -148,7 +148,7 @@ test("an imported channel without a guild id is seeded on first start and backfi
   cleanups.push(() => fake.stop());
   fake.seed(CH, 50);
   const home = tempHome("hent-rr-import-");
-  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: null, mode: "observe" }], dms: false }));
+  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: null }], dms: false }));
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl };
   const start = async () => {
     const b = await startBridge({ deliver: { disabled: true }, env, port: 0, logSink: () => {}, configPollMs: 50 });
@@ -169,7 +169,7 @@ test("removing a channel stops journaling it; an invalid channels.json keeps the
   writeFileSync(join(env.HENT_HOME, "channels.json"), "{ not json");
   await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_CONFIG_INVALID"));
   await inbound(fake, bridge, "still listening");
-  writeFileSync(join(env.HENT_HOME, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: fake.guildId, mode: "reply" }], dms: false }));
+  writeFileSync(join(env.HENT_HOME, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: fake.guildId }], dms: false }));
   await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_CONFIG_LOADED"));
   expect(await cmdChannels(["remove", CH], env)).toBe(0);
   await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_CONFIG_LOADED channels=0"));
@@ -183,22 +183,6 @@ test("removing a channel stops journaling it; an invalid channels.json keeps the
   expect(seen).not.toContain(ignored.id);
   expect(seen).not.toContain(marker.id);
   expect(logs.some((l) => l.includes("BRIDGE_CONFIG_INVALID"))).toBe(true);
-});
-
-test("channels import falls back to the read-only service DB when /v1/channels is absent", async () => {
-  const home = tempHome("hent-rr-db-");
-  const dbPath = join(home, "service.db");
-  const db = new Database(dbPath);
-  db.run("CREATE TABLE channel_settings (channel_id TEXT PRIMARY KEY, enabled INTEGER, cron_enabled INTEGER, asset_set_id TEXT, settings_json TEXT, created_at TEXT, updated_at TEXT)");
-  db.run("INSERT INTO channel_settings VALUES ('100000000000000001', 1, 0, 's', '{\"ambientBudgetPerHour\":4}', 'x', 'x'), ('100000000000000002', 0, 0, 's', '{}', 'x', 'x')");
-  db.close();
-  const oldService = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("not found", { status: 404 }) });
-  cleanups.push(() => oldService.stop(true));
-  const env = { HENT_HOME: home, HENT_URL: `http://127.0.0.1:${oldService.port}`, HENT_SERVICE_TOKEN: "t" };
-  expect(await cmdChannels(["import", "--from-db", dbPath], env)).toBe(0);
-  expect(readChannels(env).channels).toEqual([{ channelId: CH, guildId: null, mode: "observe", tunables: { ambientBudgetPerHour: 4 } }]);
-  const autoHome = tempHome("hent-rr-db2-");
-  expect(await cmdChannels(["import"], { HENT_HOME: autoHome, HOME: "/nonexistent-home", HENT_URL: env.HENT_URL, HENT_SERVICE_TOKEN: "t" })).toBe(2);
 });
 
 test("a herdr agent that runs the real `hent skip` for its prompt is delivered exactly once", async () => {

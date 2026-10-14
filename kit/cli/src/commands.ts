@@ -2,7 +2,6 @@
 // channels / memory. They talk to the local bridge (bearer from bridge.secret) and, for media
 // only, to the Hent-ai service under one 2 s deadline. Service failures never block a send.
 
-import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -342,7 +341,7 @@ export const cmdHistory = (args: readonly string[], env: Env = process.env): Pro
   });
 };
 
-type ChannelEntry = { channelId: string; guildId: string | null; mode: "reply" | "ambient" | "observe"; tunables?: Record<string, unknown> };
+type ChannelEntry = { channelId: string; guildId: string | null };
 type ChannelsFile = { channels: ChannelEntry[]; dms: boolean };
 
 const channelsPath = (env: Env): string => bridgePaths(hentHome(env)).channels;
@@ -358,63 +357,25 @@ export const readChannels = (env: Env): ChannelsFile => {
 
 const writeChannels = (env: Env, file: ChannelsFile): void => writePrivateFile(channelsPath(env), `${JSON.stringify(file, null, 2)}\n`);
 
-const MODES = new Set(["reply", "ambient", "observe"]);
-const AMBIENT_TUNABLE_KEYS = ["ambientBudgetPerHour", "ambientConfidenceFloor", "ambientIdleDecayTauMs", "ambientPressureTauMs", "ambientPityEnabled", "ambientAddressAliases"];
-
-type ServiceChannel = { channelId: string; enabled?: boolean | null; settings?: Record<string, unknown> | null };
-
-export const readChannelSettings = (dbPath: string): ServiceChannel[] => {
-  const db = new Database(dbPath, { readonly: true });
-  try {
-    const rows = db.query("SELECT channel_id, enabled, settings_json FROM channel_settings").all() as { channel_id: string; enabled: number | null; settings_json: string | null }[];
-    return rows.map((row) => {
-      let settings: Record<string, unknown> | null = null;
-      try {
-        settings = row.settings_json ? (JSON.parse(row.settings_json) as Record<string, unknown>) : null;
-      } catch {
-        settings = null;
-      }
-      return { channelId: row.channel_id, enabled: row.enabled === 1, settings };
-    });
-  } finally {
-    db.close();
-  }
-};
-
-export const importedChannels = (rows: readonly ServiceChannel[], current: ChannelsFile): ChannelsFile => {
-  const byId = new Map(current.channels.map((c) => [c.channelId, c]));
-  for (const row of rows) {
-    if (row.enabled !== true || !/^\d{17,20}$/.test(row.channelId) || byId.has(row.channelId)) continue;
-    const tunables = Object.fromEntries(Object.entries(row.settings ?? {}).filter(([k]) => AMBIENT_TUNABLE_KEYS.includes(k)));
-    byId.set(row.channelId, { channelId: row.channelId, guildId: null, mode: "observe", ...(Object.keys(tunables).length ? { tunables } : {}) });
-  }
-  return { channels: [...byId.values()], dms: current.dms };
-};
-
+/** Every listed channel is pushed to the session; whether to answer is the session's call (hent-mode skill). */
 export const cmdChannels = async (args: readonly string[], env: Env = process.env): Promise<number> => {
   const flags = parseFlags(args);
-  const [action, channelId, mode] = flags.positional;
+  const [action, channelId] = flags.positional;
   const file = readChannels(env);
   switch (action) {
     case undefined:
     case "list":
-      for (const c of file.channels) console.log(`${c.channelId} ${c.mode}${c.guildId ? ` guild=${c.guildId}` : ""}`);
+      for (const c of file.channels) console.log(`${c.channelId}${c.guildId ? ` guild=${c.guildId}` : ""}`);
       console.log(`dms=${file.dms}`);
       return 0;
-    case "add":
-    case "set": {
-      if (!channelId || !MODES.has(mode ?? "")) {
-        console.error(`usage: hent channels ${action} CHANNEL reply|ambient|observe [--guild ID]`);
+    case "add": {
+      if (!channelId) {
+        console.error("usage: hent channels add CHANNEL [--guild ID]");
         return 2;
       }
-      const existing = file.channels.find((c) => c.channelId === channelId);
-      if (existing) existing.mode = mode as ChannelEntry["mode"];
-      else if (action === "set") {
-        console.error(`hent channels set: ${channelId} is not configured; use add`);
-        return 2;
-      } else file.channels.push({ channelId, guildId: flags.values.get("guild") ?? null, mode: mode as ChannelEntry["mode"] });
+      if (!file.channels.some((c) => c.channelId === channelId)) file.channels.push({ channelId, guildId: flags.values.get("guild") ?? null });
       writeChannels(env, file);
-      console.log(`CHANNEL ${channelId} ${mode}`);
+      console.log(`CHANNEL_ADDED ${channelId}`);
       return 0;
     }
     case "remove": {
@@ -435,37 +396,8 @@ export const cmdChannels = async (args: readonly string[], env: Env = process.en
       console.log(`DMS ${channelId}`);
       return 0;
     }
-    case "import": {
-      const fromDb = flags.values.get("from-db");
-      let rows: ServiceChannel[] | null = null;
-      if (!fromDb) {
-        const config = loadConfig(env);
-        const url = flags.values.get("from-service") ?? config.url;
-        if (url && config.token) {
-          const res = await fetch(`${url.replace(/\/+$/, "")}/v1/channels`, { headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(10_000) }).catch(() => null);
-          if (res?.ok) rows = ((await res.json()) as { channels?: ServiceChannel[] }).channels ?? [];
-          else if (res && res.status !== 404) {
-            console.error(`hent channels import: service returned ${res.status}`);
-            return 1;
-          }
-        }
-      }
-      if (rows === null) {
-        const dbPath = fromDb ?? join(env.HOME ?? "", ".hent-ai", "data", "hent-ai-service.db");
-        if (!existsSync(dbPath)) {
-          console.error(`hent channels import: no /v1/channels on the service and no database at ${dbPath}; pass --from-db PATH`);
-          return 2;
-        }
-        rows = readChannelSettings(dbPath);
-        console.error(`hent channels import: read channel_settings read-only from ${dbPath}`);
-      }
-      const next = importedChannels(rows, file);
-      writeChannels(env, next);
-      console.log(`CHANNELS_IMPORTED total=${next.channels.length} (new channels start in observe mode)`);
-      return 0;
-    }
     default:
-      console.error("usage: hent channels [list|add|set|remove|dms|import]");
+      console.error("usage: hent channels [list|add|remove|dms]");
       return 2;
   }
 };
