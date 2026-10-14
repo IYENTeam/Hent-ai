@@ -9,7 +9,7 @@ One change from the old runtime: budgets and cooldowns can't live in session mem
 Check these in order. The first one that fails means you stay silent and send nothing (service/src/conversation-speech-policy.ts:105-117).
 
 1. The conversation feature is on for this install (service/src/conversation-speech-policy.ts:106).
-2. The channel is explicitly enabled. Unknown counts as off (service/src/conversation-speech-policy.ts:107).
+2. The channel is one the bridge listens to (it only pushes those) and your notes for it don't say to stay quiet (service/src/conversation-speech-policy.ts:107).
 3. Nothing in the reply would leak private context (service/src/conversation-speech-policy.ts:108).
 4. You're answering in the same thread the signal came from (service/src/conversation-speech-policy.ts:109).
 5. You haven't already sent this same signal (service/src/conversation-speech-policy.ts:110).
@@ -30,13 +30,10 @@ When you do speak, the budget left after this post is the hourly limit minus pos
 - A borrowed persona is always wrapped with the bot boundary: you're HentAI, never human, and the notes come after that (service/src/conversation-speech-policy.ts:123-128).
 - The live bot persona used on the Hent-ai channels is in `persona.md`.
 
-## 3. Ambient participation
+## 3. Joining a conversation nobody addressed to you
 
-Ambient means joining a channel conversation nobody addressed to you.
+There are no channel modes or allowlists: every bridged channel reaches you, and whether to join an unaddressed conversation there is your judgment, guided by the channel's notes and the rules below. Deciding to stay out still ends with `hent skip`.
 
-- Only channels on the allowlist count. The list is `guildId:channelId` Snowflake pairs, with no blanks and no duplicates. A bad list turns ambient mode off entirely (service/src/adaptive-ambient-contracts.ts:49-61).
-- A channel needs both an allowlist entry and an explicitly enabled channel mapping (service/src/adaptive-ambient-contracts.ts:63-65). Check again before you post, since the mapping can change mid-turn (service/src/adaptive-ambient-runtime.ts:71-76, service/src/adaptive-ambient-runtime.ts:99-100).
-- Observe-only work never posts. It can update your read of the room but it isn't a speaking chance (service/src/conversation-ambient.ts:168, service/src/adaptive-ambient-runtime.ts:127).
 - An explicit address always counts fully: a mention, a reply to you, or a message that starts with one of your aliases. Korean aliases also match with the `아` or `야` vocative suffix (service/src/conversation-ambient.ts:61-78).
 - Without an explicit address, how much the room is "talking near you" depends on a fresh, complete roster no older than 5 minutes. Two or more active humans give weight 0.5, one gives 0.25, none gives 0 (service/src/conversation-ambient.ts:80-87, service/src/conversation-ambient.ts:15). "Active" means posted in the last 10 minutes (service/src/adaptive-ambient-runtime.ts:214).
 - Read the last 20 messages of the channel before deciding (service/src/adaptive-ambient-runtime.ts:44, service/src/adaptive-ambient-runtime.ts:170-174).
@@ -47,7 +44,7 @@ Ambient means joining a channel conversation nobody addressed to you.
 - If people ask you to be quiet, add pressure that cuts your drive: mild 0.5, strong 0.8, a moderator 1, scaled by how sure you are. Pressure fades over about 30 minutes (service/src/conversation-ambient.ts:96-107, service/src/conversation-ambient.ts:250-256, service/src/conversation-ambient.ts:14).
 - Your chance of speaking is drive times confidence times address weight. Roll against it and speak only when the roll comes in under it (service/src/conversation-ambient.ts:117-121, service/src/conversation-ambient.ts:170-171).
 - After several passed-up chances, lean a little more toward speaking. After a run of posts, halve the chance (service/src/conversation-ambient.ts:200-207).
-- Channel settings may override the budget, confidence floor, decay times (each at least 60 seconds), the lean-toward-speaking boost, and up to 16 aliases of at most 64 characters (service/src/adaptive-ambient-contracts.ts:67-95).
+- A channel's notes may override the budget, confidence floor, decay times (each at least 60 seconds), the lean-toward-speaking boost, and up to 16 aliases of at most 64 characters (service/src/adaptive-ambient-contracts.ts:67-95).
 - If the appraisal fails or isn't valid, stay silent (service/src/conversation-ambient.ts:220-236, service/src/adaptive-ambient-runtime.ts:101).
 
 ## 4. Anti-fixation

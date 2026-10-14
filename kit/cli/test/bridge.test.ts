@@ -25,7 +25,7 @@ const newHome = (): string => {
 };
 
 const writeChannels = (home: string, guildId: string, channels = [CH]): void =>
-  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: channels.map((channelId) => ({ channelId, guildId, mode: "reply" })), dms: false }));
+  writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: channels.map((channelId) => ({ channelId, guildId })), dms: false }));
 
 const startFake = (): FakeDiscord => {
   const fake = startFakeDiscord({ heartbeatIntervalMs: 100 });

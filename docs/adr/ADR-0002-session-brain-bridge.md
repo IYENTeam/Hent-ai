@@ -78,4 +78,4 @@ A base nonce is `[A-Za-z0-9_]{1,22}` (no `-`). Chunk `i` of a multi-message repl
 - Restarting the session needs only `hent session set`; the token and connection are untouched (IS-9).
 - With the service down, inbound still reaches the session and replies still go out, without media (IS-8).
 - The autonomous-participation feel now depends on the session following the skill, not on service code. That is the accepted risk of this decision.
-- One bot token serves OpenClaw and the bridge during cutover; channels enter the bridge as `observe` and flip to `reply`/`ambient` one at a time so there are never double replies (IS-7).
+- One bot token serves OpenClaw and the bridge during cutover; a channel enters the bridge (`hent channels add`) only after OpenClaw stops answering it, so there are never double replies (IS-7). There are no channel modes (2026-10-14): every bridged channel reaches the session, and whether to answer or join is the hent-mode skill's call.

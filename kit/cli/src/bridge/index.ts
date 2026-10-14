@@ -35,15 +35,14 @@ export type { BridgeHooks } from "./server.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-export type ChannelMode = "reply" | "ambient" | "observe";
-export type BridgeChannel = { readonly channelId: string; readonly guildId: string | null; readonly mode: ChannelMode };
+export type BridgeChannel = { readonly channelId: string; readonly guildId: string | null };
 export type ChannelConfig = { readonly channels: readonly BridgeChannel[]; readonly dms: boolean };
 
 const EMPTY_CONFIG: ChannelConfig = { channels: [], dms: false };
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const BACKFILL_PAGE = 100;
 
-/** Parses `~/.hent/channels.json` (todo 5 owns the CLI). Extra keys such as `tunables` are allowed. */
+/** Parses `~/.hent/channels.json`: every listed channel is journaled and pushed to the session. */
 export const parseChannelConfig = (input: unknown): ParseResult<ChannelConfig> => {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return { ok: false, error: "channels.json must be an object" };
   const obj = input as Record<string, unknown>;
@@ -55,8 +54,8 @@ export const parseChannelConfig = (input: unknown): ParseResult<ChannelConfig> =
     if (typeof c?.channelId !== "string" || !ID.test(c.channelId)) return { ok: false, error: "channelId must match [A-Za-z0-9_-]{1,64}" };
     const guildId = c.guildId ?? null;
     if (guildId !== null && (typeof guildId !== "string" || !ID.test(guildId))) return { ok: false, error: `guildId of ${c.channelId} is invalid` };
-    if (c.mode !== "reply" && c.mode !== "ambient" && c.mode !== "observe") return { ok: false, error: `mode of ${c.channelId} must be reply|ambient|observe` };
-    channels.push({ channelId: c.channelId, guildId, mode: c.mode });
+    if (c.mode !== undefined) return { ok: false, error: `${c.channelId} has a "mode"; channel modes are gone, the session decides` };
+    channels.push({ channelId: c.channelId, guildId });
   }
   return { ok: true, value: { channels, dms: obj.dms === true } };
 };
@@ -211,12 +210,6 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   const config = new ChannelConfigWatcher(paths.channels, log, () => {
     if (gatewayState === "connected") queueSync(false);
   });
-
-  const channelMode = (channelId: string, guildId: string | null): "reply" | "ambient" | "observe" | null => {
-    const found = config.current.channels.find((c) => c.channelId === channelId);
-    if (found) return found.mode;
-    return guildId === null && config.current.dms ? "reply" : null;
-  };
 
   const allowed = (channelId: string, guildId: string | null): boolean => {
     const current = config.current;
@@ -411,7 +404,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       handled,
       sessionPath: paths.session,
       deliveredPath: join(paths.state, "delivered.jsonl"),
-      channelMode,
+      isBridged: allowed,
       clock,
       log,
       ...(opts.deliver?.exec ? { exec: opts.deliver.exec } : {}),

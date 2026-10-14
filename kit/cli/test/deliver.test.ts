@@ -31,7 +31,7 @@ const event = (messageId: string, content: string, over: Partial<NewInboxEvent> 
 type Harness = ReturnType<typeof harness>;
 type FakeAgent = { agent: string; agent_status: string } | null;
 
-const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambient" | "observe"; backoffMs?: number[] } = {}) => {
+const harness = (session: StoredSession | null, opts: { bridged?: boolean; backoffMs?: number[] } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "hent-deliver-"));
   dirs.push(home);
   const paths = bridgePaths(home);
@@ -80,7 +80,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     handled,
     sessionPath: paths.session,
     deliveredPath: join(paths.state, "delivered.jsonl"),
-    channelMode: () => opts.mode ?? "reply",
+    isBridged: () => opts.bridged ?? true,
     clock: realClock,
     log: (name: string, fields?: Record<string, unknown>) => logLines.push(`${name} ${JSON.stringify(fields ?? {})}`),
     exec,
@@ -133,8 +133,8 @@ test("three events are injected into the pane in seq order", async () => {
   h.deliverer.stop();
 });
 
-test("self messages and observe channels are never injected", async () => {
-  const h = harness(pane, { mode: "observe" });
+test("self messages and channels not in channels.json are never injected", async () => {
+  const h = harness(pane, { bridged: false });
   h.journal.append(event("m1", "hello"));
   const h2 = harness(pane);
   h2.journal.append(event("s1", "mine", { authorIsSelf: true, authorIsBot: true }));
@@ -190,7 +190,7 @@ test("bridge restart resumes undelivered events and does not repeat delivered on
     handled: h.handled,
     sessionPath: h.paths.session,
     deliveredPath: join(h.paths.state, "delivered.jsonl"),
-    channelMode: () => "reply",
+    isBridged: () => true,
     clock: realClock,
     log: () => {},
     exec: async (argv) => {

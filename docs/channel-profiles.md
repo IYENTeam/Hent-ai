@@ -8,7 +8,7 @@ Hent-ai의 채널별 프로필, 채널 매핑, 에셋 선택은 Hent-ai HTTP 서
 | --- | --- | --- |
 | Profile | Hent-ai service | 캐릭터/성격/모델/에셋 연결 정보 |
 | Channel mapping | Hent-ai service | Discord channel ID → profile/asset set mapping |
-| Channel listening | `hent bridge` | `observe`(기록만), `reply`, `ambient` 모드 |
+| Channel listening | `hent bridge` | `channels.json`에 있는 채널은 모두 세션으로 전달 (모드 없음, 답할지는 세션이 판단) |
 | Asset set/storage | Hent-ai service | imported/generated 이미지와 metadata |
 | Affect asset routing | Hent-ai service | 세션이 준 `ResponseAffectV2`로 매핑된 세트 전체를 nearest-neighbor ranking |
 | Media delivery | 세션 (`hent send`) | 서비스가 고른 이미지를 받아 bridge로 첨부 전송 |

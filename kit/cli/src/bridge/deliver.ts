@@ -1,5 +1,5 @@
 // Push delivery (plan todo 9, ADR-0002 "Push delivery"): every journaled inbound message in a
-// reply/ambient channel (or an allowed DM) is injected into the brain session, one at a time in
+// bridged channel (or an allowed DM) is injected into the brain session, one at a time in
 // seq order. The brain is an interactive Claude Code or Codex session in a herdr pane: herdr reports
 // whether the agent is idle, `herdr agent prompt` submits the line, and a user-input record in the
 // session transcript confirms it. While no live agent answers in the registered pane, events stay
@@ -29,14 +29,15 @@ export const realExec: Exec = async (argv, opts = {}) => {
   return { code, stdout };
 };
 
-export type ChannelModeLookup = (channelId: string, guildId: string | null) => "reply" | "ambient" | "observe" | null;
+/** True when the channel (or, with `guildId` null, the DM) is listed in channels.json. */
+export type BridgedLookup = (channelId: string, guildId: string | null) => boolean;
 
 export type DeliverDeps = {
   readonly journal: Journal;
   readonly handled: HandledLedger;
   readonly sessionPath: string;
   readonly deliveredPath: string;
-  readonly channelMode: ChannelModeLookup;
+  readonly isBridged: BridgedLookup;
   readonly clock: Clock;
   readonly log: BridgeLog;
   readonly exec?: Exec;
@@ -234,8 +235,7 @@ export class Deliverer {
 
   eligible(event: InboxEvent): boolean {
     if (event.kind !== "message_create" || event.authorIsSelf) return false;
-    const mode = this.deps.channelMode(event.channelId, event.guildId);
-    if (mode === null || mode === "observe") return false;
+    if (!this.deps.isBridged(event.channelId, event.guildId)) return false;
     return !this.deps.handled.get(event.messageId);
   }
 
