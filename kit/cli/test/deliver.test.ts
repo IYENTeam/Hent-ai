@@ -40,7 +40,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
   const journal = Journal.open(paths, Date.now(), () => {});
   const handled = HandledLedger.open(paths.handled, Date.now());
   const transcript = join(home, "transcript.jsonl");
-  writeFileSync(transcript, "");
+  writeFileSync(transcript, `${JSON.stringify({ text: "이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200) })}\n`);
   const calls: string[][] = [];
   let paneAlive = true;
   let headlessCode = 0;
@@ -63,6 +63,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     }
     return { code: 0, stdout: "" };
   };
+  const logLines: string[] = [];
   const deliverer = new Deliverer({
     journal,
     handled,
@@ -70,7 +71,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     deliveredPath: join(paths.state, "delivered.jsonl"),
     channelMode: () => opts.mode ?? "reply",
     clock: realClock,
-    log: () => {},
+    log: (name: string, fields?: Record<string, unknown>) => logLines.push(`${name} ${JSON.stringify(fields ?? {})}`),
     exec,
     findTranscript: () => transcript,
     backoffMs: [5],
@@ -96,6 +97,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     },
     injected: () => calls.filter((c) => c[0] === "tmux" && c[4] === "-l").map((c) => c[5]!),
     headless: () => calls.filter((c) => c[0] === "claude" || c[0] === "codex"),
+    logs: () => logLines,
   };
 };
 
@@ -166,6 +168,14 @@ test("a headless turn that exits 0 without handling the event stays pending", as
   h.journal.append(event("m1", "hi"));
   await settle(h, () => h.headless().length >= 2);
   expect(h.deliverer.pendingCount()).toBe(1);
+  h.deliverer.stop();
+});
+
+test("confirmation reads only bytes written after injection, even after multi-byte text", async () => {
+  const h = harness(pane);
+  h.journal.append(event("m1", "안녕"));
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED") || l.includes("pane_unconfirmed")));
+  expect(h.logs().some((l) => l.includes("pane_unconfirmed"))).toBe(false);
   h.deliverer.stop();
 });
 

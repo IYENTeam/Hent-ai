@@ -313,7 +313,8 @@ export class Deliverer {
       if (path && existsSync(path)) {
         const size = statSync(path).size;
         if (size > before) {
-          const tail = readFileSync(path, "utf8").slice(path === transcript ? before : 0);
+          // `before` is a byte size; slice the bytes, not the decoded string (multi-byte text shifts char offsets).
+          const tail = readFileSync(path).subarray(path === transcript ? before : 0).toString("utf8");
           if (tail.includes("[hent] INBOUND") && tail.includes(event.messageId)) return true;
         }
       }
