@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
-import { chunkText, cmdChannels, cmdSend, cmdSession, cmdSkip, importedChannels, readChannels } from "../src/commands.ts";
+import { chunkText, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, importedChannels, readChannels } from "../src/commands.ts";
 import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
@@ -93,6 +93,24 @@ test("--reply-to marks the inbound message handled and a repeated nonce sends on
   expect(posts(fake).length).toBe(1);
   const handled = readFileSync(join(env.HENT_HOME!, "state", "handled.jsonl"), "utf8");
   expect(handled).toContain(inbound.id);
+});
+
+test("hent media saves the chosen image into a fresh HENT_HOME and prints its path", async () => {
+  const service = startService();
+  const home = mkdtempSync(join(tmpdir(), "hent-media-"));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => lines.push(line);
+  try {
+    expect(await cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" })).toBe(0);
+  } finally {
+    console.log = log;
+  }
+  const path = lines.at(-1)!;
+  expect(path.startsWith(join(home, "state", "media"))).toBe(true);
+  expect(new Uint8Array(readFileSync(path))).toEqual(PNG);
+  expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
 });
 
 test("hent skip records a deliberate non-reply", async () => {

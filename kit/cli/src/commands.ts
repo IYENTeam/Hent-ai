@@ -3,11 +3,11 @@
 // only, to the Hent-ai service under one 2 s deadline. Service failures never block a send.
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseAffectArg } from "./affect.ts";
 import { BRIDGE_DEFAULT_PORT, BRIDGE_ROUTES, MAX_MESSAGE_TEXT_LENGTH } from "./bridge/contract.ts";
-import { bridgePaths, writePrivateFile } from "./bridge/journal.ts";
+import { bridgePaths, ensurePrivateDir, writePrivateFile } from "./bridge/journal.ts";
 import { hentHome, loadConfig } from "./config.ts";
 import { exportMemory } from "./memory.ts";
 import { fetchMedia, sendDeadline, verdict } from "./service.ts";
@@ -237,9 +237,10 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
     console.log(`NO_MEDIA ${fetched.reason}`);
     return 0;
   }
-  const out = join(hentHome(env), "state", "media", `${Date.now()}-${filename.replace(/[^A-Za-z0-9._-]/g, "_")}`);
-  writePrivateFile(out, "");
-  await Bun.write(out, fetched.bytes);
+  const dir = join(hentHome(env), "state", "media");
+  ensurePrivateDir(dir);
+  const out = join(dir, `${Date.now()}-${filename.replace(/[^A-Za-z0-9._-]/g, "_")}`);
+  writeFileSync(out, fetched.bytes, { mode: 0o600 });
   console.log(out);
   return 0;
 };
