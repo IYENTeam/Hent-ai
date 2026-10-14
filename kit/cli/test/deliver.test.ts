@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
-import { Deliverer, defaultFindTranscript, type Exec, formatPrompt, headlessArgv, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
+import { agentWorking, Deliverer, defaultFindTranscript, type Exec, formatPrompt, headlessArgv, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
 import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
 import { realClock } from "../src/run.ts";
 
@@ -55,11 +55,18 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
   let paneWrites = true;
   let paneInput = "";
   let paneCommand = "claude";
+  let queueInput = false;
+  const queued: string[] = [];
   const exec: Exec = async (argv) => {
     calls.push([...argv]);
     if (argv[0] === "tmux" && argv[1] === "display-message") return { code: paneAlive ? 0 : 1, stdout: paneAlive ? `0 ${paneCommand}\n` : "" };
     const screen = () => paneScreen ?? `some output\n\x1b[2m-- hint --\x1b[0m\n> ${paneInput}\n`;
     const submit = (line: string) => {
+      // A working agent queues the submitted line and writes its user record only when it reads it.
+      if (queueInput) {
+        queued.push(line);
+        return;
+      }
       // A pane that "does not write" still produces agent output quoting the line, which must not count as receipt.
       const record = paneWrites ? { type: "user", message: { role: "user", content: line } } : { type: "assistant", message: { role: "assistant", content: `echo: ${line}` } };
       appendFileSync(transcript, `${JSON.stringify(record)}\n`);
@@ -122,6 +129,10 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     setPaneCommand: (cmd: string) => (paneCommand = cmd),
     setPaneScreen: (text: string | null) => (paneScreen = text),
     swallowNextEnters: (n: number) => (swallowEnters = n),
+    setQueueInput: (on: boolean) => (queueInput = on),
+    readQueued: () => {
+      for (const line of queued.splice(0)) appendFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: line } })}\n`);
+    },
     setHerdrPane: (info: { agent: string; agent_status: string } | null) => (herdrPane = info),
     appendTranscript: (record: unknown) => appendFileSync(transcript, `${JSON.stringify(record)}\n`),
     setHeadless: (code: number, handles = true) => {
@@ -330,6 +341,38 @@ test("an Enter swallowed by a still-settling paste is pressed once more, and the
   h.journal.append(event("m1", "long pasted prompt"));
   await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
   expect(h.logs().filter((l) => l.startsWith("BRIDGE_PANE_REENTER")).length).toBe(1);
+  expect(h.injected().length).toBe(1);
+  h.deliverer.stop();
+});
+
+test("agentWorking spots the live 'esc to interrupt' status of Claude Code and Codex", () => {
+  const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+  expect(agentWorking(fixture("claude-2.1-screen-working.ansi"))).toBe(true);
+  expect(agentWorking(fixture("codex-0.162-screen-working.ansi"))).toBe(true);
+  expect(agentWorking(fixture("claude-2.1-screen-empty.ansi"))).toBe(false);
+  expect(inputLine(fixture("claude-2.1-screen-working.ansi"))).toBe("empty");
+  expect(inputLine(fixture("codex-0.162-screen-working.ansi"))).toBe("empty");
+});
+
+test("an agent that is mid-turn with an empty input line is busy, never typed into", async () => {
+  const h = harness(pane);
+  h.setPaneScreen(readFileSync(new URL("./fixtures/claude-2.1-screen-working.ansi", import.meta.url), "utf8"));
+  h.journal.append(event("m1", "hi"));
+  await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
+  expect(h.injected()).toEqual([]);
+  h.setPaneScreen(null);
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
+  expect(h.injected().length).toBe(1);
+  h.deliverer.stop();
+});
+
+test("a line the agent queued past the confirm window is confirmed later, not typed twice", async () => {
+  const h = harness(pane);
+  h.setQueueInput(true);
+  h.journal.append(event("m1", "hi"));
+  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
+  h.readQueued();
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
   expect(h.injected().length).toBe(1);
   h.deliverer.stop();
 });

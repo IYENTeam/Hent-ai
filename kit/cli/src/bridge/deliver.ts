@@ -74,13 +74,29 @@ const DIM_RUN = /\x1b\[(?:2|90|38;5;24\d)m[^\x1b]*/g;
  * already holds text, or "none" when no prompt is visible (the agent is busy or it is not an agent).
  */
 export const inputLine = (screen: string): "empty" | "typed" | "none" => {
-  const lines = screen.split("\n").map((line) => line.replace(DIM_RUN, "").replace(ANSI, ""));
+  const lines = screen.split("\n");
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const match = lines[i]!.match(/^[\s│|]*[>›❯]\s?(.*?)[\s│|]*$/);
-    if (match) return match[1]!.trim().length > 0 ? "typed" : "empty";
+    // Prefix of colour codes, spaces and box borders, then the prompt glyph (which may itself be grey).
+    const match = lines[i]!.match(/^((?:\x1b\[[0-9;?]*[A-Za-z]|[\s│|])*)[>›❯](.*)$/);
+    if (!match) continue;
+    const typed = match[2]!.replace(DIM_RUN, "").replace(ANSI, "").replace(/[\s│|]+/g, " ").trim();
+    return typed.length > 0 ? "typed" : "empty";
   }
   return "none";
 };
+
+/**
+ * True while the agent is mid-turn. Claude Code and Codex both keep an empty input line while working
+ * (typed text is queued), so emptiness alone is not idleness; both show "esc to interrupt" in the
+ * live status area at the bottom of the screen until the turn ends.
+ */
+export const agentWorking = (screen: string): boolean =>
+  screen
+    .split("\n")
+    .map((line) => line.replace(ANSI, ""))
+    .filter((line) => line.trim().length > 0)
+    .slice(-6)
+    .some((line) => /esc to interrupt/i.test(line));
 
 type JsonObject = { readonly [key: string]: unknown };
 const asObject = (value: unknown): JsonObject | null => (value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null);
@@ -177,6 +193,7 @@ export class Deliverer {
   private running = false;
   private stopped = false;
   private wake: (() => void) | null = null;
+  private readonly injected = new Map<string, { readonly path: string | null; readonly offset: number }>();
   private staleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: DeliverDeps) {
@@ -320,6 +337,7 @@ export class Deliverer {
   private record(event: InboxEvent, mode: "pane" | "headless"): void {
     const record: DeliveredRecord = { messageId: event.messageId, seq: event.seq, mode, at: new Date(this.deps.clock.now()).toISOString() };
     this.delivered.set(event.messageId, record);
+    this.injected.delete(event.messageId);
     this.lastDeliveredAt.set(event.channelId, this.deps.clock.now());
     appendPrivateLine(this.deps.deliveredPath, JSON.stringify(record));
     this.deps.log("BRIDGE_DELIVERED", { messageId: event.messageId, seq: event.seq, mode });
@@ -339,7 +357,7 @@ export class Deliverer {
       if (info.agent_status !== "idle" && info.agent_status !== "done") return "busy";
       const screen = await this.exec(["herdr", "pane", "read", pane, "--source", "visible", "--format", "ansi"], { timeoutMs: 5_000 });
       if (screen.code !== 0) return "gone";
-      return inputLine(screen.stdout) === "empty" ? "ok" : "busy";
+      return !agentWorking(screen.stdout) && inputLine(screen.stdout) === "empty" ? "ok" : "busy";
     }
     const res = await this.exec(["tmux", "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"], { timeoutMs: 5_000 });
     if (res.code !== 0) return "gone";
@@ -347,7 +365,7 @@ export class Deliverer {
     if (dead !== "0" || !AGENT_COMMANDS[agent].test(command)) return "gone";
     const screen = await this.exec(["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"], { timeoutMs: 5_000 });
     if (screen.code !== 0) return "gone";
-    return inputLine(screen.stdout) === "empty" ? "ok" : "busy";
+    return !agentWorking(screen.stdout) && inputLine(screen.stdout) === "empty" ? "ok" : "busy";
   }
 
   private async deliverOne(event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -355,6 +373,11 @@ export class Deliverer {
     if (!session) return { ok: false, reason: "no_session" };
     const prompt = formatPrompt(event, this.historyFor(event));
     if (session.mode === "pane" && session.pane) {
+      // An earlier injection the agent queued instead of reading at once: confirm it, never type it twice.
+      if (this.receivedEarlier(session, event)) {
+        this.record(event, "pane");
+        return { ok: true };
+      }
       const state = await this.paneAgent(session.pane, session.agent);
       if (state === "busy") return { ok: false, reason: "pane_busy" };
       if (state === "ok") {
@@ -379,9 +402,23 @@ export class Deliverer {
     return (await this.exec(argv, { timeoutMs: 5_000 })).code === 0;
   }
 
+  private receivedSince(path: string | null, offset: number, event: InboxEvent): boolean {
+    if (this.deps.handled.get(event.messageId)) return true;
+    if (!path || !existsSync(path) || statSync(path).size <= offset) return false;
+    // `offset` is a byte size; slice the bytes, not the decoded string (multi-byte text shifts char offsets).
+    return transcriptReceived(readFileSync(path).subarray(offset).toString("utf8"), event);
+  }
+
+  private receivedEarlier(session: StoredSession, event: InboxEvent): boolean {
+    const prior = this.injected.get(event.messageId);
+    if (!prior) return false;
+    return this.receivedSince(prior.path ?? this.findTranscript(session), prior.path ? prior.offset : 0, event);
+  }
+
   private async deliverPane(session: StoredSession, pane: string, prompt: string, event: InboxEvent): Promise<boolean> {
     const transcript = this.findTranscript(session);
     const before = transcript && existsSync(transcript) ? statSync(transcript).size : 0;
+    this.injected.set(event.messageId, { path: transcript, offset: before });
     const typedArgv = isTmuxPane(pane) ? ["tmux", "send-keys", "-t", pane, "-l", prompt] : ["herdr", "pane", "send-text", pane, prompt];
     if ((await this.exec(typedArgv, { timeoutMs: 5_000 })).code !== 0) return false;
     // A long line arrives as a bracketed paste the agent folds into "[Pasted text #n]" chunks; an
@@ -393,16 +430,7 @@ export class Deliverer {
     const reEnterAt = this.deps.clock.now() + (this.deps.reEnterMs ?? 3_000);
     let reEntered = false;
     while (this.deps.clock.now() < deadline) {
-      const path = transcript ?? this.findTranscript(session);
-      if (path && existsSync(path)) {
-        const size = statSync(path).size;
-        if (size > before) {
-          // `before` is a byte size; slice the bytes, not the decoded string (multi-byte text shifts char offsets).
-          const tail = readFileSync(path).subarray(path === transcript ? before : 0).toString("utf8");
-          if (transcriptReceived(tail, event)) return true;
-        }
-      }
-      if (this.deps.handled.get(event.messageId)) return true;
+      if (this.receivedEarlier(session, event)) return true;
       // Still sitting in the input line after the first Enter: submit it once more.
       if (!reEntered && this.deps.clock.now() >= reEnterAt && (await this.readInputLine(pane)) === "typed") {
         reEntered = true;
