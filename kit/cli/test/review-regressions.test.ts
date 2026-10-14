@@ -104,7 +104,8 @@ test("a slow verdict plus a slow download share one 2 s budget and the text goes
   const started = performance.now();
   expect(await cmdSend(["--to", CH, "--text", "budget", "--affect", AFFECT], { ...env, HENT_URL: url, HENT_SERVICE_TOKEN: "t" })).toBe(0);
   const elapsed = performance.now() - started;
-  expect(elapsed).toBeLessThan(2_400);
+  // Real AbortSignal deadline, so this is wall time: the 2 s budget plus at most 100 ms for the plain send.
+  expect(elapsed).toBeLessThan(2_100);
   expect(fake.messages(CH).at(-1)!.attachments).toEqual([]);
 });
 

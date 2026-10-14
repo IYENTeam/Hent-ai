@@ -1,7 +1,7 @@
 // Push delivery (plan todo 9, ADR-0002 "Push delivery"): every journaled inbound message in a
 // reply/ambient channel (or an allowed DM) is injected into the brain session, one at a time in
-// seq order. Pane mode types one line into the agent's tmux pane and confirms it from the session
-// transcript; headless mode runs one resumed turn and confirms it from the handled ledger.
+// seq order. Pane mode types one line into the agent's pane (herdr when the pane id is a herdr id,
+// else tmux) and confirms it from a user-input record in the session transcript; headless mode runs one resumed turn and confirms it from the handled ledger.
 // Anything unconfirmed is retried with backoff, so nothing is lost while the session restarts.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -54,22 +54,63 @@ type DeliveredRecord = { readonly messageId: string; readonly seq: number; reado
 const HISTORY_GAP_MS = 10 * 60_000;
 const BUSY_RETRY_MS = 2_000;
 
-// Claude Code sets its process title to its version (e.g. "2.1.296"); Codex runs as codex or node.
+// Claude Code sets its process title to its version (e.g. "2.1.296"); the Codex CLI runs as codex.
 const AGENT_COMMANDS: Readonly<Record<StoredSession["agent"], RegExp>> = {
   claude: /^(claude|\d+\.\d+\.\d+)$/,
-  codex: /^(codex|codex-[\w-]+|node)$/,
+  codex: /^codex(-[\w-]+)?$/,
 };
+
+/** tmux pane ids look like `%3`; anything else (e.g. `w1:p97`) is a herdr pane id. */
+export const isTmuxPane = (pane: string): boolean => pane.startsWith("%");
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 // Placeholder hints in an empty prompt are drawn dim (SGR 2) or as grey (90/38;5;24x); they are not typed input.
 const DIM_RUN = /\x1b\[(?:2|90|38;5;24\d)m[^\x1b]*/g;
 
-/** True when the agent's input line (the last "> " / "› " prompt on screen) already holds typed text. */
-export const pendingInput = (screen: string): boolean => {
+/**
+ * Reads the agent's input line (the last "> " / "› " prompt on screen): "empty", "typed" when it
+ * already holds text, or "none" when no prompt is visible (the agent is busy or it is not an agent).
+ */
+export const inputLine = (screen: string): "empty" | "typed" | "none" => {
   const lines = screen.split("\n").map((line) => line.replace(DIM_RUN, "").replace(ANSI, ""));
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const match = lines[i]!.match(/^[\s│|]*[>›]\s?(.*?)[\s│|]*$/);
-    if (match) return match[1]!.trim().length > 0;
+    if (match) return match[1]!.trim().length > 0 ? "typed" : "empty";
+  }
+  return "none";
+};
+
+type JsonObject = { readonly [key: string]: unknown };
+const asObject = (value: unknown): JsonObject | null => (value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null);
+
+/** Texts of a transcript record that is user input: Claude `{type:"user",message}`, Codex `{payload:{role:"user"}}` or `user_message`. */
+const userInputTexts = (record: unknown): string[] => {
+  const r = asObject(record);
+  if (!r) return [];
+  const payload = asObject(r.payload);
+  const message = asObject(r.message);
+  let content: unknown;
+  if (r.type === "user" && message?.role === "user") content = message.content;
+  else if (payload?.role === "user") content = payload.content;
+  else if (payload?.type === "user_message") content = payload.message;
+  else return [];
+  if (typeof content === "string") return [content];
+  if (!Array.isArray(content)) return [];
+  return content.map((part) => asObject(part)?.text).filter((text): text is string => typeof text === "string");
+};
+
+/** True when `chunk` (JSONL) holds a user-input record carrying the INBOUND line for `messageId`. */
+export const transcriptReceived = (chunk: string, messageId: string): boolean => {
+  const marker = `"messageId":"${messageId}"`;
+  for (const line of chunk.split("\n")) {
+    if (!line.includes(messageId)) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (userInputTexts(record).some((text) => text.includes("[hent] INBOUND ") && text.includes(marker))) return true;
   }
   return false;
 };
@@ -273,13 +314,28 @@ export class Deliverer {
   }
 
   private async paneAgent(pane: string, agent: StoredSession["agent"]): Promise<"ok" | "gone" | "busy"> {
+    if (!isTmuxPane(pane)) {
+      const res = await this.exec(["herdr", "pane", "get", pane], { timeoutMs: 5_000 });
+      if (res.code !== 0) return "gone";
+      let info: JsonObject | null = null;
+      try {
+        info = asObject(asObject(asObject(JSON.parse(res.stdout))?.result)?.pane);
+      } catch {
+        info = null;
+      }
+      if (!info || info.agent !== agent) return "gone";
+      if (info.agent_status !== "idle" && info.agent_status !== "done") return "busy";
+      const screen = await this.exec(["herdr", "pane", "read", pane, "--source", "visible", "--format", "ansi"], { timeoutMs: 5_000 });
+      if (screen.code !== 0) return "gone";
+      return inputLine(screen.stdout) === "empty" ? "ok" : "busy";
+    }
     const res = await this.exec(["tmux", "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"], { timeoutMs: 5_000 });
     if (res.code !== 0) return "gone";
     const [dead, command = ""] = res.stdout.trim().split(" ");
     if (dead !== "0" || !AGENT_COMMANDS[agent].test(command)) return "gone";
     const screen = await this.exec(["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"], { timeoutMs: 5_000 });
     if (screen.code !== 0) return "gone";
-    return pendingInput(screen.stdout) ? "busy" : "ok";
+    return inputLine(screen.stdout) === "empty" ? "ok" : "busy";
   }
 
   private async deliverOne(event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -303,10 +359,15 @@ export class Deliverer {
   private async deliverPane(session: StoredSession, pane: string, prompt: string, event: InboxEvent): Promise<boolean> {
     const transcript = this.findTranscript(session);
     const before = transcript && existsSync(transcript) ? statSync(transcript).size : 0;
-    const typed = await this.exec(["tmux", "send-keys", "-t", pane, "-l", prompt], { timeoutMs: 5_000 });
-    if (typed.code !== 0) return false;
-    const entered = await this.exec(["tmux", "send-keys", "-t", pane, "Enter"], { timeoutMs: 5_000 });
-    if (entered.code !== 0) return false;
+    if (isTmuxPane(pane)) {
+      const typed = await this.exec(["tmux", "send-keys", "-t", pane, "-l", prompt], { timeoutMs: 5_000 });
+      if (typed.code !== 0) return false;
+      const entered = await this.exec(["tmux", "send-keys", "-t", pane, "Enter"], { timeoutMs: 5_000 });
+      if (entered.code !== 0) return false;
+    } else {
+      const sent = await this.exec(["herdr", "pane", "run", pane, prompt], { timeoutMs: 5_000 });
+      if (sent.code !== 0) return false;
+    }
     const deadline = this.deps.clock.now() + (this.deps.paneConfirmMs ?? 10_000);
     while (this.deps.clock.now() < deadline) {
       const path = transcript ?? this.findTranscript(session);
@@ -315,7 +376,7 @@ export class Deliverer {
         if (size > before) {
           // `before` is a byte size; slice the bytes, not the decoded string (multi-byte text shifts char offsets).
           const tail = readFileSync(path).subarray(path === transcript ? before : 0).toString("utf8");
-          if (tail.includes("[hent] INBOUND") && tail.includes(event.messageId)) return true;
+          if (transcriptReceived(tail, event.messageId)) return true;
         }
       }
       if (this.deps.handled.get(event.messageId)) return true;

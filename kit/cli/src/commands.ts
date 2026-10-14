@@ -302,7 +302,7 @@ export const cmdSession = (args: readonly string[], env: Env = process.env): Pro
   const agent = flags.values.get("agent");
   const sessionId = flags.values.get("session-id");
   const cwd = flags.values.get("cwd") ?? process.cwd();
-  const pane = flags.bools.has("headless") ? undefined : (flags.values.get("pane") ?? env.TMUX_PANE);
+  const pane = flags.bools.has("headless") ? undefined : (flags.values.get("pane") ?? env.HERDR_PANE_ID ?? env.TMUX_PANE);
   if ((agent !== "claude" && agent !== "codex") || !sessionId) {
     console.error("hent session set: --agent claude|codex and --session-id are required");
     return Promise.resolve(2);

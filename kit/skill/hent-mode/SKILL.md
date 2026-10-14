@@ -27,7 +27,7 @@ Register yourself so the bridge knows where to push:
 hent session set --agent claude --session-id <your session id> --cwd "$PWD"
 ```
 
-Use `--agent codex` under Codex. Inside tmux the pane is taken from `$TMUX_PANE`; pass `--headless`
+Use `--agent codex` under Codex. Inside herdr or tmux the pane is taken from `$HERDR_PANE_ID` or `$TMUX_PANE`; pass `--headless`
 when no terminal pane will stay open. Messages that arrived while you were away are pushed again in
 order, once. Read `references/memory.md` and `references/persona.md` before the first reply.
 
