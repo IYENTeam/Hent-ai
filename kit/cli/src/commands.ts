@@ -5,6 +5,7 @@
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseAffectArg } from "./affect.ts";
 import { BRIDGE_DEFAULT_PORT, BRIDGE_ROUTES, MAX_MESSAGE_TEXT_LENGTH } from "./bridge/contract.ts";
@@ -465,7 +466,9 @@ export const cmdChannels = async (args: readonly string[], env: Env = process.en
   }
 };
 
-export const LAUNCHD_TEMPLATE = (bun: string, cli: string, home: string): string => `<?xml version="1.0" encoding="UTF-8"?>
+// Headless turns spawn `claude`/`codex` from this PATH: the user's ~/.local/bin (where the native
+// installers put the current CLI) must win over an older Homebrew copy that may fail to refresh auth.
+export const LAUNCHD_TEMPLATE = (bun: string, cli: string, home: string, userHome = homedir()): string => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -473,7 +476,7 @@ export const LAUNCHD_TEMPLATE = (bun: string, cli: string, home: string): string
   <key>ProgramArguments</key>
   <array><string>${bun}</string><string>${cli}</string><string>bridge</string></array>
   <key>EnvironmentVariables</key>
-  <dict><key>HENT_HOME</key><string>${home}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${dirOf(bun)}</string></dict>
+  <dict><key>HENT_HOME</key><string>${home}</string><key>PATH</key><string>${userHome}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${dirOf(bun)}</string></dict>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>

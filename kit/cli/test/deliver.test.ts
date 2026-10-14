@@ -30,7 +30,7 @@ const event = (messageId: string, content: string, over: Partial<NewInboxEvent> 
 
 type Harness = ReturnType<typeof harness>;
 
-const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambient" | "observe" } = {}) => {
+const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambient" | "observe"; backoffMs?: number[] } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "hent-deliver-"));
   dirs.push(home);
   const paths = bridgePaths(home);
@@ -45,7 +45,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
   mkdirSync(projectDir, { recursive: true });
   const transcript = join(projectDir, `${sessionId}.jsonl`);
   writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: "이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200) } })}\n`);
-  let typedLine = "";
+  let swallowEnters = 0;
   let paneScreen: string | null = null;
   let herdrPane: { agent: string; agent_status: string } | null = { agent: "claude", agent_status: "idle" };
   const calls: string[][] = [];
@@ -65,11 +65,21 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
       appendFileSync(transcript, `${JSON.stringify(record)}\n`);
     };
     if (argv[0] === "tmux" && argv[1] === "capture-pane") return { code: 0, stdout: screen() };
-    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "-l") typedLine = argv[5]!;
-    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "Enter") submit(typedLine);
+    // The fake input line: typed text shows after "> " until an Enter submits it; a pending paste swallows Enters.
+    const enter = () => {
+      if (swallowEnters > 0) {
+        swallowEnters -= 1;
+        return;
+      }
+      if (paneInput) submit(paneInput);
+      paneInput = "";
+    };
+    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "-l") paneInput += argv[5]!;
+    if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "Enter") enter();
+    if (argv[0] === "herdr" && argv[2] === "send-text") paneInput += argv[4]!;
+    if (argv[0] === "herdr" && argv[2] === "send-keys" && argv[4] === "enter") enter();
     if (argv[0] === "herdr" && argv[2] === "get") return herdrPane ? { code: 0, stdout: JSON.stringify({ result: { pane: { pane_id: argv[3], ...herdrPane } } }) } : { code: 1, stdout: "" };
     if (argv[0] === "herdr" && argv[2] === "read") return { code: 0, stdout: screen() };
-    if (argv[0] === "herdr" && argv[2] === "run") submit(argv[4]!);
     if (argv[0] === "claude" || argv[0] === "codex") {
       if (headlessCode === 0 && headlessHandles) {
         const prompt = argv.find((a) => a.includes("[hent] INBOUND"))!;
@@ -91,9 +101,11 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     log: (name: string, fields?: Record<string, unknown>) => logLines.push(`${name} ${JSON.stringify(fields ?? {})}`),
     exec,
     findTranscript: (s: StoredSession) => defaultFindTranscript(s, home),
-    backoffMs: [5],
+    backoffMs: opts.backoffMs ?? [5],
     paneConfirmMs: 500,
     busyRetryMs: 10,
+    pasteSettleMs: 200,
+    reEnterMs: 50,
   });
   journal.onAppend((e) => deliverer.onJournaled(e));
   deliverer.start();
@@ -109,13 +121,14 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     setPaneInput: (text: string) => (paneInput = text),
     setPaneCommand: (cmd: string) => (paneCommand = cmd),
     setPaneScreen: (text: string | null) => (paneScreen = text),
+    swallowNextEnters: (n: number) => (swallowEnters = n),
     setHerdrPane: (info: { agent: string; agent_status: string } | null) => (herdrPane = info),
     appendTranscript: (record: unknown) => appendFileSync(transcript, `${JSON.stringify(record)}\n`),
     setHeadless: (code: number, handles = true) => {
       headlessCode = code;
       headlessHandles = handles;
     },
-    injected: () => calls.filter((c) => (c[0] === "tmux" && c[4] === "-l") || (c[0] === "herdr" && c[2] === "run")).map((c) => (c[0] === "tmux" ? c[5]! : c[4]!)),
+    injected: () => calls.filter((c) => (c[0] === "tmux" && c[4] === "-l") || (c[0] === "herdr" && c[2] === "send-text")).map((c) => (c[0] === "tmux" ? c[5]! : c[4]!)),
     headless: () => calls.filter((c) => c[0] === "claude" || c[0] === "codex"),
     logs: () => logLines,
   };
@@ -296,6 +309,31 @@ test("inputLine reads a real Claude Code 2.1 screen (❯ prompt, dim placeholder
   expect(inputLine(screen("typed"))).toBe("typed");
 });
 
+test("hent session set restarts the backoff, so the new session is tried right away", async () => {
+  const h = harness(pane, { backoffMs: [5, 60_000] });
+  rmSync(h.paths.session);
+  h.journal.append(event("m1", "while away"));
+  await settle(h, () => h.logs().filter((l) => l.includes("no_session")).length >= 2);
+  writeFileSync(h.paths.session, JSON.stringify(pane));
+  h.setPaneWrites(false);
+  h.deliverer.onSessionSet();
+  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
+  expect(h.logs().find((l) => l.includes("pane_unconfirmed"))).toContain('"delayMs":5');
+  h.setPaneWrites(true);
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")), 1_000);
+  h.deliverer.stop();
+});
+
+test("an Enter swallowed by a still-settling paste is pressed once more, and the event is delivered once", async () => {
+  const h = harness(pane);
+  h.swallowNextEnters(1);
+  h.journal.append(event("m1", "long pasted prompt"));
+  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
+  expect(h.logs().filter((l) => l.startsWith("BRIDGE_PANE_REENTER")).length).toBe(1);
+  expect(h.injected().length).toBe(1);
+  h.deliverer.stop();
+});
+
 test("a pane showing no input prompt is treated as busy, never typed into", async () => {
   const h = harness(pane);
   h.setPaneScreen("compiling...\nstill working");
@@ -345,7 +383,7 @@ test("a herdr pane is used through herdr: idle agent gets the line, a working ag
   expect(h.injected()).toEqual([]);
   h.setHerdrPane({ agent: "claude", agent_status: "idle" });
   await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.calls.filter((c) => c[0] === "herdr" && c[2] === "run").map((c) => c[3])).toEqual(["w1:p7"]);
+  expect(h.calls.filter((c) => c[0] === "herdr" && c[2] === "send-text").map((c) => c[3])).toEqual(["w1:p7"]);
   expect(h.calls.some((c) => c[0] === "tmux")).toBe(false);
   h.deliverer.stop();
 });

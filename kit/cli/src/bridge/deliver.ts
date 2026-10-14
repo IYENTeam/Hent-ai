@@ -45,6 +45,8 @@ export type DeliverDeps = {
   readonly headlessTimeoutMs?: number;
   readonly staleUnhandledMs?: number;
   readonly busyRetryMs?: number;
+  readonly pasteSettleMs?: number;
+  readonly reEnterMs?: number;
 };
 
 export type StoredSession = SessionRequest & { readonly updatedAt?: string };
@@ -171,6 +173,7 @@ export class Deliverer {
   private readonly lastDeliveredAt = new Map<string, number>();
   private readonly exec: Exec;
   private readonly findTranscript: (session: StoredSession) => string | null;
+  private sessionEpoch = 0;
   private running = false;
   private stopped = false;
   private wake: (() => void) | null = null;
@@ -220,6 +223,7 @@ export class Deliverer {
 
   onSessionSet(): void {
     this.reinjected.clear();
+    this.sessionEpoch += 1;
     const pending = this.deps.journal
       .after(0, Number.MAX_SAFE_INTEGER)
       .filter((e) => this.delivered.has(e.messageId) && this.eligible(e) && !this.reinjected.has(e.messageId));
@@ -282,7 +286,13 @@ export class Deliverer {
   private async loop(): Promise<void> {
     const backoff = this.deps.backoffMs ?? [5_000, 30_000, 120_000, 300_000];
     let attempt = 0;
+    let epoch = this.sessionEpoch;
     while (!this.stopped && this.queue.length > 0) {
+      // A fresh `hent session set` starts the backoff over: the new session gets a prompt attempt.
+      if (epoch !== this.sessionEpoch) {
+        epoch = this.sessionEpoch;
+        attempt = 0;
+      }
       const event = this.queue[0]!;
       if (!this.eligible(event)) {
         this.queue.shift();
@@ -358,19 +368,30 @@ export class Deliverer {
     return this.deliverHeadless(session, prompt, event);
   }
 
+  private async readInputLine(pane: string): Promise<"empty" | "typed" | "none" | null> {
+    const argv = isTmuxPane(pane) ? ["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"] : ["herdr", "pane", "read", pane, "--source", "visible", "--format", "ansi"];
+    const screen = await this.exec(argv, { timeoutMs: 5_000 });
+    return screen.code === 0 ? inputLine(screen.stdout) : null;
+  }
+
+  private async pressEnter(pane: string): Promise<boolean> {
+    const argv = isTmuxPane(pane) ? ["tmux", "send-keys", "-t", pane, "Enter"] : ["herdr", "pane", "send-keys", pane, "enter"];
+    return (await this.exec(argv, { timeoutMs: 5_000 })).code === 0;
+  }
+
   private async deliverPane(session: StoredSession, pane: string, prompt: string, event: InboxEvent): Promise<boolean> {
     const transcript = this.findTranscript(session);
     const before = transcript && existsSync(transcript) ? statSync(transcript).size : 0;
-    if (isTmuxPane(pane)) {
-      const typed = await this.exec(["tmux", "send-keys", "-t", pane, "-l", prompt], { timeoutMs: 5_000 });
-      if (typed.code !== 0) return false;
-      const entered = await this.exec(["tmux", "send-keys", "-t", pane, "Enter"], { timeoutMs: 5_000 });
-      if (entered.code !== 0) return false;
-    } else {
-      const sent = await this.exec(["herdr", "pane", "run", pane, prompt], { timeoutMs: 5_000 });
-      if (sent.code !== 0) return false;
-    }
+    const typedArgv = isTmuxPane(pane) ? ["tmux", "send-keys", "-t", pane, "-l", prompt] : ["herdr", "pane", "send-text", pane, prompt];
+    if ((await this.exec(typedArgv, { timeoutMs: 5_000 })).code !== 0) return false;
+    // A long line arrives as a bracketed paste the agent folds into "[Pasted text #n]" chunks; an
+    // Enter that lands before the paste settles is swallowed. Wait until the input line shows text.
+    const pasteDeadline = this.deps.clock.now() + (this.deps.pasteSettleMs ?? 3_000);
+    while ((await this.readInputLine(pane)) !== "typed" && this.deps.clock.now() < pasteDeadline) await this.deps.clock.sleep(100);
+    if (!(await this.pressEnter(pane))) return false;
     const deadline = this.deps.clock.now() + (this.deps.paneConfirmMs ?? 10_000);
+    const reEnterAt = this.deps.clock.now() + (this.deps.reEnterMs ?? 3_000);
+    let reEntered = false;
     while (this.deps.clock.now() < deadline) {
       const path = transcript ?? this.findTranscript(session);
       if (path && existsSync(path)) {
@@ -382,6 +403,13 @@ export class Deliverer {
         }
       }
       if (this.deps.handled.get(event.messageId)) return true;
+      // Still sitting in the input line after the first Enter: submit it once more.
+      if (!reEntered && this.deps.clock.now() >= reEnterAt && (await this.readInputLine(pane)) === "typed") {
+        reEntered = true;
+        this.deps.log("BRIDGE_PANE_REENTER", { messageId: event.messageId });
+        await this.pressEnter(pane);
+        continue;
+      }
       await this.deps.clock.sleep(250);
     }
     return false;
