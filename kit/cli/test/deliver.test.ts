@@ -282,6 +282,13 @@ test("inputLine tells an empty prompt from typed input and from no prompt at all
   expect(inputLine("unrelated node server is running")).toBe("none");
 });
 
+test("inputLine reads a real herdr capture of Codex (CRLF lines, dim placeholder under a background colour)", () => {
+  const screen = (name: string) => readFileSync(new URL(`./fixtures/codex-0.162-herdr-screen-${name}.ansi`, import.meta.url), "utf8");
+  expect(inputLine(screen("idle"))).toBe("empty");
+  expect(inputLine(screen("typed"))).toBe("typed");
+  expect(agentWorking(screen("idle"))).toBe(false);
+});
+
 test("inputLine reads a real Claude Code 2.1 screen (❯ prompt, dim placeholder)", () => {
   const screen = (name: string) => readFileSync(new URL(`./fixtures/claude-2.1-screen-${name}.ansi`, import.meta.url), "utf8");
   expect(inputLine(screen("empty"))).toBe("empty");

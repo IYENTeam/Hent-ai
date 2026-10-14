@@ -55,20 +55,58 @@ const HISTORY_GAP_MS = 10 * 60_000;
 const BUSY_RETRY_MS = 2_000;
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
-// Placeholder hints in an empty prompt are drawn dim (SGR 2) or as grey (90/38;5;24x); they are not typed input.
-const DIM_RUN = /\x1b\[(?:2|90|38;5;24\d)m[^\x1b]*/g;
+const SGR = /\x1b\[([0-9;]*)m/y;
+const OTHER_ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]/y;
+
+/** Visible characters of one screen line, each flagged when drawn dim or grey (placeholder hints, not typed input). */
+const styledChars = (line: string): { ch: string; dim: boolean }[] => {
+  const out: { ch: string; dim: boolean }[] = [];
+  let dim = false;
+  for (let i = 0; i < line.length; ) {
+    SGR.lastIndex = i;
+    const sgr = SGR.exec(line);
+    if (sgr) {
+      const params = sgr[1]!.split(";");
+      for (let k = 0; k < params.length; k += 1) {
+        const p = params[k] === "" ? "0" : params[k]!;
+        if (p === "0" || p === "22" || p === "39") dim = false;
+        if (p === "2" || p === "90") dim = true;
+        if ((p === "38" || p === "48") && params[k + 1] === "5") {
+          if (p === "38" && /^24\d$/.test(params[k + 2] ?? "")) dim = true;
+          k += 2;
+        } else if ((p === "38" || p === "48") && params[k + 1] === "2") k += 4;
+      }
+      i = SGR.lastIndex;
+      continue;
+    }
+    OTHER_ESCAPE.lastIndex = i;
+    if (OTHER_ESCAPE.exec(line)) {
+      i = OTHER_ESCAPE.lastIndex;
+      continue;
+    }
+    out.push({ ch: line[i]!, dim });
+    i += 1;
+  }
+  return out;
+};
 
 /**
  * Reads the agent's input line (the last ">", "›" (Codex) or "❯" (Claude Code 2.x) prompt on screen): "empty", "typed" when it
  * already holds text, or "none" when no prompt is visible (the agent is busy or it is not an agent).
  */
 export const inputLine = (screen: string): "empty" | "typed" | "none" => {
-  const lines = screen.split("\n");
+  const lines = screen.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    // Prefix of colour codes, spaces and box borders, then the prompt glyph (which may itself be grey).
-    const match = lines[i]!.match(/^((?:\x1b\[[0-9;?]*[A-Za-z]|[\s│|])*)[>›❯](.*)$/);
-    if (!match) continue;
-    const typed = match[2]!.replace(DIM_RUN, "").replace(ANSI, "").replace(/[\s│|]+/g, " ").trim();
+    const chars = styledChars(lines[i]!.replace(/\r/g, ""));
+    const start = chars.findIndex((c) => !/[\s│|]/.test(c.ch));
+    if (start === -1 || !/[>›❯]/.test(chars[start]!.ch)) continue;
+    const typed = chars
+      .slice(start + 1)
+      .filter((c) => !c.dim)
+      .map((c) => c.ch)
+      .join("")
+      .replace(/[\s│|]+/g, " ")
+      .trim();
     return typed.length > 0 ? "typed" : "empty";
   }
   return "none";
