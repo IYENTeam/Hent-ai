@@ -27,9 +27,9 @@ Register yourself so the bridge knows where to push:
 hent session set --agent claude --session-id <your session id> --cwd "$PWD"
 ```
 
-Use `--agent codex` under Codex. Inside herdr or tmux the pane is taken from `$HERDR_PANE_ID` or `$TMUX_PANE`; pass `--headless`
-when no terminal pane will stay open. Messages that arrived while you were away are pushed again in
-order, once. Read `references/memory.md` and `references/persona.md` before the first reply.
+Use `--agent codex` (with `--session-id "$CODEX_THREAD_ID"`) under Codex. The session runs in a herdr
+pane and the pane is taken from `$HERDR_PANE_ID`; `kit/brain.sh start` sets all of this up.
+Messages that arrived while you were away are pushed again in order, once. Read `references/memory.md` and `references/persona.md` before the first reply.
 
 ## Each `[hent] INBOUND {json}` line
 
@@ -74,4 +74,4 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 - `references/conversation.md` - when to speak, ambient participation, anti-repetition, privacy.
 - `references/affect.md` - the 24 affect dimensions for `--affect`.
 - `references/memory.md` - per-channel and per-person notes that survive restarts.
-- `references/claude-code.md`, `references/codex.md` - agent-specific setup and the headless path.
+- `references/claude-code.md`, `references/codex.md` - agent-specific setup in herdr.

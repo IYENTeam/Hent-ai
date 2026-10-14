@@ -249,7 +249,7 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const parsed = body.ok ? parseSessionRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
         writePrivateFile(deps.sessionPath, `${JSON.stringify({ ...parsed.value, updatedAt: new Date(clock.now()).toISOString() }, null, 2)}\n`);
-        log("BRIDGE_SESSION_SET", { agent: parsed.value.agent, mode: parsed.value.mode });
+        log("BRIDGE_SESSION_SET", { agent: parsed.value.agent, pane: parsed.value.pane });
         deps.hooks.onSessionSet?.(parsed.value);
         return new Response(null, { status: 204 });
       }

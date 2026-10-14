@@ -29,7 +29,7 @@ split.
 | Change | Evidence |
 | --- | --- |
 | `service/` verdict or routing | service tests, a request/response fixture or contract version for `/v1/final-response/verdict`, and routed media bytes from a running service. |
-| `kit/cli/src/bridge/*` | kit tests with the fake Discord server, plus a real-surface run (bridge + tmux pane or headless session) showing delivery and confirmation. |
+| `kit/cli/src/bridge/*` | kit tests with the fake Discord server, plus a real-surface run (bridge + herdr pane session) showing delivery and confirmation. |
 | `kit/cli` session commands | kit tests, including the service-down path (plain send within the deadline). |
 | `kit/skill/hent-mode/*` | review against the cited sources in `references/conversation-sources.json`; the fixture test must pass. |
 | assets / generation | `scripts/verify-affect-assets.mjs` on the external corpus; never trigger paid generation in tests. |

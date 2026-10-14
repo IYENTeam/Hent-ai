@@ -258,7 +258,7 @@ test("HENT_HOME dirs are 0700 and every bridge file is 0600", async () => {
   await journaled(bridge, m.id);
   await api(bridge, "/v1/send", { method: "POST", body: JSON.stringify({ channelId: CH, text: "y", replyToMessageId: m.id, nonce: "modes" }) });
   await api(bridge, "/v1/inbox?consumer=qa&ack=1");
-  await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "claude", sessionId: "s1", mode: "headless", cwd: "/tmp" }) });
+  await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "claude", sessionId: "s1", pane: "w1:p1", cwd: "/tmp" }) });
   for (const dir of [home, join(home, "state"), join(home, "state", "consumers")]) expect(mode(dir)).toBe(0o700);
   for (const file of ["bridge.secret", "session.json", "state/inbox.jsonl", "state/journal-state.json", "state/sent.jsonl", "state/handled.jsonl", "state/consumers/qa.json"]) {
     expect([file, mode(join(home, file))]).toEqual([file, 0o600]);
@@ -300,10 +300,10 @@ test("local API: bearer required, inbox ack/long-poll/lease, history, session ho
   expect(seen).toEqual([m1.id, m2.id]);
 
   expect((await api(bridge, "/v1/handled", { method: "POST", body: JSON.stringify({ messageId: m2.id, how: "skipped" }) })).status).toBe(204);
-  const res = await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "codex", sessionId: "sess-9", mode: "pane", pane: "hent:0.1", cwd: "/work" }) });
+  const res = await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "codex", sessionId: "sess-9", pane: "w3:p2", cwd: "/work" }) });
   expect(res.status).toBe(204);
   expect(sessions).toEqual(["sess-9"]);
-  expect(JSON.parse(readFileSync(join(home, "session.json"), "utf8"))).toMatchObject({ agent: "codex", sessionId: "sess-9", mode: "pane", pane: "hent:0.1", cwd: "/work" });
+  expect(JSON.parse(readFileSync(join(home, "session.json"), "utf8"))).toMatchObject({ agent: "codex", sessionId: "sess-9", pane: "w3:p2", cwd: "/work" });
   const health = parseHealthResponse(await (await api(bridge, "/v1/health", { auth: false })).json());
   expect(health.ok && health.value).toMatchObject({ gateway: "connected", botUserId: fake.botUser.id, lastSeq: 2, consumers: [{ name: "a", cursor: 1 }] });
 });
