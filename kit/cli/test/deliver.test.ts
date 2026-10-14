@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
-import { Deliverer, type Exec, formatPrompt, headlessArgv, type StoredSession } from "../src/bridge/deliver.ts";
+import { Deliverer, type Exec, formatPrompt, headlessArgv, pendingInput, type StoredSession } from "../src/bridge/deliver.ts";
 import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
 import { realClock } from "../src/run.ts";
 
@@ -46,9 +46,12 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
   let headlessCode = 0;
   let headlessHandles = true;
   let paneWrites = true;
+  let paneInput = "";
+  let paneCommand = "claude";
   const exec: Exec = async (argv) => {
     calls.push([...argv]);
-    if (argv[0] === "tmux" && argv[1] === "display-message") return { code: paneAlive ? 0 : 1, stdout: paneAlive ? "0 claude\n" : "" };
+    if (argv[0] === "tmux" && argv[1] === "display-message") return { code: paneAlive ? 0 : 1, stdout: paneAlive ? `0 ${paneCommand}\n` : "" };
+    if (argv[0] === "tmux" && argv[1] === "capture-pane") return { code: 0, stdout: `some output\n\x1b[2m-- hint --\x1b[0m\n> ${paneInput}\n` };
     if (argv[0] === "tmux" && argv[1] === "send-keys" && argv[4] === "-l" && paneWrites) appendFileSync(transcript, `${JSON.stringify({ input: argv[5] })}\n`);
     if (argv[0] === "claude" || argv[0] === "codex") {
       if (headlessCode === 0 && headlessHandles) {
@@ -72,6 +75,7 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     findTranscript: () => transcript,
     backoffMs: [5],
     paneConfirmMs: 500,
+    busyRetryMs: 10,
   });
   journal.onAppend((e) => deliverer.onJournaled(e));
   deliverer.start();
@@ -84,6 +88,8 @@ const harness = (session: StoredSession | null, opts: { mode?: "reply" | "ambien
     calls,
     setPane: (alive: boolean) => (paneAlive = alive),
     setPaneWrites: (writes: boolean) => (paneWrites = writes),
+    setPaneInput: (text: string) => (paneInput = text),
+    setPaneCommand: (cmd: string) => (paneCommand = cmd),
     setHeadless: (code: number, handles = true) => {
       headlessCode = code;
       headlessHandles = handles;
@@ -206,7 +212,7 @@ test("bridge restart resumes undelivered events and does not repeat delivered on
   d2.stop();
 });
 
-test("an unhandled event is re-injected once after hent session set; a replied one is not", async () => {
+test("each hent session set re-injects still-unhandled events once; replied ones never", async () => {
   const h = harness(pane);
   h.journal.append(event("m1", "unanswered"));
   h.journal.append(event("m2", "answered"));
@@ -216,9 +222,41 @@ test("an unhandled event is re-injected once after hent session set; a replied o
   await settle(h, () => h.injected().length === 3);
   expect(h.injected()[2]).toContain('"messageId":"m1"');
   h.deliverer.onSessionSet();
+  await settle(h, () => h.injected().length === 4);
+  expect(h.injected()[3]).toContain('"messageId":"m1"');
+  h.handled.mark({ messageId: "m1", how: "skipped", at: new Date().toISOString() });
+  h.deliverer.onSessionSet();
   await Bun.sleep(50);
-  expect(h.injected().length).toBe(3);
+  expect(h.injected().length).toBe(4);
   h.deliverer.stop();
+});
+
+test("a pane with unfinished typed input waits, then delivers once the input is empty", async () => {
+  const h = harness(pane);
+  h.setPaneInput("half-typed thought");
+  h.journal.append(event("m1", "hi"));
+  await Bun.sleep(80);
+  expect(h.injected()).toEqual([]);
+  expect(h.headless()).toEqual([]);
+  h.setPaneInput("");
+  await settle(h, () => h.injected().length === 1);
+  h.deliverer.stop();
+});
+
+test("a pane running another program (vim) is never typed into", async () => {
+  const h = harness(pane);
+  h.setPaneCommand("vim");
+  h.journal.append(event("m1", "hi"));
+  await settle(h, () => h.headless().length >= 1);
+  expect(h.injected()).toEqual([]);
+  h.deliverer.stop();
+});
+
+test("pendingInput ignores dim placeholder hints and box borders", () => {
+  expect(pendingInput("│ > \x1b[2mTry \"fix lint\"\x1b[0m   │")).toBe(false);
+  expect(pendingInput("> ")).toBe(false);
+  expect(pendingInput("› draft reply")).toBe(true);
+  expect(pendingInput("│ > typed │")).toBe(true);
 });
 
 test("prompt text carries quotes, newlines and $( verbatim as one argv element", () => {

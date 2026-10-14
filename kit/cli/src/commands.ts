@@ -2,6 +2,7 @@
 // channels / memory. They talk to the local bridge (bearer from bridge.secret) and, for media
 // only, to the Hent-ai service under one 2 s deadline. Service failures never block a send.
 
+import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -101,7 +102,7 @@ const pickMedia = async (env: Env, channelId: string, text: string, affectArg: s
   if (!config.enabled) return { media: null, reason: "disabled" };
   if (!affectArg) return { media: null, reason: "no_affect" };
   const affect = parseAffectArg(affectArg);
-  if (!affect.ok) return { media: null, reason: `bad_affect:${affect.error}` };
+  if (!affect.ok) return { media: null, reason: "bad_affect" };
   const signal = sendDeadline();
   const picked = await verdict(config, channelId, text, affect.affect, signal);
   if (!picked.ok) return { media: null, reason: picked.reason };
@@ -161,19 +162,35 @@ export const cmdSend = async (args: readonly string[], env: Env = process.env): 
       console.log(`EDITED ${editId}`);
       return 0;
     }
+    const affectArg = flags.values.get("affect");
+    if (affectArg) {
+      const affect = parseAffectArg(affectArg);
+      if (!affect.ok) {
+        console.error(`hent send: --affect: ${affect.error}`);
+        return 2;
+      }
+    }
     const filePath = flags.values.get("file");
-    const picked = filePath ? { media: readFileUpload(filePath), reason: "file" } : await pickMedia(env, channelId, text, flags.values.get("affect"));
+    const picked = filePath ? { media: readFileUpload(filePath), reason: "file" } : await pickMedia(env, channelId, text, affectArg);
     const nonce = flags.values.get("nonce") ?? newNonce();
     const chunks = chunkText(text);
     const replyTo = flags.values.get("reply-to");
     let lastId = "";
+    let mediaNote = picked.media ? "yes" : `no:${picked.reason}`;
     for (let i = 0; i < chunks.length; i += 1) {
       const isLast = i === chunks.length - 1;
       const chunkNonce = chunks.length === 1 ? nonce : `${nonce}-${i}`;
-      lastId = await sendChunk(bridge, channelId, chunks[i]!, chunkNonce, i === 0 ? replyTo : undefined, isLast ? picked.media : null);
+      const chunkReplyTo = isLast ? replyTo : undefined;
+      const media = isLast ? picked.media : null;
+      try {
+        lastId = await sendChunk(bridge, channelId, chunks[i]!, chunkNonce, chunkReplyTo, media);
+      } catch (error) {
+        if (!media || error instanceof BridgeDownError || filePath) throw error;
+        mediaNote = "no:media_rejected";
+        lastId = await sendChunk(bridge, channelId, chunks[i]!, chunkNonce, chunkReplyTo, null);
+      }
     }
-    if (replyTo && chunks.length > 1) await bridge.json("POST", BRIDGE_ROUTES.handled, { messageId: replyTo, how: "replied" });
-    console.log(`SENT ${lastId} media=${picked.media ? "yes" : `no:${picked.reason}`}`);
+    console.log(`SENT ${lastId} media=${mediaNote}`);
     return 0;
   } catch (error) {
     if (error instanceof BridgeDownError) {
@@ -341,6 +358,24 @@ const AMBIENT_TUNABLE_KEYS = ["ambientBudgetPerHour", "ambientConfidenceFloor", 
 
 type ServiceChannel = { channelId: string; enabled?: boolean | null; settings?: Record<string, unknown> | null };
 
+export const readChannelSettings = (dbPath: string): ServiceChannel[] => {
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const rows = db.query("SELECT channel_id, enabled, settings_json FROM channel_settings").all() as { channel_id: string; enabled: number | null; settings_json: string | null }[];
+    return rows.map((row) => {
+      let settings: Record<string, unknown> | null = null;
+      try {
+        settings = row.settings_json ? (JSON.parse(row.settings_json) as Record<string, unknown>) : null;
+      } catch {
+        settings = null;
+      }
+      return { channelId: row.channel_id, enabled: row.enabled === 1, settings };
+    });
+  } finally {
+    db.close();
+  }
+};
+
 export const importedChannels = (rows: readonly ServiceChannel[], current: ChannelsFile): ChannelsFile => {
   const byId = new Map(current.channels.map((c) => [c.channelId, c]));
   for (const row of rows) {
@@ -396,19 +431,30 @@ export const cmdChannels = async (args: readonly string[], env: Env = process.en
       return 0;
     }
     case "import": {
-      const config = loadConfig(env);
-      const url = flags.values.get("from-service") ?? config.url;
-      if (!url || !config.token) {
-        console.error("hent channels import: needs --from-service URL (or HENT_URL) and ~/.hent/service.token");
-        return 2;
+      const fromDb = flags.values.get("from-db");
+      let rows: ServiceChannel[] | null = null;
+      if (!fromDb) {
+        const config = loadConfig(env);
+        const url = flags.values.get("from-service") ?? config.url;
+        if (url && config.token) {
+          const res = await fetch(`${url.replace(/\/+$/, "")}/v1/channels`, { headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(10_000) }).catch(() => null);
+          if (res?.ok) rows = ((await res.json()) as { channels?: ServiceChannel[] }).channels ?? [];
+          else if (res && res.status !== 404) {
+            console.error(`hent channels import: service returned ${res.status}`);
+            return 1;
+          }
+        }
       }
-      const res = await fetch(`${url.replace(/\/+$/, "")}/v1/channels`, { headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) {
-        console.error(`hent channels import: service returned ${res.status}`);
-        return 1;
+      if (rows === null) {
+        const dbPath = fromDb ?? join(env.HOME ?? "", ".hent-ai", "data", "hent-ai-service.db");
+        if (!existsSync(dbPath)) {
+          console.error(`hent channels import: no /v1/channels on the service and no database at ${dbPath}; pass --from-db PATH`);
+          return 2;
+        }
+        rows = readChannelSettings(dbPath);
+        console.error(`hent channels import: read channel_settings read-only from ${dbPath}`);
       }
-      const body = (await res.json()) as { channels?: ServiceChannel[] };
-      const next = importedChannels(body.channels ?? [], file);
+      const next = importedChannels(rows, file);
       writeChannels(env, next);
       console.log(`CHANNELS_IMPORTED total=${next.channels.length} (new channels start in observe mode)`);
       return 0;

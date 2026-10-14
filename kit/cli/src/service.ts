@@ -94,6 +94,7 @@ export const fetchMedia = async (
       }
       chunks.push(value);
     }
+    if (total === 0) return { ok: false, reason: "empty" };
     const bytes = new Uint8Array(total);
     let at = 0;
     for (const c of chunks) {

@@ -304,6 +304,20 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     }
   };
 
+  const guildOf = new Map<string, string | null>();
+  const isGuildChannel = async (client: Discord, channelId: string, configured: string | null): Promise<boolean> => {
+    if (configured !== null) return true;
+    if (!guildOf.has(channelId)) {
+      try {
+        guildOf.set(channelId, await client.channelGuild(channelId));
+      } catch (error) {
+        log("BRIDGE_CHANNEL_LOOKUP_FAILED", { channelId, name: error instanceof Error ? error.name : "error" });
+        return false;
+      }
+    }
+    return guildOf.get(channelId) !== null;
+  };
+
   /** Seeds unseen channels; with `backfill` (after READY) also pages missed messages, buffering live events. */
   const queueSync = (backfill: boolean): void => {
     const client = discord;
@@ -313,7 +327,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       try {
         for (const channel of config.current.channels) {
           if (stopped) return;
-          if (channel.guildId !== null) await syncChannel(client, channel.channelId, backfill);
+          if (await isGuildChannel(client, channel.channelId, channel.guildId)) await syncChannel(client, channel.channelId, backfill);
         }
       } finally {
         syncing--;

@@ -185,8 +185,9 @@ Owner-gated: run only after the PR is merged and the owner says go. Each step is
    old service still runs from. Verify the service plist `ProgramArguments` before editing it.
 1. Write `~/.hent/discord.token` (0600) with the same bot token OpenClaw uses, and confirm the
    MESSAGE_CONTENT privileged intent is enabled in the developer portal. Write `~/.hent/service.token`.
-2. `hent channels import --from-service <url>`: every channel lands as `observe` (journaled, never
-   answered) and `dms:false`.
+2. `hent channels import --from-db ~/.hent-ai/data/hent-ai-service.db` (read-only; the old service has no
+   `/v1/channels`; after the new service is deployed `--from-service <url>` also works): every channel
+   lands as `observe` (journaled, never answered) and `dms:false`.
 3. `hent bridge install`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hent.bridge.plist`;
    `/v1/health` must report `connected`.
 4. Start the brain session with `hent-mode` and run `hent session set`.
@@ -237,11 +238,10 @@ For Discord threads, repeat the mapping for the thread id if replies are deliver
 
 ### Validate attachment path
 
-Use the loopback E2E above for the release proof. A production-channel assistant reply plus Discord
-attachment readback is an optional deployment check only with explicit owner approval and confirmed
-external-send safety; it is not a substitute for the isolated exact-byte test. Direct/proactive
-`message.send` and fallback cron delivery can bypass `reply_payload_sending` and are not valid
-final-response attachment E2E tests.
+Release proof is the kit suite (fake Discord + fixture service) plus the macmini local gate. For a live
+check, use a dedicated test channel in `reply` mode: one human message must produce
+`SENT <id> media=yes` from `hent send` and a bot reply with an attachment that references it. A
+production-channel check needs explicit owner approval.
 
 ## Incident Patterns
 

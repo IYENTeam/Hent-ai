@@ -57,7 +57,7 @@ Rules the parsers enforce:
 
 ### Cursor and lease (inbox)
 
-`GET /v1/inbox` first advances the consumer cursor to `ack` and only then long-polls for events with `seq > cursor`. Advancing is monotonic and clamped: `advanceCursor(current, ack, lastSeq)` never moves the cursor backwards, ignores an `ack` at or below it, and never moves it past the last journaled `seq` (an ack from a future the journal has not reached would silently skip events). Each poll renews a 60 s consumer lease; while another holder's lease is unexpired the bridge answers `409 {error: "lease_held"}` unless `takeover=1`.
+`GET /v1/inbox` first advances the consumer cursor to `ack` and only then long-polls for events with `seq > cursor`. Advancing is monotonic and clamped: `advanceCursor(current, ack, lastSeq)` never moves the cursor backwards, ignores an `ack` at or below it, and never moves it past the last journaled `seq` (an ack from a future the journal has not reached would silently skip events). The inbox is a debugging surface (delivery is push, see below), so it has no holder identity: a consumer is exclusive only while one of its long-polls is in flight, and a second concurrent poll for the same consumer gets `409 {error: "lease_held"}` unless `takeover=1`. `consumers[].leaseExpiresAt` in `/v1/health` reports when the last poll's 60 s window ends; it is informational and does not block a later poll.
 
 ### Send idempotency and nonces
 

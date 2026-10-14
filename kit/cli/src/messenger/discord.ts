@@ -93,6 +93,11 @@ export class Discord {
     return this.request<DiscordMessage[]>("GET", `/channels/${channelId}/messages${qs}`);
   }
 
+  async channelGuild(channelId: string): Promise<string | null> {
+    const channel = await this.request<{ guild_id?: string | null }>("GET", `/channels/${channelId}`);
+    return channel.guild_id ?? null;
+  }
+
   async me(): Promise<DiscordUser> {
     return this.request<DiscordUser>("GET", "/users/@me");
   }

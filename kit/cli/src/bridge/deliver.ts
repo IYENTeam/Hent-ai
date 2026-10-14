@@ -44,6 +44,7 @@ export type DeliverDeps = {
   readonly paneConfirmMs?: number;
   readonly headlessTimeoutMs?: number;
   readonly staleUnhandledMs?: number;
+  readonly busyRetryMs?: number;
 };
 
 export type StoredSession = SessionRequest & { readonly updatedAt?: string };
@@ -51,6 +52,27 @@ export type StoredSession = SessionRequest & { readonly updatedAt?: string };
 type DeliveredRecord = { readonly messageId: string; readonly seq: number; readonly mode: "pane" | "headless"; readonly at: string };
 
 const HISTORY_GAP_MS = 10 * 60_000;
+const BUSY_RETRY_MS = 2_000;
+
+// Claude Code sets its process title to its version (e.g. "2.1.296"); Codex runs as codex or node.
+const AGENT_COMMANDS: Readonly<Record<StoredSession["agent"], RegExp>> = {
+  claude: /^(claude|\d+\.\d+\.\d+)$/,
+  codex: /^(codex|codex-[\w-]+|node)$/,
+};
+
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
+// Placeholder hints in an empty prompt are drawn dim (SGR 2) or as grey (90/38;5;24x); they are not typed input.
+const DIM_RUN = /\x1b\[(?:2|90|38;5;24\d)m[^\x1b]*/g;
+
+/** True when the agent's input line (the last "> " / "› " prompt on screen) already holds typed text. */
+export const pendingInput = (screen: string): boolean => {
+  const lines = screen.split("\n").map((line) => line.replace(DIM_RUN, "").replace(ANSI, ""));
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const match = lines[i]!.match(/^[\s│|]*[>›]\s?(.*?)[\s│|]*$/);
+    if (match) return match[1]!.trim().length > 0;
+  }
+  return false;
+};
 const HISTORY_COUNT = 30;
 
 export const readSession = (path: string): StoredSession | null => {
@@ -154,6 +176,7 @@ export class Deliverer {
   }
 
   onSessionSet(): void {
+    this.reinjected.clear();
     const pending = this.deps.journal
       .after(0, Number.MAX_SAFE_INTEGER)
       .filter((e) => this.delivered.has(e.messageId) && this.eligible(e) && !this.reinjected.has(e.messageId));
@@ -176,8 +199,8 @@ export class Deliverer {
     const session = readSession(this.deps.sessionPath);
     if (!session || session.mode !== "pane" || !session.pane) return;
     const staleMs = this.deps.staleUnhandledMs ?? 10 * 60_000;
-    void this.paneAlive(session.pane).then((alive) => {
-      if (alive) return;
+    void this.paneAgent(session.pane, session.agent).then((state) => {
+      if (state !== "gone") return;
       const now = this.deps.clock.now();
       for (const record of this.delivered.values()) {
         if (record.mode !== "pane" || this.reinjected.has(record.messageId)) continue;
@@ -228,9 +251,9 @@ export class Deliverer {
         attempt = 0;
         continue;
       }
-      const delay = backoff[Math.min(attempt, backoff.length - 1)]!;
+      const delay = result.reason === "pane_busy" ? (this.deps.busyRetryMs ?? BUSY_RETRY_MS) : backoff[Math.min(attempt, backoff.length - 1)]!;
       this.deps.log("BRIDGE_DELIVER_RETRY", { messageId: event.messageId, reason: result.reason, delayMs: delay });
-      attempt += 1;
+      if (result.reason !== "pane_busy") attempt += 1;
       await this.sleep(delay);
     }
   }
@@ -249,24 +272,30 @@ export class Deliverer {
     this.deps.log("BRIDGE_DELIVERED", { messageId: event.messageId, seq: event.seq, mode });
   }
 
-  private async paneAlive(pane: string): Promise<boolean> {
+  private async paneAgent(pane: string, agent: StoredSession["agent"]): Promise<"ok" | "gone" | "busy"> {
     const res = await this.exec(["tmux", "display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"], { timeoutMs: 5_000 });
-    if (res.code !== 0) return false;
+    if (res.code !== 0) return "gone";
     const [dead, command = ""] = res.stdout.trim().split(" ");
-    return dead === "0" && !/^(bash|zsh|sh|fish|login)$/.test(command);
+    if (dead !== "0" || !AGENT_COMMANDS[agent].test(command)) return "gone";
+    const screen = await this.exec(["tmux", "capture-pane", "-p", "-e", "-t", pane, "-S", "-30"], { timeoutMs: 5_000 });
+    if (screen.code !== 0) return "gone";
+    return pendingInput(screen.stdout) ? "busy" : "ok";
   }
 
   private async deliverOne(event: InboxEvent): Promise<{ ok: true } | { ok: false; reason: string }> {
     const session = readSession(this.deps.sessionPath);
     if (!session) return { ok: false, reason: "no_session" };
     const prompt = formatPrompt(event, this.historyFor(event));
-    if (session.mode === "pane" && session.pane && (await this.paneAlive(session.pane))) {
-      const ok = await this.deliverPane(session, session.pane, prompt, event);
-      if (ok) {
-        this.record(event, "pane");
-        return { ok: true };
+    if (session.mode === "pane" && session.pane) {
+      const state = await this.paneAgent(session.pane, session.agent);
+      if (state === "busy") return { ok: false, reason: "pane_busy" };
+      if (state === "ok") {
+        if (await this.deliverPane(session, session.pane, prompt, event)) {
+          this.record(event, "pane");
+          return { ok: true };
+        }
+        return { ok: false, reason: "pane_unconfirmed" };
       }
-      return { ok: false, reason: "pane_unconfirmed" };
     }
     return this.deliverHeadless(session, prompt, event);
   }
@@ -285,7 +314,7 @@ export class Deliverer {
         const size = statSync(path).size;
         if (size > before) {
           const tail = readFileSync(path, "utf8").slice(path === transcript ? before : 0);
-          if (tail.includes(event.messageId)) return true;
+          if (tail.includes("[hent] INBOUND") && tail.includes(event.messageId)) return true;
         }
       }
       if (this.deps.handled.get(event.messageId)) return true;

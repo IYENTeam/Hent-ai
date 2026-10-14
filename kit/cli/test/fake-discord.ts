@@ -168,6 +168,8 @@ export const startFakeDiscord = (opts: FakeDiscordOptions = {}): FakeDiscord => 
     if (!req.headers.get("authorization")?.startsWith("Bot ")) return json({ message: "401: Unauthorized" }, 401);
     if (req.method === "GET" && path === "/users/@me") return json(botUser);
     if (req.method === "GET" && path === "/gateway/bot") return json({ url: gatewayUrl, shards: 1 });
+    const channelInfo = path.match(/^\/channels\/(\d+)$/);
+    if (channelInfo && req.method === "GET") return json({ id: channelInfo[1], type: 0, guild_id: guildId });
     const typing = path.match(/^\/channels\/([^/]+)\/typing$/);
     if (typing && req.method === "POST") return new Response(null, { status: 204 });
     const one = path.match(/^\/channels\/([^/]+)\/messages\/([^/]+)$/);
