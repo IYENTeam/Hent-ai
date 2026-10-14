@@ -290,7 +290,9 @@ export const startFakeDiscord = (opts: FakeDiscordOptions = {}): FakeDiscord => 
     },
     stop: async () => {
       for (const ws of sockets) ws.close(1001, "fake stopping");
-      await server.stop(true);
+      // Bun 1.3 resolves server.stop() only after every client closes its side; a peer that never
+      // does would hang test teardown, so the fake stops listening without waiting for that.
+      await Promise.race([server.stop(true), Bun.sleep(500)]);
     },
   } satisfies Omit<FakeDiscord, never>);
   return self;
