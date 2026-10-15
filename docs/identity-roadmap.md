@@ -54,7 +54,7 @@ Hent-ai has three runtime parts and a **shared contract** ([ADR-0002](adr/ADR-00
   interactive agent in a herdr pane), retrying until the session replies or skips.
 - Sends what the session asks (`/v1/send`, idempotent on nonce). Never calls the Hent-ai service.
 
-### Brain - a Claude Code or Codex session with `hent-mode`
+### Brain - a Codex session with `hent-mode`
 
 - Decides whether and what to answer (`kit/skill/hent-mode/references/conversation.md`) in the
   persona of `references/persona.md`.

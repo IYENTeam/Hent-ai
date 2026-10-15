@@ -40,30 +40,41 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 2. Decide by `references/conversation.md` and your per-channel notes (`references/memory.md`):
    answer, stay silent, or join a conversation nobody addressed to you, under its budgets and
    cooldowns (count your own recent posts with `hent history --channel <id>`).
-3. To answer: optionally `hent typing --to <channelId> [--for <seconds>]` (`--for` keeps the
-   indicator up until you send or the seconds run out; the command returns at once), write the
-   reply in the persona's voice,
-   rate its emotional performance (`references/affect.md`), then send it:
+3. To answer: write the reply in the persona's voice, rate its emotional performance
+   (`references/affect.md`), then ask which image fits it:
 
    ```
-   hent send --to <channelId> --reply-to <messageId> --text "<reply>" --affect "<24 values>|<confidence>"
+   hent media --channel <channelId> --text "<reply>" --affect "<24 values>|<confidence>" --json
    ```
+
+   One JSON line comes back: `path` (the closest existing image, `null` when there is none),
+   `mode`, `distance`, `threshold`, `generate` (true when no existing image fits this reply) and
+   `references` (up to three local paths of the closest images).
+
+   - `generate` false - send the reply with that image:
+
+     ```
+     hent send --to <channelId> --reply-to <messageId> --text "<reply>" --file <path>
+     ```
+
+     With `path` null, send the same command without `--file`.
+   - `generate` true - no existing image fits, so draw one and send text + image as ONE message:
+     `hent typing --to <channelId> --for 150`, then the built-in `image_gen` tool with the
+     `references` paths as `referenced_image_paths`, `view_image` on the PNG it saves,
+     `hent asset add --channel <channelId> --file <png> --emotion <emotion> --visual-affect @<json>`,
+     then the same `hent send ... --file <png>`. The procedure, the prompt and the tag format are in
+     `references/native-image.md`. On any failure send with the `path` from this step instead (or
+     without `--file` when it is null) - the reply always goes out, and it never mentions the image
+     or that anything was drawn.
+
+   `hent asset add` registers an image into the channel's set and prints `ASSET <id>`; it exits 2 on
+   malformed tags and 1 when the service refuses the image.
 
    Pass the text as one argument. Long replies are chunked automatically; the image goes on the
-   last chunk. Pre-reply media: `hent media --channel <id> --text "<user message>" --pre-reply`
+   last chunk. `hent typing --to <channelId> [--for <seconds>]` raises the typing indicator while
+   you work (`--for` keeps it up until you send or the seconds run out; the command returns at
+   once). Pre-reply media: `hent media --channel <id> --text "<user message>" --pre-reply`
    prints a file path, then `hent send --to <id> --text "" --file <path>` sends it.
-
-   Two more commands exist for working with the images themselves:
-
-   ```
-   hent media --channel <id> --text "<reply>" --affect "<24 values>|<confidence>" --json
-   hent asset add --channel <id> --file <image> --emotion <emotion> --visual-affect <json|@file> [--prompt "<text>"]
-   ```
-
-   `hent media --json` prints one JSON line - `path` (the chosen image), `mode`, `distance`,
-   `threshold`, `generate` (true when no existing image fits) and `references` (up to three local
-   paths of the closest images). `hent asset add` registers an image into the channel's set and
-   prints `ASSET <id>`; it exits 2 on malformed tags and 1 when the service refuses the image.
 4. To stay silent on purpose: `hent skip <messageId>`. Every inbound message ends in exactly one
    `hent send --reply-to` or `hent skip`; otherwise the bridge pushes it to you again later.
 
@@ -87,5 +98,6 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 - `references/persona.md` - who you are on Discord.
 - `references/conversation.md` - when to speak, joining unaddressed conversations, anti-repetition, privacy.
 - `references/affect.md` - the 24 affect dimensions for `--affect`.
+- `references/native-image.md` - drawing, tagging and sending an image when no existing one fits.
 - `references/memory.md` - per-channel and per-person notes that survive restarts.
 - `references/codex.md` - Codex setup in herdr.

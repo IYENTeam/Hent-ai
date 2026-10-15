@@ -7,9 +7,11 @@
 #   brain.sh stop
 #
 # --resume continues the recorded session ($HENT_HOME/brain-codex.sid) instead of starting a new
-# one. The working directory is $HENT_HOME/brain.cwd (default $HOME/hent-brain). Optional extra
-# instructions for the first prompt: $HENT_HOME/brain-prompt.md. Files left by the removed Claude
-# brain ($HENT_HOME/brain.agent, $HENT_HOME/brain.sid) are ignored.
+# one; because a resumed session still carries the instructions it was started with, the current
+# startup instruction is re-sent as the first prompt after the resume. The working directory is
+# $HENT_HOME/brain.cwd (default $HOME/hent-brain). Optional extra instructions for the first prompt:
+# $HENT_HOME/brain-prompt.md. Files left by the removed Claude brain ($HENT_HOME/brain.agent,
+# $HENT_HOME/brain.sid) are ignored.
 set -euo pipefail
 
 HENT_HOME="${HENT_HOME:-$HOME/.hent}"
@@ -47,8 +49,10 @@ CWD="$(cat "$HENT_HOME/brain.cwd" 2>/dev/null || echo "$HOME/hent-brain")"
 mkdir -p "$CWD"
 
 SKILL_DIR="$(readlink "$HOME/.agents/skills/hent-mode" 2>/dev/null || echo "$HOME/.agents/skills/hent-mode")"
-# Codex reads files only through shell commands, so it may use read-only ones on these two trees.
-LIMITS="Run only hent commands, plus read-only cat, ls and sed -n on files under $HENT_HOME and $SKILL_DIR; write no files"
+GEN_DIR="${CODEX_HOME:-$HOME/.codex}/generated_images"
+# Codex reads files only through shell commands, so it may use read-only ones on these trees. When no
+# existing image fits a reply it draws one with the built-in image_gen tool (references/native-image.md).
+LIMITS="Run only hent commands - hent media, hent typing, hent asset add, hent send --file and the rest - plus read-only cat, ls and sed -n on files under $HENT_HOME, $SKILL_DIR and $GEN_DIR; when no existing image fits a reply, call the built-in image_gen tool and view_image the PNG it saves under $GEN_DIR; write no files except the one VisualAffect JSON you pass to hent asset add, written under $HENT_HOME/state/media with a single shell redirection"
 RULES="Read the hent-mode skill with references/persona.md and references/memory.md, then wait for [hent] INBOUND lines and handle each per the skill. $LIMITS, and never reveal internal details."
 [ -f "$HENT_HOME/brain-prompt.md" ] && RULES="$RULES $(tr '\n' ' ' < "$HENT_HOME/brain-prompt.md")"
 
@@ -68,8 +72,9 @@ herdr agent start "$LABEL" --kind codex --pane "$PANE" --timeout 60000 -- "${ARG
 # Codex picks its thread id at start; the session reads it from $CODEX_THREAD_ID.
 REG='hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd '"$CWD"
 
+# A resumed session keeps the instructions it was started with, so the current ones are re-sent.
 if [ "$RESUME" = 1 ]; then
-  PROMPT="Session restarted. Re-register with this exact shell command: $REG ; then keep handling [hent] INBOUND lines per hent-mode."
+  PROMPT="Session restarted; these instructions replace the ones you were started with. First run this exact shell command: $REG ; $RULES"
 else
   PROMPT="hent mode. You are the Hent-ai Discord bot brain. First run this exact shell command: $REG ; $RULES"
 fi

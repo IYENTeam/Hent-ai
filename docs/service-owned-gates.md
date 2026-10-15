@@ -1,9 +1,8 @@
 # Service-owned PR and release gates
 
 Hent-ai's runtime is split by [ADR-0002](adr/ADR-0002-session-brain-bridge.md): the `hent bridge`
-daemon owns the Discord token and connection, a Claude Code or Codex session running `hent-mode` is
-the brain, and the Hent-ai service is a token-free image picker. PR and release gates protect that
-split.
+daemon owns the Discord token and connection, a Codex session running `hent-mode` is the brain, and
+the Hent-ai service is a token-free image picker. PR and release gates protect that split.
 
 ## Ownership
 

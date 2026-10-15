@@ -13,7 +13,7 @@ Three roles, three processes, each owning one thing:
 | Role | Owns | Never does |
 | --- | --- | --- |
 | `hent bridge` (always-on, launchd) | The Discord token, the gateway connection, the inbound journal, outbound sends, push delivery into the session | Call the Hent-ai service, decide whether or what to reply, log message content or the token |
-| Session (Claude Code or Codex, restartable) | Every conversational decision: whether to speak, what to say, the response affect | Read the Discord token, hold a Discord connection |
+| Session (Codex, restartable) | Every conversational decision: whether to speak, what to say, the response affect | Read the Discord token, hold a Discord connection |
 | Hent-ai service (optional) | Media verdicts, assets, profiles, channel mappings/settings, generation jobs | Hold a Discord token, call `discord.com`, run conversation/watcher/ambient logic, run a verifier |
 
 The bridge is deliberately dumb: it is the only Hent-ai component that holds the token, and its job is connection, journal and delivery. The session is the brain. The service is an image picker that `hent send` asks under one shared 2000 ms deadline and skips on any failure, so the reply always goes out (IS-4, IS-8).
@@ -45,7 +45,7 @@ The bridge reads `~/.hent/discord.token`, which must be mode 0600 or the bridge 
 | `POST /v1/edit` | `{channelId, messageId, text}` | `{messageId}` |
 | `POST /v1/typing` | `{channelId}` | `204` |
 | `POST /v1/handled` | `{messageId, how: "replied" \| "skipped"}` | `204` |
-| `POST /v1/session` | `{agent: "claude" \| "codex", sessionId, pane, cwd}` (`pane` is a herdr pane id) | `204`; writes `~/.hent/session.json` and re-injects pending-handling events |
+| `POST /v1/session` | `{agent: "codex", sessionId, pane, cwd}` (`pane` is a herdr pane id) | `204`; writes `~/.hent/session.json` and re-injects pending-handling events |
 | `GET /v1/health` | none | `{gateway: "connected" \| "reconnecting" \| "fatal", botUserId \| null, lastSeq, consumers: [{name, cursor, leaseExpiresAt \| null}]}` |
 
 Rules the parsers enforce:
