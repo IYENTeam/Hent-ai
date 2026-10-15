@@ -16,7 +16,7 @@ const SUBCOMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["typing", "show the typing indicator in a channel"],
   ["channels", "list and configure bridged channels"],
   ["memory", "read and write session memory"],
-  ["inbox", "read inbound events (debug long-poll)"],
+  ["inbox", "drain a native wake with next/done, or inspect --tail"],
   ["history", "show recent journal events for a channel"],
 ];
 

@@ -97,12 +97,24 @@ http://127.0.0.1:8789/v1/health`.
 
 Brain session: an interactive Codex session in a herdr pane (herdr is required; there is no tmux or
 headless path). `kit/brain.sh start [--resume]` creates the `hent-brain` herdr workspace, starts
-Codex in its restricted sandbox, and has it run `hent session set` (the pane comes from
-`$HERDR_PANE_ID`); `--resume` continues the recorded thread (`~/.hent/brain-codex.sid`) and
-`kit/brain.sh stop` closes the workspace. The bridge pushes each inbound message with
-`herdr agent prompt` once herdr reports the agent idle with an empty input line, and confirms it
-from the session transcript under `~/.codex/sessions/`. While no agent is in the pane, messages stay
-queued and are delivered after the next `hent session set`.
+Codex in its restricted sandbox on the shared native daemon, and has it run `hent session set`
+with the pane explicitly supplied; `--resume` continues the recorded thread
+(`~/.hent/brain-codex.sid`) and `kit/brain.sh stop` closes the workspace. The script uses
+`codex app-server daemon start` (idempotent), `--remote unix://` and an explicit cwd/environment.
+It never restarts another session's daemon.
+The initial `hent session set --configure-codex` applies the existing workspace-write/network
+policy plus HENT_HOME through `thread/settings/update` before registering. This avoids the
+remote TUI's unsupported additional-root flags without changing daemon-wide permissions or
+starting a headless thread.
+
+The bridge stores message bodies in its journal and submits one small `[hent] WAKE <id>` through
+Codex's native queue. The brain runs `hent inbox next --wake <id>`, replies/skips the ordered batch,
+then `hent inbox done --wake <id>` until `continue` is false. Busy turns are not interrupted.
+Herdr is checked only for pane lifetime; inbound delivery does not read screens, type prompts or
+scan transcripts. `state/native-wake.json` is notification ownership, not a delivery-completion
+ledger. Native queue IDs do not make retries idempotent: reconnects reconcile owned queue entries,
+and only send/skip marks a source message handled. No headless session is started when the pane
+is gone or the native thread is unloaded.
 
 ### Per-channel rules
 

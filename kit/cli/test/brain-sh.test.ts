@@ -1,7 +1,7 @@
-// kit/brain.sh runs against a fake `herdr` on PATH: every call is recorded, and `agent prompt`
-// registers the session the way the real brain would with `hent session set`.
+// The fake herdr runs the actual generated launcher, whose fake Codex records
+// its argv and registers the session the way the real brain would.
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -25,6 +25,13 @@ const scratch = (prefix: string): Scratch => {
   mkdirSync(home, { recursive: true });
   const log = join(root, "herdr.log");
   const herdr = join(bin, "herdr");
+  const codex = join(bin, "codex");
+  writeFileSync(codex, `#!/usr/bin/env bash
+if [ "$*" = "app-server daemon start" ]; then exit 0; fi
+printf '%s\\0' "$@" > "$CODEX_LOG"
+echo '{"agent":"codex","sessionId":"${SESSION_ID}","pane":"${PANE}","cwd":"/tmp"}' > "$HENT_HOME/session.json"
+`);
+  chmodSync(codex, 0o755);
   writeFileSync(
     herdr,
     `#!/usr/bin/env bash
@@ -33,8 +40,7 @@ case "$1 $2" in
   "status server") ;;
   "workspace list") echo '{"result":{"workspaces":[]}}' ;;
   "workspace create") echo '{"result":{"root_pane":{"pane_id":"${PANE}"}}}' ;;
-  "agent start") ;;
-  "agent prompt") echo '{"agent":"codex","sessionId":"${SESSION_ID}","pane":"${PANE}","cwd":"/tmp"}' > "$HENT_HOME/session.json" ;;
+  "pane run") shift 3; "$@" ;;
 esac
 exit 0
 `,
@@ -43,7 +49,7 @@ exit 0
   return { root, home, log, bin };
 };
 
-type Run = { code: number; stdout: string; stderr: string; calls: string[][] };
+type Run = { code: number; stdout: string; stderr: string; calls: string[][]; codexArgs: string[] };
 
 const run = async (s: Scratch, args: readonly string[], env: Record<string, string> = {}): Promise<Run> => {
   const proc = Bun.spawn(["bash", BRAIN_SH, ...args], {
@@ -52,6 +58,10 @@ const run = async (s: Scratch, args: readonly string[], env: Record<string, stri
       HOME: s.root,
       HENT_HOME: s.home,
       HERDR_LOG: s.log,
+      CODEX_LOG: `${s.log}.codex`,
+      TMPDIR: process.env.TMPDIR,
+      NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE,
+      BUN_RUNTIME_TRANSPILER_CACHE_PATH: process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH,
       ...env,
     },
     stdout: "pipe",
@@ -62,12 +72,12 @@ const run = async (s: Scratch, args: readonly string[], env: Record<string, stri
     .split("\u001e")
     .filter((record) => record.length > 0)
     .map((record) => record.split("\u0000").filter((arg) => arg.length > 0));
-  return { code, stdout, stderr, calls };
+  const codexArgs = existsSync(`${s.log}.codex`) ? readFileSync(`${s.log}.codex`, "utf8").split("\u0000").filter(Boolean) : [];
+  return { code, stdout, stderr, calls, codexArgs };
 };
 
-const prompts = (calls: readonly string[][]): string[] => calls.filter((c) => c[1] === "agent" && c[2] === "prompt").map((c) => c[4]!);
 /** The command the session must run first; everything after it is the instruction block. */
-const register = (cwd: string): string => `hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd ${cwd}`;
+const register = (cwd: string): string => `hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd ${cwd} --pane ${PANE} --configure-codex`;
 const instruction = (prompt: string, cwd: string): string => prompt.slice(prompt.indexOf(register(cwd)) + register(cwd).length);
 
 test("brain.sh start sends a startup instruction that allows the native image workflow", async () => {
@@ -81,16 +91,19 @@ test("brain.sh start sends a startup instruction that allows the native image wo
     "status server",
     "workspace list",
     "workspace create",
-    "agent start",
-    "agent prompt",
+    "pane run",
   ]);
-  expect(got.calls[3]!.slice(1, 11)).toEqual([
-    "agent", "start", "hent-brain", "--kind", "codex", "--pane", PANE, "--timeout", "60000", "--",
-  ]);
+  expect(got.calls[3]?.slice(1)).toEqual(["pane", "run", PANE, "bash", join(s.home, "state/brain-launch.sh")]);
+  const startup = got.codexArgs;
+  expect(startup.slice(0, 4)).toEqual(["--remote", "unix://", "-C", join(s.root, "hent-brain")]);
+  expect(startup).toContain(`shell_environment_policy.set.HENT_HOME=${JSON.stringify(s.home)}`);
+  expect(startup).toContain(`shell_environment_policy.set.HERDR_PANE_ID=${JSON.stringify(PANE)}`);
+  expect(startup.some((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))).toBe(false);
+  expect(startup).not.toContain("--add-dir");
   expect(readFileSync(join(s.home, "brain-codex.sid"), "utf8").trim()).toBe(SESSION_ID);
 
   const cwd = join(s.root, "hent-brain");
-  const [prompt] = prompts(got.calls);
+  const prompt = got.codexArgs.at(-1);
   expect(prompt).toContain(register(cwd));
 
   // The native image workflow is allowed explicitly: the tools it calls, the commands it runs and
@@ -118,15 +131,19 @@ test("brain.sh start --resume re-sends the current startup instruction as the fi
   const resumed = await run(s, ["start", "--resume"], { CODEX_HOME: codexHome });
   expect(resumed.stderr).toBe("");
   expect(resumed.code).toBe(0);
-  expect(resumed.calls.find((c) => c[2] === "start")!.slice(10)).toEqual([
-    "--", "resume", "-s", "workspace-write", "-a", "never", "-c", "sandbox_workspace_write.network_access=true", "--add-dir", s.home, SESSION_ID,
-  ]);
+  const startArgs = resumed.codexArgs;
+  expect(startArgs.slice(0, 5)).toEqual(["resume", "--remote", "unix://", "-C", join(s.root, "hent-brain")]);
+  expect(startArgs.slice(-2, -1)).toEqual([SESSION_ID]);
+  expect(startArgs).toContain("sandbox_workspace_write.network_access=true");
+  expect(startArgs).toContain(`shell_environment_policy.set.HENT_HOME=${JSON.stringify(s.home)}`);
+  expect(startArgs).toContain(`shell_environment_policy.set.HERDR_PANE_ID=${JSON.stringify(PANE)}`);
+  expect(startArgs.some((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))).toBe(false);
 
   // A resumed session still carries its old instructions, so the current ones are re-sent verbatim.
   const cwd = join(s.root, "hent-brain");
-  const [resumedPrompt] = prompts(resumed.calls);
+  const resumedPrompt = resumed.codexArgs.at(-1);
   expect(resumedPrompt).toContain(register(cwd));
-  expect(instruction(resumedPrompt!, cwd)).toBe(instruction(prompts(first.calls)[0]!, cwd));
+  expect(instruction(resumedPrompt!, cwd)).toBe(instruction(first.codexArgs.at(-1)!, cwd));
   expect(instruction(resumedPrompt!, cwd)).toContain(join(codexHome, "generated_images"));
   expect(instruction(resumedPrompt!, cwd)).toContain("image_gen");
   expect(instruction(resumedPrompt!, cwd)).toContain("Extra house rule.");
@@ -139,4 +156,29 @@ test("brain.sh start --resume without a recorded session refuses to start anythi
   expect(got.code).toBe(1);
   expect(got.stderr.trim()).toBe(`brain: no recorded Codex session (${join(s.home, "brain-codex.sid")})`);
   expect(got.calls.some((c) => c[2] === "create" || c[2] === "start" || c[2] === "prompt")).toBe(false);
+}, 20_000);
+
+test("brain.sh forwards non-default bridge and image switches to the shared daemon thread", async () => {
+  const s = scratch("hent-brain-env-");
+  const got = await run(s, ["start"], { HENT_BRIDGE_PORT: "19087", HENT_ENABLED: "0", HENT_URL: "http://127.0.0.1:19088" });
+  expect(got.code).toBe(0);
+  const args = got.codexArgs;
+  expect(args).toContain('shell_environment_policy.set.HENT_BRIDGE_PORT="19087"');
+  expect(args).toContain('shell_environment_policy.set.HENT_ENABLED="0"');
+  expect(args).toContain('shell_environment_policy.set.HENT_URL="http://127.0.0.1:19088"');
+}, 20_000);
+
+test("brain.sh preserves long quoted startup input without sending it through terminal input", async () => {
+  const s = scratch("hent-brain-long-");
+  const marker = join(s.root, "must-not-exist");
+  const extra = `${"long input ".repeat(1_000)} 'quoted' $(touch ${marker}) \`touch ${marker}\``;
+  writeFileSync(join(s.home, "brain-prompt.md"), extra);
+  const got = await run(s, ["start"]);
+  expect(got.code).toBe(0);
+  expect(got.codexArgs.at(-1)?.endsWith(extra)).toBe(true);
+  expect(existsSync(marker)).toBe(false);
+  expect(statSync(join(s.home, "state/brain-launch.sh")).mode & 0o777).toBe(0o600);
+  expect(got.calls.find((call) => call[1] === "pane" && call[2] === "run")?.slice(3)).toEqual([
+    PANE, "bash", join(s.home, "state/brain-launch.sh"),
+  ]);
 }, 20_000);

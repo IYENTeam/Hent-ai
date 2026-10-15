@@ -2,6 +2,8 @@
 // bridge.secret on every route except /v1/health, strict request parsing via contract.ts.
 
 import { timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Discord } from "../messenger/discord.ts";
 import { MessengerError } from "../messenger/http.ts";
 import type { Clock } from "../run.ts";
@@ -20,10 +22,12 @@ import {
   parseHandledRequest,
   parseHistoryQuery,
   parseInboxQuery,
+  parsePendingQuery,
   parseSendMultipart,
   parseSendRequest,
   parseSessionRequest,
   parseTypingRequest,
+  parseWakeRequest,
   type ParseResult,
   type SendRequest,
   type SessionRequest,
@@ -31,6 +35,8 @@ import {
   typingTicks,
 } from "./contract.ts";
 import { type BridgeLog, type ConsumerStore, type HandledLedger, type Journal, type SentLedger, writePrivateFile } from "./journal.ts";
+import { ProcessingInbox, StaleWakeError } from "./inbox.ts";
+import { CodexRpc, CodexRpcError } from "./codex-rpc.ts";
 
 /**
  * Extension points for later todos. `onJournaled` fires once per newly journaled event in seq
@@ -40,6 +46,8 @@ import { type BridgeLog, type ConsumerStore, type HandledLedger, type Journal, t
 export type BridgeHooks = {
   readonly onJournaled?: (event: InboxEvent) => void;
   readonly onSessionSet?: (session: SessionRequest) => void;
+  readonly onHandled?: (messageId: string) => void;
+  readonly onInboxDrained?: () => void;
 };
 
 export type BridgeServerDeps = {
@@ -49,7 +57,9 @@ export type BridgeServerDeps = {
   readonly consumers: ConsumerStore;
   readonly sent: SentLedger;
   readonly handled: HandledLedger;
+  readonly inbox: ProcessingInbox;
   readonly sessionPath: string;
+  readonly codexHome?: string;
   readonly status: () => { gateway: GatewayState; botUserId: string | null };
   readonly discord: () => Discord | null;
   readonly clock: Clock;
@@ -143,7 +153,10 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
   };
 
   const markHandled = (messageId: string, how: "replied" | "skipped"): void => {
-    if (handled.mark({ messageId, how, at: new Date(clock.now()).toISOString() })) log("BRIDGE_HANDLED", { messageId, how });
+    if (handled.mark({ messageId, how, at: new Date(clock.now()).toISOString() })) {
+      log("BRIDGE_HANDLED", { messageId, how });
+      deps.hooks.onHandled?.(messageId);
+    }
   };
 
   const withAmbiguityRetry = async (op: () => Promise<string>): Promise<string> => {
@@ -261,12 +274,27 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
     }
     if (!(Object.values(BRIDGE_ROUTES) as string[]).includes(pathname)) return new Response("not found", { status: 404 });
     if (!authorized(req, deps.secret)) return fail(401, "unauthorized", "missing or wrong bearer");
-    const expected = pathname === BRIDGE_ROUTES.inbox || pathname === BRIDGE_ROUTES.history ? "GET" : "POST";
+    const expected = pathname === BRIDGE_ROUTES.inbox || pathname === BRIDGE_ROUTES.pending || pathname === BRIDGE_ROUTES.history ? "GET" : "POST";
     if (req.method !== expected) return new Response("method not allowed", { status: 405, headers: { allow: expected } });
 
     switch (pathname) {
       case BRIDGE_ROUTES.inbox:
         return inbox(req, url.searchParams);
+      case BRIDGE_ROUTES.pending:
+      case BRIDGE_ROUTES.drained: {
+        const body = pathname === BRIDGE_ROUTES.pending ? null : await readJson(req);
+        const parsed = body === null ? parsePendingQuery(url.searchParams) : body.ok ? parseWakeRequest(body.value) : body;
+        if (!parsed.ok) return invalid(parsed.error);
+        try {
+          if (pathname === BRIDGE_ROUTES.pending) return json(deps.inbox.next(parsed.value));
+          const result = deps.inbox.done(parsed.value);
+          deps.hooks.onInboxDrained?.();
+          return json(result);
+        } catch (error) {
+          if (error instanceof StaleWakeError) return fail(409, "stale_wake", error.message);
+          throw error;
+        }
+      }
       case BRIDGE_ROUTES.history: {
         const parsed = parseHistoryQuery(url.searchParams);
         if (!parsed.ok) return invalid(parsed.error);
@@ -311,9 +339,30 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const body = await readJson(req);
         const parsed = body.ok ? parseSessionRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
-        writePrivateFile(deps.sessionPath, `${JSON.stringify({ ...parsed.value, updatedAt: new Date(clock.now()).toISOString() }, null, 2)}\n`);
-        log("BRIDGE_SESSION_SET", { agent: parsed.value.agent, pane: parsed.value.pane });
-        deps.hooks.onSessionSet?.(parsed.value);
+        const { configureCodex, ...session } = parsed.value;
+        if (configureCodex) {
+          try {
+            // The sandboxed CLI cannot open the daemon's Unix socket. Configure
+            // the already-running TUI from the bridge before enabling wakeups.
+            const rpc = await CodexRpc.connect({
+              socketPath: join(deps.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-control/app-server-control.sock"),
+            });
+            try {
+              await rpc.request("thread/settings/update", {
+                threadId: session.sessionId,
+                sandboxPolicy: { type: "workspaceWrite", writableRoots: [dirname(deps.sessionPath)], networkAccess: true },
+              });
+            } finally {
+              rpc.close();
+            }
+          } catch (error) {
+            if (error instanceof CodexRpcError) return fail(503, "codex_unavailable", error.message);
+            throw error;
+          }
+        }
+        writePrivateFile(deps.sessionPath, `${JSON.stringify({ ...session, updatedAt: new Date(clock.now()).toISOString() }, null, 2)}\n`);
+        log("BRIDGE_SESSION_SET", { agent: session.agent, pane: session.pane });
+        deps.hooks.onSessionSet?.(session);
         return new Response(null, { status: 204 });
       }
     }

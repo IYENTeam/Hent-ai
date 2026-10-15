@@ -78,6 +78,31 @@ const inboxLines = (home: string): InboxEvent[] =>
 
 const mode = (path: string): number => statSync(path).mode & 0o777;
 
+test("processing inbox separates authenticated receipt from durable completion", async () => {
+  const { fake, bridge } = await setup();
+  const session = { agent: "codex", sessionId: "inbox-thread", pane: "w1:p1", cwd: "/tmp" };
+  expect((await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify(session) })).status).toBe(204);
+  const message = fake.addMessage(CH, { content: "raw\n$(id) `text`" });
+  await journaled(bridge, message.id);
+  const wake = bridge.inbox.prepare(session.sessionId);
+  if (!wake) throw new Error("expected pending wake");
+  const ownership = { wakeId: wake.wakeId, sessionId: session.sessionId };
+  const pending = `/v1/inbox/pending?${new URLSearchParams(ownership)}`;
+  expect((await api(bridge, pending, { auth: false })).status).toBe(401);
+  expect((await api(bridge, `${pending}&wakeId=duplicate`)).status).toBe(400);
+  expect((await api(bridge, `/v1/inbox/pending?${new URLSearchParams({ ...ownership, sessionId: "wrong" })}`)).status).toBe(409);
+  const fetched = await Promise.all([api(bridge, pending), api(bridge, pending)]);
+  for (const response of fetched) {
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ events: [{ messageId: message.id, content: "raw\n$(id) `text`" }] });
+  }
+  expect(await (await api(bridge, "/v1/inbox/drained", { method: "POST", body: JSON.stringify(ownership) })).json()).toEqual({ continue: true });
+  expect((await api(bridge, "/v1/handled", { method: "POST", body: JSON.stringify({ messageId: message.id, how: "skipped" }) })).status).toBe(204);
+  expect(await (await api(bridge, pending)).json()).toEqual({ events: [] });
+  expect(await (await api(bridge, "/v1/inbox/drained", { method: "POST", body: JSON.stringify(ownership) })).json()).toEqual({ continue: false });
+  expect((await api(bridge, pending)).status).toBe(409);
+});
+
 test("IDENTIFY carries exactly GUILDS|GUILD_MESSAGES|DIRECT_MESSAGES|MESSAGE_CONTENT and heartbeats are ACKed", async () => {
   const { fake, bridge, logs } = await setup();
   expect(GATEWAY_INTENTS).toBe(1 | 512 | 4096 | 32768);

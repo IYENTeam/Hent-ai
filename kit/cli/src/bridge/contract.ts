@@ -21,6 +21,8 @@ export const MAX_TYPING_HOLD_SECONDS = 600;
 
 export const BRIDGE_ROUTES = {
   inbox: "/v1/inbox",
+  pending: "/v1/inbox/pending",
+  drained: "/v1/inbox/drained",
   history: "/v1/history",
   send: "/v1/send",
   edit: "/v1/edit",
@@ -34,6 +36,8 @@ export type BridgeErrorCode =
   | "invalid_request"
   | "unauthorized"
   | "lease_held"
+  | "stale_wake"
+  | "codex_unavailable"
   | "discord_error"
   | "gateway_fatal";
 
@@ -146,6 +150,8 @@ export interface SessionRequest {
   sessionId: string;
   pane: string;
   cwd: string;
+  /** Apply this running thread's Hent sandbox before enabling inbox wakeups. */
+  configureCodex?: boolean;
 }
 
 export type GatewayState = "connected" | "reconnecting" | "fatal";
@@ -312,6 +318,27 @@ export function parseInboxQuery(params: URLSearchParams): ParseResult<InboxQuery
   });
 }
 
+export function parseWakeRequest(input: unknown): ParseResult<{ wakeId: string; sessionId: string }> {
+  return run(() => {
+    const obj = asObject(input, "wake request");
+    onlyKeys(obj, ["wakeId", "sessionId"], "wake request");
+    const wakeId = str(obj, "wakeId");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(wakeId)) fail("wakeId must be a UUID");
+    const sessionId = str(obj, "sessionId");
+    if (!SESSION_ID.test(sessionId)) fail("sessionId must match [A-Za-z0-9._-]{1,128}");
+    return { wakeId, sessionId };
+  });
+}
+
+export function parsePendingQuery(params: URLSearchParams): ParseResult<{ wakeId: string; sessionId: string }> {
+  return run(() => {
+    const query = queryParams(params, ["wakeId", "sessionId"], "pending query");
+    const parsed = parseWakeRequest(Object.fromEntries(query));
+    if (!parsed.ok) fail(parsed.error);
+    return parsed.value;
+  });
+}
+
 export function parseHistoryQuery(params: URLSearchParams): ParseResult<HistoryQuery> {
   return run(() => {
     const q = queryParams(params, ["channelId", "limit"], "history query");
@@ -402,7 +429,7 @@ export function parseHandledRequest(input: unknown): ParseResult<HandledRequest>
 export function parseSessionRequest(input: unknown): ParseResult<SessionRequest> {
   return run(() => {
     const obj = asObject(input, "session request");
-    onlyKeys(obj, ["agent", "sessionId", "pane", "cwd"], "session request");
+    onlyKeys(obj, ["agent", "sessionId", "pane", "cwd", "configureCodex"], "session request");
     const agent = oneOf(obj, "agent", ["codex"] as const);
     const sessionId = str(obj, "sessionId");
     if (!SESSION_ID.test(sessionId)) fail("sessionId must match [A-Za-z0-9._-]{1,128}");
@@ -410,7 +437,8 @@ export function parseSessionRequest(input: unknown): ParseResult<SessionRequest>
     if (!HERDR_PANE.test(pane)) fail("pane must be a herdr pane id like w1:p3");
     const cwd = str(obj, "cwd");
     if (!cwd.startsWith("/") || cwd.length > 4096 || CONTROL.test(cwd)) fail("cwd must be an absolute path");
-    return { agent, sessionId, pane, cwd };
+    if (obj.configureCodex !== undefined && typeof obj.configureCodex !== "boolean") fail("configureCodex must be a boolean");
+    return { agent, sessionId, pane, cwd, ...(obj.configureCodex === true ? { configureCodex: true } : {}) };
   });
 }
 
