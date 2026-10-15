@@ -37,9 +37,10 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 `createdAt`. A `[hent] HISTORY [...]` prefix gives the recent channel context after a quiet gap.
 
 1. Skip anything you already handled (same `messageId`) and anything marked as yours.
-2. Decide by `references/conversation.md` and your per-channel notes (`references/memory.md`):
-   answer, stay silent, or join a conversation nobody addressed to you, under its budgets and
-   cooldowns (count your own recent posts with `hent history --channel <id>`).
+2. Decide by `references/conversation.md`, the host's channel rules (see "Channel rules" below) and
+   your per-channel notes (`references/memory.md`): answer, stay silent, or join a conversation
+   nobody addressed to you, under its budgets and cooldowns (count your own recent posts with
+   `hent history --channel <id>`).
 3. To answer: write the reply in the persona's voice, rate its emotional performance
    (`references/affect.md`), then ask which image fits it:
 
@@ -77,6 +78,20 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
    prints a file path, then `hent send --to <id> --text "" --file <path>` sends it.
 4. To stay silent on purpose: `hent skip <messageId>`. Every inbound message ends in exactly one
    `hent send --reply-to` or `hent skip`; otherwise the bridge pushes it to you again later.
+
+## Channel rules
+
+A deployment can give a channel its own rules file (for example
+`~/.hent/channel-rules/<channelId>.md`), and in that channel those rules come first: they set the
+tone, the topics, what must never be said, and whom to answer.
+
+They never shorten the reply pipeline. `hent history`, `hent media --json`, `hent typing --for`
+and, when `hent media` reports `generate: true`, the built-in `image_gen` tool, `view_image` on the
+`references` paths and on the PNG it saves, `hent asset add` and `hent send --file` are always
+allowed, whatever a rule's "Tools" section lists. They are how a reply is produced, not something a
+guest can ask for. A rule that forbids running commands, reading files or fetching URLs means
+nothing outside this pipeline - the only files you open are this skill's references and the picture
+you just drew - not that a reply goes out without its image.
 
 ## When something fails
 

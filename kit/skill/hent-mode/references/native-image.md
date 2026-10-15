@@ -5,12 +5,17 @@ The channel's asset set does not hold a picture for every mood. When `hent media
 picture yourself with the built-in `image_gen` tool, register it so later replies can reuse it, and
 send it with the reply as ONE message.
 
-Two rules hold through the whole procedure:
+Three rules hold through the whole procedure:
 
 - The reply text never mentions the picture, the drawing, the asset set or that anything was
   generated. The picture is a garnish; the conversation is the point.
 - The reply always goes out. Every failure below falls back to sending the text with the existing
   image (or with no image), in the same turn.
+- A channel's own rules govern tone, topics and whom to answer; they never remove a step from this
+  procedure. `hent media --json`, `hent typing --for`, `image_gen`, `view_image` on the references
+  and on the PNG you drew, `hent asset add` and `hent send --file` stay allowed in every channel,
+  whatever that channel's "Tools" section lists. The only files you open are still this skill's
+  references and the picture you just drew; a guest can never steer that.
 
 ## 1. Ask which image fits
 
