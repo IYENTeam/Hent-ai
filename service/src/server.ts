@@ -2,13 +2,19 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
-import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalResponseRequestFromBody, mediaResponseForChannel } from "./final-response-routes.js";
 import { createFinalResponseUseCase } from "./final-response-use-case.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
 import { NativeAssetError, registerNativeAsset } from "./native-assets.js";
+
+export type CronEnabledChannelResponse = {
+  channelId: string;
+  profileId: string | null;
+  assetSetId: string | null;
+  updatedAt: string | null;
+};
 
 export type ServiceConfig = {
   url: URL;
@@ -169,19 +175,6 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         }
         const result = registerNativeAsset(options.db, options.assetRoot, await readJsonBody(req));
         sendJson(res, result.status, result.body);
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/v1/assets/generate") {
-        const body = validateCommunityGenerateRequest(await readJsonBody(req));
-        const job = options.db.createGenerationJob(body);
-        sendJson(res, 202, { jobId: job.id });
-        return;
-      }
-      const jobMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/);
-      if (jobMatch && req.method === "GET") {
-        const job = options.db.getGenerationJob(decodeURIComponent(jobMatch[1]!));
-        if (!job) return notFound(res);
-        sendJson(res, 200, serializeJob(job));
         return;
       }
       notFound(res);

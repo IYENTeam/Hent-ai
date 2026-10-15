@@ -1,7 +1,7 @@
 {
   "name": "@hent-ai/service",
   "version": "0.1.0",
-  "description": "HTTP service for Hent-ai runtime, profile, asset, importer, and generation job state",
+  "description": "HTTP service for Hent-ai runtime, profile, asset, and importer state",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

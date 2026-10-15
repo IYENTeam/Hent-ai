@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { ADAPTIVE_SCHEMA_SQL } from "./db-schema-adaptive.js";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -85,16 +85,6 @@ CREATE TABLE IF NOT EXISTS emotion_mappings (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(profile_id, asset_set_id, emotion)
-);
-
-CREATE TABLE IF NOT EXISTS generation_jobs (
-  id TEXT PRIMARY KEY,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
-  request_json TEXT NOT NULL,
-  result_json TEXT,
-  error TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS verifier_cache (
@@ -204,7 +194,23 @@ function columnExists(db: Database.Database, table: string, column: string): boo
   return db.prepare<[], { readonly name: string }>(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
 }
 
+/**
+ * Schema 7 drops the generation job queue: the brain generates images natively and registers them
+ * through `POST /v1/assets`. Rows mean unfinished work this code can no longer run, so the upgrade
+ * aborts before touching the database instead of discarding them.
+ */
+function dropGenerationJobs(db: Database.Database): void {
+  const table = db.prepare<[string], { readonly name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get("generation_jobs");
+  if (!table) return;
+  const rows = db.prepare<[], { readonly count: number }>("SELECT COUNT(*) AS count FROM generation_jobs").get()?.count ?? 0;
+  if (rows > 0) {
+    throw new Error(`Refusing to drop generation_jobs: ${rows} row(s) present. The generation queue was removed in schema ${SCHEMA_VERSION}; export and delete those rows before starting this version.`);
+  }
+  db.exec("DROP TABLE generation_jobs");
+}
+
 export function initializeServiceSchema(db: Database.Database, appliedAt: string): void {
+  dropGenerationJobs(db);
   db.exec(SCHEMA_SQL);
   db.exec(ADAPTIVE_SCHEMA_SQL);
   if (!columnExists(db, "conversation_raw_events", "archived_at_ms")) {

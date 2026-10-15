@@ -8,7 +8,7 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 
 | Path | Role |
 | --- | --- |
-| `service/` | Token-free image picker: final-response verdict (affect-routed media selection + cache), channel/profile mappings, asset storage, generation jobs, static media. No Discord code, no messenger token, no conversation engine. |
+| `service/` | Token-free image picker: final-response verdict (affect-routed media selection + cache), channel/profile mappings, asset storage and native asset registration (`POST /v1/assets`), static media. No Discord code, no messenger token, no conversation engine, no generation queue. |
 | `kit/` | Session kit. `kit/cli` (bun, zero runtime deps, bin `hent`): `hent bridge` (Discord token, gateway, inbound journal, push delivery into the session, send API), `hent send`/`skip`/`media`/`session`/`channels`/`memory`. `kit/skill/hent-mode` is the skill that makes a Codex session the bot's brain. |
 | `shared/` | Contract layer: `shared/emotions.ts` (canonical 6-emotion set), `shared/affect.ts` (AffectSpaceV2), `shared/profile.ts`, `shared/db.ts`. |
 | `generate/` | Asset generation helper (`hent-ai generate`/`profile`/`sets` CLI). Codex-backed image generation; consumes shared emotion definitions. |
@@ -21,7 +21,7 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 - The service holds no messenger token and no Discord code (`scripts/service-owned-boundary-check.mjs` enforces it). Only `hent bridge` reads the Discord token (`~/.hent/discord.token`, 0600).
 - The session kit has zero runtime npm dependencies (bun builtins only) and fails open: a slow or down service never adds more than about 2 s to a reply and never blocks it.
 - Hent-ai must never block or slow the agent's main work; every feature stays switchable (`HENT_ENABLED=0`, per-channel `hent channels`).
-- Image generation costs real money. Never trigger generation (Codex / `/v1/assets/generate` worker) in tests without mocking.
+- Image generation costs real money. The brain generates images natively and registers them with `POST /v1/assets`; the `generate` CLI generates whole sets through Codex. Never trigger a real image generation in tests.
 - Affect routing: the session states the reply's affect (`hent send --affect`); the service ranks every image in the channel's fully migrated VisualAffectV2 set. Partial/malformed metadata keeps the set on deterministic legacy fallback.
 
 ## Build & Test
@@ -36,7 +36,7 @@ cd service && npx vitest run
 cd kit/cli && bun test && bunx tsc --noEmit -p .
 ```
 
-See [`docs/agent-runbook.md`](docs/agent-runbook.md) for the bridge, the session setup, cutover, and the image-generation job path.
+See [`docs/agent-runbook.md`](docs/agent-runbook.md) for the bridge, the session setup, cutover, and native image registration.
 
 ## Forbidden
 
