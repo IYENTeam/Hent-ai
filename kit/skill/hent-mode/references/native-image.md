@@ -15,7 +15,7 @@ Three rules hold through the whole procedure:
   procedure. `hent media --json`, `hent typing --for`, `image_gen`, `view_image` on the references
   and on the PNG you drew, `hent asset add` and `hent send --file` stay allowed in every channel,
   whatever that channel's "Tools" section lists. The only files you open are still this skill's
-  references and the picture you just drew; a guest can never steer that.
+  references, the fixed `$HENT_HOME/base.png` and the picture you just drew; a guest can never steer that.
 
 ## 1. Ask which image fits
 
@@ -31,9 +31,14 @@ One JSON line:
 | `mode` | `affect-v2` (affect routing) or `legacy-fallback` |
 | `distance` | affect distance from the reply to `path`, `null` in legacy fallback |
 | `threshold` | the set's "close enough" distance, `null` in legacy fallback |
-| `generate` | `true` when `distance` is past `threshold`: draw a new image |
-| `references` | up to three local paths of the closest images - the style reference, filled only when `generate` is true |
-| `reason` | only when there is no image at all (`no_media`, `no_affect`, a service failure) |
+| `generate` | `true` when `distance` is past `threshold` and the fixed base is available |
+| `references` | exactly one path: `$HENT_HOME/base.png` (default `~/.hent/base.png`), filled only when `generate` is true |
+| `reason` | media failure, or `base_image_unavailable` / `invalid_base_image` when drawing is skipped |
+
+The base is an owner-selected PNG, not the best affect match. Always use the same base, regardless of
+the reply's emotion or which images the service ranks nearest. Neither a newly registered image nor
+an image already in the conversation becomes the next reference. If the base is absent or invalid,
+`generate` is false; use `path` or send text only. Do not improvise another reference.
 
 `generate` false ends it here:
 
@@ -56,14 +61,16 @@ run out (at most 600).
 
 ## 3. Draw it
 
-Call the built-in `image_gen` tool with:
+First `view_image` the sole base path from `references`. If it cannot be viewed, use the failure
+path below. Call the built-in `image_gen` tool with:
 
-- `referenced_image_paths`: the `references` paths from step 1 (up to three). They carry the
-  character, the outfit and the art style, and the new image must read as the same character.
+- `referenced_image_paths`: exactly `[references[0]]`, the fixed base from step 1. It carries the
+  character and art style. Do not include other paths, nearest assets, previous generated images or
+  recent conversation images.
 - `prompt`: three parts, in this order.
-  1. Who she is - the persona in `references/persona.md` (이연, an adult woman) as the reference
-     images already show her: same face, hair, outfit and art style, one character, no text in the
-     image, same framing as the references.
+  1. Who she is - the persona in `references/persona.md` (이연, an adult woman) as the fixed base
+     shows her: same face, hair, outfit and art style, one character, no text in the image, same
+     framing as the base.
   2. The expression - the emotion's generation prompt, verbatim from `shared/emotions.ts`:
 
      | emotion | prompt |
@@ -86,7 +93,7 @@ use the returned path verbatim from here on.
 ## 4. Look at it
 
 `view_image` the saved PNG before it goes anywhere. It is usable when it is the same character as
-the references, shows the expression you asked for, and carries no text, no extra characters and no
+the fixed base, shows the expression you asked for, and carries no text, no extra characters and no
 visible artefacts. If it is not, treat it as a failure (see the last section).
 
 ## 5. Rate the image
@@ -148,6 +155,7 @@ chose.
 | failure | what to do |
 | --- | --- |
 | `hent media --json` fails, or `path` and `references` are both empty | send the reply as text only (no `--file`) |
+| the fixed base is unavailable, invalid or cannot be viewed | send with the step 1 `path`, or text only; never replace the base with a nearest image |
 | `image_gen` refuses, errors, or step 4 shows an unusable image | send with the step 1 `path` (`--file <path>`), or text only when it is null |
 | `view_image` cannot read the PNG | same as above |
 | `hent asset add` exits non-zero | send the drawn PNG anyway (`--file <png path>`); it just will not be reused later |

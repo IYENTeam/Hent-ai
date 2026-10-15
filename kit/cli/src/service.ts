@@ -32,8 +32,6 @@ export type AssetRegistration = {
 export const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 /** One deadline per send; the caller creates it and hands the same signal to verdict() and fetchMedia(). */
 export const sendDeadline = (): AbortSignal => AbortSignal.timeout(2000);
-/** Style references are fetched only when the service asked for a drawing, which costs tens of seconds anyway. */
-export const referenceDeadline = (): AbortSignal => AbortSignal.timeout(10_000);
 /** Registering an image uploads it and writes the asset row; an explicit command, not a reply. */
 export const assetDeadline = (): AbortSignal => AbortSignal.timeout(15_000);
 

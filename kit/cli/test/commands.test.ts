@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
 import { parseChannelConfig } from "../src/bridge/index.ts";
 import { DEFAULT_MEDIA_DEADLINES, chunkText, cmdAsset, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, cmdTyping, readChannels } from "../src/commands.ts";
-import { referenceDeadline, sendDeadline } from "../src/service.ts";
+import { sendDeadline } from "../src/service.ts";
 import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
@@ -157,27 +157,56 @@ test("hent media saves the chosen image into a fresh HENT_HOME and prints its pa
   expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
 });
 
-test("hent media --json reports the fit signal and downloads the drawing's references, freshly on every call", async () => {
+test("hent media --json uses the same fixed base even when the nearest images change", async () => {
   const service = startService();
   service.routing = ROUTING;
   const home = tempHome("hent-media-json-");
+  const basePath = join(home, "base.png");
+  const baseBytes = new Uint8Array([...PNG, 5]);
+  writeFileSync(basePath, baseBytes, { mode: 0o600 });
   const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
   const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], env));
   expect(code).toBe(0);
   expect(lines).toHaveLength(1);
   const out = JSON.parse(lines[0]!) as { path: string; mode: string; distance: number; threshold: number; generate: boolean; references: string[] };
   expect(out).toMatchObject({ mode: "affect-v2", distance: 0.42, threshold: 0.3, generate: true });
-  for (const file of [out.path, ...out.references]) {
-    expect(file.startsWith(join(home, "state", "media"))).toBe(true);
-    expect(new Uint8Array(readFileSync(file))).toEqual(PNG);
-    expect((statSync(file).mode & 0o777).toString(8)).toBe("600");
-  }
-  expect(out.references).toHaveLength(3);
-  expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toHaveLength(4);
+  expect(out.path.startsWith(join(home, "state", "media"))).toBe(true);
+  expect(new Uint8Array(readFileSync(out.path))).toEqual(PNG);
+  expect(out.references).toEqual([basePath]);
+  expect(new Uint8Array(readFileSync(basePath))).toEqual(baseBytes);
+  expect(service.requests).toEqual(["POST /v1/final-response/verdict", "GET /static/sets/s/happy-1.png"]);
 
-  await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], env));
-  expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toHaveLength(8);
+  service.routing = { ...ROUTING, distance: 0.6, nearest: [{ url: "/static/new-image.png", filename: "new-image.png", distance: 0.6 }] };
+  const second = await capture(() => cmdMedia(["--channel", CH, "--text", "another mood", "--affect", AFFECT, "--json"], env));
+  expect(JSON.parse(second.lines[0]!)).toMatchObject({ generate: true, distance: 0.6, references: [basePath] });
+  expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toEqual([
+    "GET /static/sets/s/happy-1.png", "GET /static/sets/s/happy-1.png",
+  ]);
+  expect(new Uint8Array(readFileSync(basePath))).toEqual(baseBytes);
 });
+
+for (const state of ["missing", "directory", "invalid"] as const) {
+  test(`hent media --json falls back to the chosen image when the fixed base is ${state}`, async () => {
+    const service = startService();
+    service.routing = ROUTING;
+    const home = tempHome("hent-media-base-");
+    const basePath = join(home, "base.png");
+    if (state === "directory") mkdirSync(basePath);
+    if (state === "invalid") writeFileSync(basePath, "not a PNG");
+    const { code, lines } = await capture(() => cmdMedia(
+      ["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"],
+      { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" },
+    ));
+    const out = JSON.parse(lines[0]!);
+    expect(code).toBe(0);
+    expect(out).toMatchObject({
+      mode: "affect-v2", distance: 0.42, threshold: 0.3, generate: false, references: [],
+      reason: state === "invalid" ? "invalid_base_image" : "base_image_unavailable",
+    });
+    expect(new Uint8Array(readFileSync(out.path))).toEqual(PNG);
+    expect(service.requests).toEqual(["POST /v1/final-response/verdict", "GET /static/sets/s/happy-1.png"]);
+  });
+}
 
 test("hent media --json fetches no references when an existing image fits", async () => {
   const service = startService();
@@ -199,7 +228,7 @@ test("hent media --json gives the reply its send deadline and answers as soon as
   const run = capture(() => cmdMedia(
     ["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"],
     { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" },
-    { reply: () => deadline.signal, references: () => deadline.signal },
+    { reply: () => deadline.signal },
   ));
   await service.firstRequest;
   deadline.abort();
@@ -208,9 +237,8 @@ test("hent media --json gives the reply its send deadline and answers as soon as
   expect(code).toBe(0);
   expect(JSON.parse(lines[0]!)).toMatchObject({ path: null, generate: false, references: [], reason: "timeout" });
   expect(service.requests).toEqual(["POST /v1/final-response/verdict"]);
-  // That deadline is `hent send`'s 2 s budget; only a drawing's references get the longer one.
+  // The verdict and chosen image keep `hent send`'s 2 s budget.
   expect(DEFAULT_MEDIA_DEADLINES.reply).toBe(sendDeadline);
-  expect(DEFAULT_MEDIA_DEADLINES.references).toBe(referenceDeadline);
 });
 
 test("hent media --json against a service without routing never asks for generation", async () => {
