@@ -234,12 +234,14 @@ test("a held typing indicator is re-sent on every tick and stops when the bridge
   await thirdTyping;
   expect(logs.some((l) => l.includes("BRIDGE_TYPING_HOLD channelId=") && l.includes("forSeconds=5"))).toBe(true);
 
+  // The hold's loop reports its own end, so the count is read after the loop is gone, not after a wait.
+  const ended = waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_TYPING_HOLD_ENDED"));
   const send = await api(bridge, "/v1/send", { method: "POST", body: JSON.stringify({ channelId: CH, text: "answer", nonce: "holdstop1" }) });
   expect(send.status).toBe(200);
   expect(bridge.typingHolds()).toBe(0);
   expect(logs.some((l) => l.includes("BRIDGE_TYPING_HOLD_STOPPED") && l.includes("reason=sent"))).toBe(true);
   const afterSend = typings();
-  await waitForEvent<FakeRequest>(fake.events, "request", (r) => r.path === `/channels/${CH}/typing`, 600).catch(() => null);
+  await ended;
   expect(typings()).toBe(afterSend);
 });
 

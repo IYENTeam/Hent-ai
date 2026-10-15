@@ -213,6 +213,12 @@ export class ServiceDatabase {
       .map((row) => rowToStoredSemanticAssetCandidate(row as Record<string, unknown>));
   }
 
+  /** Newest asset timestamp in a set: the semantic router's cache revision for its generate threshold. */
+  assetSetRevision(assetSetId: string): string | null {
+    const row = this.db.prepare("SELECT MAX(updated_at) AS revision FROM assets WHERE asset_set_id = ?").get(assetSetId) as { revision: string | null };
+    return row.revision ?? null;
+  }
+
   firstAssetForChannel(channelId: string): { filename: string; contentType: string; objectUrl: string; storageKey: string } | null {
     const mapping = this.getChannelMapping(channelId);
     if (!mapping || mapping.enabled === false || !mapping.assetSetId) return null;

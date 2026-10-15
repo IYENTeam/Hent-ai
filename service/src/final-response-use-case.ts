@@ -99,12 +99,8 @@ function verdictWithRoutedMedia(
   const emotion = normalizeEmotion(verdict.emotion);
   const affect = parseResponseAffectV2(verdict.affect);
   if (!channelId || (!emotion && !affect)) return skippedVerdict("no_asset_for_emotion");
-  const revision = dependencies.db.db.prepare(`SELECT MAX(a.updated_at) AS updatedAt
-    FROM assets a JOIN channel_settings s ON s.asset_set_id = a.asset_set_id WHERE s.channel_id = ?`)
-    .get(channelId) as { updatedAt: string | null };
   const selection = dependencies.assetRouter.route({
     channelId, ...(emotion ? { emotion } : {}), text: finalText, ...(affect ? { affect } : {}),
-    ...(revision.updatedAt ? { assetSetUpdatedAt: revision.updatedAt } : {}),
   });
   if (!selection) return skippedVerdict("no_asset_for_emotion");
   return {

@@ -6,8 +6,11 @@ import type { ServiceDatabase } from "./db.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import { sha256Bytes, staticObjectUrl } from "./storage.js";
 
+/** Largest image the service stores, and the cap on the JSON body that carries it. */
+export const MAX_NATIVE_ASSET_BYTES = 8 * 1024 * 1024;
+
 export class NativeAssetError extends Error {
-  constructor(readonly status: 400 | 404 | 409, message: string) {
+  constructor(readonly status: 400 | 404 | 409 | 413, message: string) {
     super(message);
   }
 }
@@ -38,11 +41,14 @@ export function registerNativeAsset(db: ServiceDatabase, assetRoot: string, body
   if (body.prompt !== undefined && typeof body.prompt !== "string") throw new NativeAssetError(400, "Invalid prompt");
   const visualAffect = parseVisualAffectV2(body.visualAffect);
   if (!visualAffect) throw new NativeAssetError(400, "Invalid visualAffect");
-  if (typeof body.dataBase64 !== "string" || !body.dataBase64
-    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(body.dataBase64)) {
-    throw new NativeAssetError(400, "Invalid dataBase64");
-  }
+  if (typeof body.dataBase64 !== "string" || !body.dataBase64) throw new NativeAssetError(400, "Invalid dataBase64");
+  // Base64 turns 3 bytes into 4, so the encoded length bounds the image before it is scanned or decoded.
+  const tooLarge = `Image is larger than ${MAX_NATIVE_ASSET_BYTES} bytes`;
+  if (body.dataBase64.length > Math.ceil(MAX_NATIVE_ASSET_BYTES / 3) * 4) throw new NativeAssetError(413, tooLarge);
+  // A plain character-class scan stays linear; quad grouping overflows the regex stack on MB-scale input.
+  if (body.dataBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.dataBase64)) throw new NativeAssetError(400, "Invalid dataBase64");
   const bytes = Buffer.from(body.dataBase64, "base64");
+  if (bytes.length > MAX_NATIVE_ASSET_BYTES) throw new NativeAssetError(413, tooLarge);
   const extension = imageExtension(body.contentType, bytes);
   if (!extension || !bytes.length || bytes.toString("base64") !== body.dataBase64) throw new NativeAssetError(400, "Invalid image bytes or contentType");
   const contentType = String(body.contentType);

@@ -1,6 +1,7 @@
 // Session-facing `hent` subcommands: send / media / typing / skip / session / inbox / history /
 // channels / memory. They talk to the local bridge (bearer from bridge.secret) and, for media
-// only, to the Hent-ai service under one 2 s deadline. Service failures never block a send.
+// only, to the Hent-ai service: everything on the reply path runs under one 2 s deadline, and only
+// the style references of a drawing get the longer one. Service failures never block a send.
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -11,7 +12,7 @@ import { BRIDGE_DEFAULT_PORT, BRIDGE_ROUTES, MAX_MESSAGE_TEXT_LENGTH } from "./b
 import { bridgePaths, ensurePrivateDir, writePrivateFile } from "./bridge/journal.ts";
 import { hentHome, loadConfig } from "./config.ts";
 import { exportMemory } from "./memory.ts";
-import { assetDeadline, fetchMedia, mediaDeadline, registerAsset, sendDeadline, type ServiceRouting, verdict } from "./service.ts";
+import { assetDeadline, fetchMedia, referenceDeadline, registerAsset, sendDeadline, type ServiceRouting, verdict } from "./service.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -225,7 +226,11 @@ const saveMedia = (dir: string, name: string, bytes: Uint8Array): string => {
   return out;
 };
 
-export const cmdMedia = async (args: readonly string[], env: Env = process.env): Promise<number> => {
+/** The reply budget covers the verdict and the chosen image; only a drawing's references may take longer. */
+export type MediaDeadlines = { readonly reply: () => AbortSignal; readonly references: () => AbortSignal };
+export const DEFAULT_MEDIA_DEADLINES: MediaDeadlines = { reply: sendDeadline, references: referenceDeadline };
+
+export const cmdMedia = async (args: readonly string[], env: Env = process.env, deadlines: MediaDeadlines = DEFAULT_MEDIA_DEADLINES): Promise<number> => {
   const flags = parseFlags(args, ["pre-reply", "json"]);
   const channelId = flags.values.get("channel");
   const text = flags.values.get("text") ?? "";
@@ -239,7 +244,7 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
   let filename = "media.png";
   let routing: ServiceRouting | null = null;
   let reason = "no_media";
-  const signal = asJson ? mediaDeadline() : sendDeadline();
+  const signal = deadlines.reply();
   if (flags.bools.has("pre-reply")) {
     if (!config.url || !config.token) {
       console.log("NO_MEDIA not_configured");
@@ -263,11 +268,16 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
   } else {
     const affectArg = flags.values.get("affect");
     const affect = affectArg ? parseAffectArg(affectArg) : null;
-    if (affect && !affect.ok) {
-      console.error(`hent media: --affect: ${affect.error}`);
-      return 2;
-    }
-    if (affect) {
+    // The session reads `--json`, so a malformed affect is its bug and is reported; the plain
+    // output stays fail-open and answers NO_MEDIA as it always has.
+    if (!affect) reason = "no_affect";
+    else if (!affect.ok) {
+      if (asJson) {
+        console.error(`hent media: --affect: ${affect.error}`);
+        return 2;
+      }
+      reason = "bad_affect";
+    } else {
       const picked = await verdict(config, channelId, text, affect.affect, signal);
       if (!picked.ok) reason = picked.reason;
       else {
@@ -277,7 +287,7 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
           filename = picked.media.filename;
         }
       }
-    } else reason = "no_affect";
+    }
   }
   if (!url) {
     console.log(asJson ? mediaJson({ path: null, routing, references: [], reason }) : "NO_MEDIA");
@@ -295,13 +305,17 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
     console.log(out);
     return 0;
   }
-  // References are downloaded again on every call: the set can change between replies.
+  // Style references serve the drawing only, so a reply that sends an existing image never pays for
+  // them. On the generate path they are downloaded again every call: the set changes between replies.
   const references: string[] = [];
-  const nearest = (routing?.nearest ?? []).slice(0, 3);
-  for (let i = 0; i < nearest.length; i += 1) {
-    const reference = nearest[i]!;
-    const got = await fetchMedia(config, reference.url, signal);
-    if (got.ok) references.push(saveMedia(dir, `ref${i}-${reference.filename}`, got.bytes));
+  if (routing?.generate === true) {
+    const referenceSignal = deadlines.references();
+    const nearest = routing.nearest.slice(0, 3);
+    for (let i = 0; i < nearest.length; i += 1) {
+      const reference = nearest[i]!;
+      const got = await fetchMedia(config, reference.url, referenceSignal);
+      if (got.ok) references.push(saveMedia(dir, `ref${i}-${reference.filename}`, got.bytes));
+    }
   }
   console.log(mediaJson({ path: out, routing, references }));
   return 0;

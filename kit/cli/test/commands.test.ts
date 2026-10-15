@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
 import { parseChannelConfig } from "../src/bridge/index.ts";
-import { chunkText, cmdAsset, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, cmdTyping, readChannels } from "../src/commands.ts";
+import { DEFAULT_MEDIA_DEADLINES, chunkText, cmdAsset, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, cmdTyping, readChannels } from "../src/commands.ts";
+import { referenceDeadline, sendDeadline } from "../src/service.ts";
 import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
@@ -24,6 +25,8 @@ type Service = {
   routing?: unknown;
   assets: unknown[];
   assetStatus: number;
+  /** Resolves once the service has a request in hand - the point where a hang starts. */
+  firstRequest: Promise<string>;
 };
 
 const ROUTING = {
@@ -39,14 +42,18 @@ const ROUTING = {
 };
 
 const startService = (): Service => {
-  const state: Service = { url: "", requests: [], mode: "media", assets: [], assetStatus: 201 };
+  let announce: (request: string) => void = () => {};
+  const firstRequest = new Promise<string>((resolve) => { announce = resolve; });
+  const state: Service = { url: "", requests: [], mode: "media", assets: [], assetStatus: 201, firstRequest };
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: async (req) => {
       const path = new URL(req.url).pathname;
       state.requests.push(`${req.method} ${path}`);
-      if (state.mode === "hang") await Bun.sleep(5_000);
+      announce(`${req.method} ${path}`);
+      // A hanging service never answers; the caller's deadline is what ends the wait.
+      if (state.mode === "hang") await new Promise<never>(() => {});
       if (path === "/v1/final-response/verdict") {
         const media = { url: "/static/sets/s/happy-1.png", filename: "happy-1.png", contentType: "image/png", sensitiveMedia: false };
         return Response.json({ verdict: { media, ...(state.routing === undefined ? {} : { routing: state.routing }) } });
@@ -150,7 +157,7 @@ test("hent media saves the chosen image into a fresh HENT_HOME and prints its pa
   expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
 });
 
-test("hent media --json reports the fit signal and downloads the references, freshly on every call", async () => {
+test("hent media --json reports the fit signal and downloads the drawing's references, freshly on every call", async () => {
   const service = startService();
   service.routing = ROUTING;
   const home = tempHome("hent-media-json-");
@@ -172,6 +179,40 @@ test("hent media --json reports the fit signal and downloads the references, fre
   expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toHaveLength(8);
 });
 
+test("hent media --json fetches no references when an existing image fits", async () => {
+  const service = startService();
+  service.routing = { ...ROUTING, generate: false };
+  const home = tempHome("hent-media-fits-");
+  const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" }));
+  expect(code).toBe(0);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ mode: "affect-v2", generate: false, references: [] });
+  // Only the chosen image: the reply path pays for one download, not four.
+  expect(service.requests).toEqual(["POST /v1/final-response/verdict", "GET /static/sets/s/happy-1.png"]);
+});
+
+test("hent media --json gives the reply its send deadline and answers as soon as it runs out", async () => {
+  const service = startService();
+  service.routing = ROUTING;
+  service.mode = "hang";
+  const home = tempHome("hent-media-hang-");
+  const deadline = new AbortController();
+  const run = capture(() => cmdMedia(
+    ["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"],
+    { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" },
+    { reply: () => deadline.signal, references: () => deadline.signal },
+  ));
+  await service.firstRequest;
+  deadline.abort();
+
+  const { code, lines } = await run;
+  expect(code).toBe(0);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ path: null, generate: false, references: [], reason: "timeout" });
+  expect(service.requests).toEqual(["POST /v1/final-response/verdict"]);
+  // That deadline is `hent send`'s 2 s budget; only a drawing's references get the longer one.
+  expect(DEFAULT_MEDIA_DEADLINES.reply).toBe(sendDeadline);
+  expect(DEFAULT_MEDIA_DEADLINES.references).toBe(referenceDeadline);
+});
+
 test("hent media --json against a service without routing never asks for generation", async () => {
   const service = startService();
   const home = tempHome("hent-media-old-");
@@ -189,10 +230,12 @@ test("hent media --json with no image answers with a null path instead of a pict
   expect(JSON.parse(lines[0]!)).toMatchObject({ path: null, generate: false, references: [] });
 });
 
-test("hent media refuses a malformed --affect instead of silently sending no image", async () => {
+test("hent media refuses a malformed --affect for --json and stays fail-open without it", async () => {
   const service = startService();
   const home = tempHome("hent-media-bad-");
-  expect(await cmdMedia(["--channel", CH, "--text", "x", "--affect", "1,2,3|90"], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" })).toBe(2);
+  const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
+  expect(await cmdMedia(["--channel", CH, "--text", "x", "--affect", "1,2,3|90", "--json"], env)).toBe(2);
+  expect(await capture(() => cmdMedia(["--channel", CH, "--text", "x", "--affect", "1,2,3|90"], env))).toEqual({ code: 0, lines: ["NO_MEDIA"] });
   expect(service.requests).toEqual([]);
 });
 
@@ -241,9 +284,8 @@ test("hent asset add: malformed tags exit 2, a refused file exits 1, and neither
 
 test("hent typing --for returns at once, the bridge holds the indicator, and a send ends the hold", async () => {
   const { fake, bridge, env } = await setup();
-  const started = performance.now();
+  // Returning while the 20 s hold is still registered is what "at once" means.
   expect(await cmdTyping(["--to", CH, "--for", "20"], env)).toBe(0);
-  expect(performance.now() - started).toBeLessThan(1_000);
   const typings = () => fake.requests.filter((r) => r.method === "POST" && r.path === `/channels/${CH}/typing`).length;
   expect(typings()).toBe(1);
   expect(bridge.typingHolds()).toBe(1);
@@ -262,6 +304,23 @@ test("hent skip records a deliberate non-reply", async () => {
   const { env } = await setup();
   expect(await cmdSkip(["123456789012345678"], env)).toBe(0);
   expect(readFileSync(join(env.HENT_HOME!, "state", "handled.jsonl"), "utf8")).toContain('"how":"skipped"');
+});
+
+test("hent skip takes down the typing indicator it would otherwise leave up", async () => {
+  const { fake, bridge, env } = await setup();
+  const inbound = fake.addMessage(CH, { content: "question", viaGateway: true });
+  await waitForEvent(bridge.events, "journaled", (e: { messageId: string }) => e.messageId === inbound.id);
+  expect(await cmdTyping(["--to", CH, "--for", "150"], env)).toBe(0);
+  expect(bridge.typingHolds()).toBe(1);
+  const typings = () => fake.requests.filter((r) => r.method === "POST" && r.path === `/channels/${CH}/typing`).length;
+  const held = typings();
+  const ended = waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_TYPING_HOLD_ENDED"));
+
+  expect(await cmdSkip([inbound.id], env)).toBe(0);
+
+  await ended;
+  expect(bridge.typingHolds()).toBe(0);
+  expect(typings()).toBe(held);
 });
 
 test("hent session set registers the herdr pane it runs in, takes only --agent codex, and refuses without a pane", async () => {

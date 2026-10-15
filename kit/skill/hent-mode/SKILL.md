@@ -61,14 +61,14 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
    - `generate` true - no existing image fits, so draw one and send text + image as ONE message:
      `hent typing --to <channelId> --for 150`, then the built-in `image_gen` tool with the
      `references` paths as `referenced_image_paths`, `view_image` on the PNG it saves,
-     `hent asset add --channel <channelId> --file <png> --emotion <emotion> --visual-affect @<json>`,
+     `hent asset add --channel <channelId> --file <png> --emotion <emotion> --visual-affect '<json>'`,
      then the same `hent send ... --file <png>`. The procedure, the prompt and the tag format are in
      `references/native-image.md`. On any failure send with the `path` from this step instead (or
      without `--file` when it is null) - the reply always goes out, and it never mentions the image
      or that anything was drawn.
 
-   `hent asset add` registers an image into the channel's set and prints `ASSET <id>`; it exits 2 on
-   malformed tags and 1 when the service refuses the image.
+   `hent asset add` registers an image into the channel's set and prints `ASSET <id>`; it exits 2 when
+   the `--visual-affect` JSON itself cannot be read and 1 when the service refuses the image or its tags.
 
    Pass the text as one argument. Long replies are chunked automatically; the image goes on the
    last chunk. `hent typing --to <channelId> [--for <seconds>]` raises the typing indicator while

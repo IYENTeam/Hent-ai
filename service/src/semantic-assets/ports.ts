@@ -19,6 +19,8 @@ export type SemanticAssetCandidate = SemanticAssetMedia & {
 export interface SemanticAssetRepository {
   assetSetIdForChannel(channelId: string): string | null;
   listCandidates(assetSetId: string, emotion?: Emotion): readonly SemanticAssetCandidate[];
+  /** Changes whenever the set's assets change; `null` when the repository cannot tell. */
+  revisionForSet(assetSetId: string): string | null;
 }
 
 export type SemanticAssetRouteInput = {
@@ -26,7 +28,6 @@ export type SemanticAssetRouteInput = {
   readonly emotion?: Emotion;
   readonly text: string;
   readonly affect?: ResponseAffectV2;
-  readonly assetSetUpdatedAt?: string;
 };
 
 export type SemanticAssetSelection = {

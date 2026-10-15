@@ -44,10 +44,15 @@ function candidate(filename: string, semanticTags: unknown, semanticVector: unkn
   };
 }
 
-function repository(candidates: readonly SemanticAssetCandidate[], assetSetId: string | null = "mapped-set"): SemanticAssetRepository {
+function repository(
+  candidates: readonly SemanticAssetCandidate[],
+  assetSetId: string | null = "mapped-set",
+  revisionForSet: () => string | null = () => "revision-1",
+): SemanticAssetRepository {
   return {
     assetSetIdForChannel: () => assetSetId,
     listCandidates: () => candidates,
+    revisionForSet,
   };
 }
 
@@ -115,26 +120,40 @@ describe("DeterministicSemanticAssetRouter", () => {
     expect(selection?.nearest).toHaveLength(1);
   });
 
-  it.each(["count", "updatedAt"] as const)("invalidates the cached threshold when the set's %s changes", (change) => {
+  it.each(["count", "revision"] as const)("invalidates the cached threshold when the set's %s changes", (change) => {
     const candidates = [0, 0.25, 0.5].map(uniformCandidate);
-    const router = new DeterministicSemanticAssetRouter(repository(candidates));
-    const input = { channelId: "c1", text: "cached", affect: responseAffect(), assetSetUpdatedAt: "2026-10-15T00:00:00Z" };
+    let revision = "revision-1";
+    const router = new DeterministicSemanticAssetRouter(repository(candidates, "mapped-set", () => revision));
+    const input = { channelId: "c1", text: "cached", affect: responseAffect() };
     expect(router.route(input)?.threshold).toBeCloseTo(0.25);
     if (change === "count") candidates.push(uniformCandidate(1));
-    else candidates[2] = uniformCandidate(1);
-    expect(router.route({ ...input, ...(change === "updatedAt" ? { assetSetUpdatedAt: "2026-10-15T00:00:01Z" } : {}) })?.threshold)
-      .toBeCloseTo(change === "count" ? 0.5 : 0.75);
+    else {
+      candidates[2] = uniformCandidate(1);
+      revision = "revision-2";
+    }
+    expect(router.route(input)?.threshold).toBeCloseTo(change === "count" ? 0.5 : 0.75);
   });
 
   it("reuses the leave-one-out threshold for an unchanged set revision", () => {
     const distance = vi.spyOn(affectSpace, "weightedAffectDistance");
     const router = new DeterministicSemanticAssetRouter(repository([0, 0.25, 0.5].map(uniformCandidate)));
-    const input = { channelId: "c1", text: "cached", affect: responseAffect(), assetSetUpdatedAt: "revision" };
+    const input = { channelId: "c1", text: "cached", affect: responseAffect() };
     router.route(input);
     distance.mockClear();
     router.route(input);
     // Only the three query distances, not six more leave-one-out distances.
     expect(distance).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps no threshold for a repository that cannot name a revision", () => {
+    const distance = vi.spyOn(affectSpace, "weightedAffectDistance");
+    const router = new DeterministicSemanticAssetRouter(repository([0, 0.25, 0.5].map(uniformCandidate), "mapped-set", () => null));
+    const input = { channelId: "c1", text: "cached", affect: responseAffect() };
+    router.route(input);
+    distance.mockClear();
+    router.route(input);
+    // Three query distances plus the six leave-one-out distances, recomputed.
+    expect(distance).toHaveBeenCalledTimes(9);
   });
 
   it("ranks the complete mapped set in AffectSpaceV2 without a coarse-emotion filter", () => {

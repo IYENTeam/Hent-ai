@@ -52,7 +52,7 @@ SKILL_DIR="$(readlink "$HOME/.agents/skills/hent-mode" 2>/dev/null || echo "$HOM
 GEN_DIR="${CODEX_HOME:-$HOME/.codex}/generated_images"
 # Codex reads files only through shell commands, so it may use read-only ones on these trees. When no
 # existing image fits a reply it draws one with the built-in image_gen tool (references/native-image.md).
-LIMITS="Run only hent commands - hent media, hent typing, hent asset add, hent send --file and the rest - plus read-only cat, ls and sed -n on files under $HENT_HOME, $SKILL_DIR and $GEN_DIR; when no existing image fits a reply, call the built-in image_gen tool and view_image the PNG it saves under $GEN_DIR; write no files except the one VisualAffect JSON you pass to hent asset add, written under $HENT_HOME/state/media with a single shell redirection"
+LIMITS="Run only hent commands - hent media, hent typing, hent asset add, hent send --file and the rest - plus read-only cat, ls and sed -n on files under $HENT_HOME, $SKILL_DIR and $GEN_DIR; when no existing image fits a reply, call the built-in image_gen tool and view_image the PNG it saves under $GEN_DIR; write no files - hent asset add takes its VisualAffect JSON inline"
 RULES="Read the hent-mode skill with references/persona.md and references/memory.md, then wait for [hent] INBOUND lines and handle each per the skill. $LIMITS, and never reveal internal details."
 [ -f "$HENT_HOME/brain-prompt.md" ] && RULES="$RULES $(tr '\n' ' ' < "$HENT_HOME/brain-prompt.md")"
 

@@ -7,7 +7,7 @@ import { createFinalResponseUseCase } from "./final-response-use-case.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
-import { NativeAssetError, registerNativeAsset } from "./native-assets.js";
+import { MAX_NATIVE_ASSET_BYTES, NativeAssetError, registerNativeAsset } from "./native-assets.js";
 
 export type CronEnabledChannelResponse = {
   channelId: string;
@@ -74,9 +74,25 @@ function authorized(req: IncomingMessage, token: string): boolean {
   return req.headers.authorization === `Bearer ${token}`;
 }
 
+export class PayloadTooLargeError extends Error {}
+
+/** POST /v1/assets carries a base64 image, so every body is capped at the image limit. */
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let total = 0;
+  let overflow = false;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.byteLength;
+    if (total > MAX_NATIVE_ASSET_BYTES) {
+      // Keep draining with nothing buffered: the rejected request still gets its 413.
+      overflow = true;
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(buffer);
+  }
+  if (overflow) throw new PayloadTooLargeError(`Request body is larger than ${MAX_NATIVE_ASSET_BYTES} bytes`);
   if (chunks.length === 0) return {};
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
@@ -179,6 +195,7 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       }
       notFound(res);
     } catch (error) {
+      if (error instanceof PayloadTooLargeError) return sendJson(res, 413, { error: "payload_too_large", message: error.message });
       if (error instanceof NativeAssetError) return sendJson(res, error.status, { error: "native_asset_error", message: error.message });
       if (error instanceof SyntaxError) return badRequest(res, "Invalid JSON body");
       if (error instanceof Error && (error.message.includes("not found") || error.message.includes("required") || error.message.includes("Invalid"))) return badRequest(res, error.message);

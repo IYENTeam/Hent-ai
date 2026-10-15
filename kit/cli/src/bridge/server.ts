@@ -137,6 +137,7 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         }
       } finally {
         if (typingHolds.get(channelId) === hold) typingHolds.delete(channelId);
+        log("BRIDGE_TYPING_HOLD_ENDED", { channelId });
       }
     })();
   };
@@ -299,7 +300,11 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const body = await readJson(req);
         const parsed = body.ok ? parseHandledRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
-        markHandled(parsed.value.messageId, parsed.value.how);
+        const { messageId, how } = parsed.value;
+        // A skipped message gets no send, so nothing else would take the indicator down.
+        const channelId = how === "skipped" ? journal.findCreate(messageId)?.channelId : undefined;
+        if (channelId) stopTypingHold(channelId, "skipped");
+        markHandled(messageId, how);
         return new Response(null, { status: 204 });
       }
       case BRIDGE_ROUTES.session: {

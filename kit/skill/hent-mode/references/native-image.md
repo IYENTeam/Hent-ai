@@ -27,7 +27,7 @@ One JSON line:
 | `distance` | affect distance from the reply to `path`, `null` in legacy fallback |
 | `threshold` | the set's "close enough" distance, `null` in legacy fallback |
 | `generate` | `true` when `distance` is past `threshold`: draw a new image |
-| `references` | up to three local paths of the closest images - the style reference |
+| `references` | up to three local paths of the closest images - the style reference, filled only when `generate` is true |
 | `reason` | only when there is no image at all (`no_media`, `no_affect`, a service failure) |
 
 `generate` false ends it here:
@@ -87,8 +87,8 @@ visible artefacts. If it is not, treat it as a failure (see the last section).
 ## 5. Rate the image
 
 Rate the picture itself - what the drawing shows, not what the reply says - as a `VisualAffectV2`
-object and write it to a file under `~/.hent/state/media/`, for example
-`~/.hent/state/media/visual-affect-<messageId>.json`:
+object. It is passed inline to `hent asset add` in step 6, so write no file; keep it as one JSON
+value:
 
 ```json
 {
@@ -116,13 +116,17 @@ object and write it to a file under `~/.hent/state/media/`, for example
 ## 6. Register it
 
 ```
-hent asset add --channel <channelId> --file <png path> --emotion <emotion> --visual-affect @<json path> --prompt "<the image_gen prompt>"
+hent asset add --channel <channelId> --file <png path> --emotion <emotion> --visual-affect '<the JSON from step 5, one line>' --prompt "<the image_gen prompt>"
 ```
 
 It prints `ASSET native_<hash>`. The image joins the channel's set with its tags, so a later reply
 whose affect lands near it is answered with it instead of a new drawing. `--emotion` is the one
-canonical emotion from step 3. Exit 2 means the tags are malformed (fix the JSON, one retry), exit 1
-means the service refused the image.
+canonical emotion from step 3.
+
+| exit | meaning | what to do |
+| --- | --- | --- |
+| 2 | the `--visual-affect` argument is not readable JSON, or a flag is missing | fix the argument, retry once |
+| 1 | the service refused: unusable file, or tags the schema rejects (missing/extra dimension, a value outside 0.00-1.00, empty `evidence`) | fix the tags, retry once, then give up on registering |
 
 ## 7. Send text and image as one message
 

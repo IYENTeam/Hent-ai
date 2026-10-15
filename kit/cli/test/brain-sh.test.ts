@@ -66,7 +66,9 @@ const run = async (s: Scratch, args: readonly string[], env: Record<string, stri
 };
 
 const prompts = (calls: readonly string[][]): string[] => calls.filter((c) => c[1] === "agent" && c[2] === "prompt").map((c) => c[4]!);
-const instruction = (prompt: string): string => prompt.slice(prompt.indexOf("Read the hent-mode skill"));
+/** The command the session must run first; everything after it is the instruction block. */
+const register = (cwd: string): string => `hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd ${cwd}`;
+const instruction = (prompt: string, cwd: string): string => prompt.slice(prompt.indexOf(register(cwd)) + register(cwd).length);
 
 test("brain.sh start sends a startup instruction that allows the native image workflow", async () => {
   const s = scratch("hent-brain-start-");
@@ -87,20 +89,21 @@ test("brain.sh start sends a startup instruction that allows the native image wo
   ]);
   expect(readFileSync(join(s.home, "brain-codex.sid"), "utf8").trim()).toBe(SESSION_ID);
 
+  const cwd = join(s.root, "hent-brain");
   const [prompt] = prompts(got.calls);
-  expect(prompt!.startsWith(`hent mode. You are the Hent-ai Discord bot brain. First run this exact shell command: hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd ${join(s.root, "hent-brain")} ; `)).toBe(true);
+  expect(prompt).toContain(register(cwd));
 
-  // The native image workflow is allowed explicitly - tool, trees, the one written file - and every
-  // other prohibition stays.
-  const rules = instruction(prompt!);
-  expect(rules).toContain("call the built-in image_gen tool and view_image the PNG it saves");
-  expect(rules).toContain(join(s.root, ".codex", "generated_images"));
-  expect(rules).toContain("hent media, hent typing, hent asset add, hent send --file");
-  expect(rules).toContain(`written under ${join(s.home, "state", "media")}`);
-  expect(rules).toContain("Run only hent commands");
-  expect(rules).toContain("read-only cat, ls and sed -n");
-  expect(rules).toContain("write no files except the one VisualAffect JSON");
-  expect(rules).toContain("never reveal internal details");
+  // The native image workflow is allowed explicitly: the tools it calls, the commands it runs and
+  // the trees it reads.
+  const rules = instruction(prompt!, cwd);
+  for (const allowed of ["image_gen", "view_image", "hent media", "hent typing", "hent asset add", "hent send --file", "cat", "ls", "sed -n"]) {
+    expect(rules).toContain(allowed);
+  }
+  for (const tree of [join(s.root, ".codex", "generated_images"), s.home, join(s.root, ".agents", "skills", "hent-mode")]) {
+    expect(rules).toContain(tree);
+  }
+  // The brain writes no file at all: the tags go inline to `hent asset add`.
+  expect(rules).not.toContain(join(s.home, "state", "media"));
 }, 20_000);
 
 test("brain.sh start --resume re-sends the current startup instruction as the first prompt", async () => {
@@ -120,12 +123,13 @@ test("brain.sh start --resume re-sends the current startup instruction as the fi
   ]);
 
   // A resumed session still carries its old instructions, so the current ones are re-sent verbatim.
+  const cwd = join(s.root, "hent-brain");
   const [resumedPrompt] = prompts(resumed.calls);
-  expect(resumedPrompt!.startsWith('Session restarted; these instructions replace the ones you were started with. First run this exact shell command: hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd ')).toBe(true);
-  expect(instruction(resumedPrompt!)).toBe(instruction(prompts(first.calls)[0]!));
-  expect(instruction(resumedPrompt!)).toContain(join(codexHome, "generated_images"));
-  expect(instruction(resumedPrompt!)).toContain("image_gen");
-  expect(instruction(resumedPrompt!)).toContain("Extra house rule.");
+  expect(resumedPrompt).toContain(register(cwd));
+  expect(instruction(resumedPrompt!, cwd)).toBe(instruction(prompts(first.calls)[0]!, cwd));
+  expect(instruction(resumedPrompt!, cwd)).toContain(join(codexHome, "generated_images"));
+  expect(instruction(resumedPrompt!, cwd)).toContain("image_gen");
+  expect(instruction(resumedPrompt!, cwd)).toContain("Extra house rule.");
 }, 20_000);
 
 test("brain.sh start --resume without a recorded session refuses to start anything", async () => {

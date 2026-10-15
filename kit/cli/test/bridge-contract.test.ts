@@ -205,8 +205,7 @@ describe("edit / typing / handled / session", () => {
   });
 
   test("a held typing window re-sends on every interval tick that is still inside it", () => {
-    expect(TYPING_INTERVAL_MS).toBe(8_000);
-    // --for 20: typing at 0 s, 8 s and 16 s -> two re-sends after the immediate one.
+    // --for 20 at the default 8 s interval: typing at 0 s, 8 s and 16 s - two re-sends after the immediate one.
     expect(typingTicks(20)).toBe(2);
     expect(typingTicks(8)).toBe(0);
     expect(typingTicks(16)).toBe(1);

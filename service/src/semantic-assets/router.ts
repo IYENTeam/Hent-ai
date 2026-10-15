@@ -63,8 +63,7 @@ export class DeterministicSemanticAssetRouter implements SemanticAssetRouter {
           ? Math.min(tied.length - 1, Math.max(0, Math.floor(randomValue * tied.length)))
           : 0;
         const selected = tied[index]!;
-        const threshold = this.nativeGenerateDistance
-          ?? this.thresholdForSet(assetSetId, ranked, input.assetSetUpdatedAt);
+        const threshold = this.nativeGenerateDistance ?? this.thresholdForSet(assetSetId, ranked);
         return {
           media: mediaFrom(selected.candidate),
           mode: "affect-v2",
@@ -95,14 +94,11 @@ export class DeterministicSemanticAssetRouter implements SemanticAssetRouter {
     return { media: mediaFrom(ranked[0]!.candidate), mode: "semantic", score: ranked[0]!.score, threshold: null, generate: false, nearest: [] };
   }
 
-  private thresholdForSet(
-    assetSetId: string,
-    candidates: readonly { readonly vector: readonly number[] }[],
-    updatedAt: string | undefined,
-  ): number {
-    const revision = JSON.stringify([candidates.length, updatedAt]);
+  private thresholdForSet(assetSetId: string, candidates: readonly { readonly vector: readonly number[] }[]): number {
+    const setRevision = this.repository.revisionForSet(assetSetId);
+    const revision = JSON.stringify([candidates.length, setRevision]);
     const cached = this.thresholds.get(assetSetId);
-    if (updatedAt !== undefined && cached?.revision === revision) return cached.threshold;
+    if (setRevision !== null && cached?.revision === revision) return cached.threshold;
 
     const distances = candidates.map((candidate, index) => {
       const others = candidates.filter((_, otherIndex) => otherIndex !== index);
@@ -110,8 +106,8 @@ export class DeterministicSemanticAssetRouter implements SemanticAssetRouter {
       return others.length === 0 ? 0 : Math.min(...others.map((other) => weightedAffectDistance(candidate.vector, other.vector)));
     }).sort((left, right) => left - right);
     const threshold = distances[Math.ceil(0.95 * distances.length) - 1] ?? 0;
-    // Callers without a database revision must not retain stale thresholds.
-    if (updatedAt !== undefined) this.thresholds.set(assetSetId, { revision, threshold });
+    // A repository that cannot name a revision must not have stale thresholds retained for it.
+    if (setRevision !== null) this.thresholds.set(assetSetId, { revision, threshold });
     return threshold;
   }
 }

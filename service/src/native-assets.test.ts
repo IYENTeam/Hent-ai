@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AFFECT_DIMENSIONS, affectVectorFromDimensions, parseVisualAffectV2 } from "../../shared/affect.js";
 import { ServiceDatabase } from "./db.js";
-import { registerNativeAsset } from "./native-assets.js";
+import { MAX_NATIVE_ASSET_BYTES, registerNativeAsset } from "./native-assets.js";
 import { createHentAiServer, listen } from "./server.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
@@ -127,6 +127,42 @@ describe("native asset registration", () => {
     expect(() => registerNativeAsset(db, root, request)).toThrow("fixture failure");
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM storage_objects").get()).toEqual({ count: 0 });
     expect(readdirSync(join(root, "native/mapped/happy"))).toEqual([]);
+  });
+
+  // One byte over the cap is caught after decoding; the far larger one already by its encoded length.
+  it.each([MAX_NATIVE_ASSET_BYTES + 1, MAX_NATIVE_ASSET_BYTES * 2])("refuses a %d byte image before writing anything", (size) => {
+    const bytes = Buffer.alloc(size);
+    Buffer.from(png, "base64").copy(bytes);
+    expect(() => registerNativeAsset(db, root, { ...request, dataBase64: bytes.toString("base64") }))
+      .toThrow(expect.objectContaining({ status: 413 }));
+    expect(db.db.prepare("SELECT COUNT(*) AS count FROM assets").get()).toEqual({ count: 0 });
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it("answers 413 for a request body past the cap and still reads one at the cap", async () => {
+    const server = await listen(createHentAiServer({ db, token: "test-token", assetRoot: root }));
+    const sized = (bytes: number, emotion: string): string => {
+      const body = { ...request, emotion, prompt: "" };
+      return JSON.stringify({ ...body, prompt: "x".repeat(bytes - JSON.stringify(body).length) });
+    };
+    try {
+      const tooLarge = sized(MAX_NATIVE_ASSET_BYTES + 1, "happy");
+      expect(Buffer.byteLength(tooLarge)).toBe(MAX_NATIVE_ASSET_BYTES + 1);
+      const refused = await fetch(`${server.url}/v1/assets`, { method: "POST", headers: { authorization: "Bearer test-token" }, body: tooLarge });
+      expect(refused.status).toBe(413);
+      expect(await refused.json()).toMatchObject({ error: "payload_too_large" });
+      expect(db.db.prepare("SELECT COUNT(*) AS count FROM assets").get()).toEqual({ count: 0 });
+      expect(readdirSync(root)).toEqual([]);
+
+      // A body exactly at the cap is read and validated like any other.
+      const atCap = sized(MAX_NATIVE_ASSET_BYTES, "angry");
+      expect(Buffer.byteLength(atCap)).toBe(MAX_NATIVE_ASSET_BYTES);
+      const parsed = await fetch(`${server.url}/v1/assets`, { method: "POST", headers: { authorization: "Bearer test-token" }, body: atCap });
+      expect(parsed.status).toBe(400);
+      expect(await parsed.json()).toMatchObject({ error: "native_asset_error", message: "Invalid emotion" });
+    } finally {
+      await server.close();
+    }
   });
 
   it("authenticates registration and serves the resulting static media", async () => {
