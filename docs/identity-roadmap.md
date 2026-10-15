@@ -62,7 +62,8 @@ Hent-ai has three runtime parts and a **shared contract** ([ADR-0002](adr/ADR-00
 
 ### Image picker - the Hent-ai HTTP service
 
-- Owns profile/channel mappings, asset manifests/storage, the verdict cache, and generation jobs.
+- Owns profile/channel mappings, asset manifests/storage, the verdict cache, and registration of the
+  brain's natively generated images (`POST /v1/assets`). It runs no generation queue of its own.
 - Maps the session's affect to an image with the affect router; holds no messenger token and no
   Discord code.
 

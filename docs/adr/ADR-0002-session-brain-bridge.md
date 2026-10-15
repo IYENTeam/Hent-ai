@@ -14,7 +14,7 @@ Three roles, three processes, each owning one thing:
 | --- | --- | --- |
 | `hent bridge` (always-on, launchd) | The Discord token, the gateway connection, the inbound journal, outbound sends, push delivery into the session | Call the Hent-ai service, decide whether or what to reply, log message content or the token |
 | Session (Codex, restartable) | Every conversational decision: whether to speak, what to say, the response affect | Read the Discord token, hold a Discord connection |
-| Hent-ai service (optional) | Media verdicts, assets, profiles, channel mappings/settings, generation jobs | Hold a Discord token, call `discord.com`, run conversation/watcher/ambient logic, run a verifier |
+| Hent-ai service (optional) | Media verdicts, assets, profiles, channel mappings/settings, native asset registration | Hold a Discord token, call `discord.com`, run conversation/watcher/ambient logic, run a verifier |
 
 The bridge is deliberately dumb: it is the only Hent-ai component that holds the token, and its job is connection, journal and delivery. The session is the brain. The service is an image picker that `hent send` asks under one shared 2000 ms deadline and skips on any failure, so the reply always goes out (IS-4, IS-8).
 
