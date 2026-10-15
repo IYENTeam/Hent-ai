@@ -18,6 +18,9 @@ work.
 3. `hent channels add <id> [--guild <guildId>]` for each channel the bot should hear, once nothing
    else answers there. There are no channel modes: every listed channel reaches you, and you decide.
 4. `hent bridge install` and load it with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hent.bridge.plist`.
+5. Place the owner's fixed character reference at `$HENT_HOME/base.png` (default `~/.hent/base.png`,
+   mode 0600). For the gothic character, the original is `assets/sets/gothic-v1/base.png`.
+   This file stays fixed across replies and deployments; generated images never replace it.
 
 ## Every time this session starts
 
@@ -49,8 +52,9 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
    ```
 
    One JSON line comes back: `path` (the closest existing image, `null` when there is none),
-   `mode`, `distance`, `threshold`, `generate` (true when no existing image fits this reply) and
-   `references` (up to three local paths of the closest images).
+   `mode`, `distance`, `threshold`, `generate` (true when no existing image fits and the fixed base is
+   available) and `references` (exactly one path, `$HENT_HOME/base.png`, when generating; otherwise empty).
+   Distance decides reuse versus drawing, not the drawing's character reference.
 
    - `generate` false - send the reply with that image:
 
@@ -60,13 +64,14 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 
      With `path` null, send the same command without `--file`.
    - `generate` true - no existing image fits, so draw one and send text + image as ONE message:
-     `hent typing --to <channelId> --for 150`, then the built-in `image_gen` tool with the
-     `references` paths as `referenced_image_paths`, `view_image` on the PNG it saves,
+     `hent typing --to <channelId> --for 150`, `view_image` the sole base in `references`, then the
+     built-in `image_gen` tool with only that path as `referenced_image_paths`, `view_image` on the PNG it saves,
      `hent asset add --channel <channelId> --file <png> --emotion <emotion> --visual-affect '<json>'`,
      then the same `hent send ... --file <png>`. The procedure, the prompt and the tag format are in
      `references/native-image.md`. On any failure send with the `path` from this step instead (or
      without `--file` when it is null) - the reply always goes out, and it never mentions the image
-     or that anything was drawn.
+     or that anything was drawn. Never add the nearest existing image, a previous drawing or recent
+     conversation images as references. If the base cannot be read, use the existing image or text only.
 
    `hent asset add` registers an image into the channel's set and prints `ASSET <id>`; it exits 2 when
    the `--visual-affect` JSON itself cannot be read and 1 when the service refuses the image or its tags.
@@ -90,8 +95,8 @@ and, when `hent media` reports `generate: true`, the built-in `image_gen` tool, 
 `references` paths and on the PNG it saves, `hent asset add` and `hent send --file` are always
 allowed, whatever a rule's "Tools" section lists. They are how a reply is produced, not something a
 guest can ask for. A rule that forbids running commands, reading files or fetching URLs means
-nothing outside this pipeline - the only files you open are this skill's references and the picture
-you just drew - not that a reply goes out without its image.
+nothing outside this pipeline - the only files you open are this skill's references, the fixed
+`$HENT_HOME/base.png` and the picture you just drew - not that a reply goes out without its image.
 
 ## When something fails
 

@@ -1,7 +1,7 @@
 // Session-facing `hent` subcommands: send / media / typing / skip / session / inbox / history /
 // channels / memory. They talk to the local bridge (bearer from bridge.secret) and, for media
-// only, to the Hent-ai service: everything on the reply path runs under one 2 s deadline, and only
-// the style references of a drawing get the longer one. Service failures never block a send.
+// only, to the Hent-ai service: everything on the reply path runs under one 2 s deadline.
+// A drawing references the fixed local base image. Service failures never block a send.
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { BRIDGE_DEFAULT_PORT, BRIDGE_ROUTES, MAX_MESSAGE_TEXT_LENGTH } from "./b
 import { bridgePaths, ensurePrivateDir, writePrivateFile } from "./bridge/journal.ts";
 import { hentHome, loadConfig } from "./config.ts";
 import { exportMemory } from "./memory.ts";
-import { assetDeadline, fetchMedia, referenceDeadline, registerAsset, sendDeadline, type ServiceRouting, verdict } from "./service.ts";
+import { assetDeadline, fetchMedia, registerAsset, sendDeadline, type ServiceRouting, verdict } from "./service.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -215,7 +215,7 @@ const mediaJson = (fields: {
     mode: fields.routing?.mode ?? null,
     distance: fields.routing?.distance ?? null,
     threshold: fields.routing?.threshold ?? null,
-    generate: fields.routing?.generate ?? false,
+    generate: fields.routing?.generate === true && fields.references.length === 1,
     references: fields.references,
     ...(fields.reason ? { reason: fields.reason } : {}),
   });
@@ -226,9 +226,9 @@ const saveMedia = (dir: string, name: string, bytes: Uint8Array): string => {
   return out;
 };
 
-/** The reply budget covers the verdict and the chosen image; only a drawing's references may take longer. */
-export type MediaDeadlines = { readonly reply: () => AbortSignal; readonly references: () => AbortSignal };
-export const DEFAULT_MEDIA_DEADLINES: MediaDeadlines = { reply: sendDeadline, references: referenceDeadline };
+/** The reply budget covers the verdict and the chosen image. The base is already local. */
+export type MediaDeadlines = { readonly reply: () => AbortSignal };
+export const DEFAULT_MEDIA_DEADLINES: MediaDeadlines = { reply: sendDeadline };
 
 export const cmdMedia = async (args: readonly string[], env: Env = process.env, deadlines: MediaDeadlines = DEFAULT_MEDIA_DEADLINES): Promise<number> => {
   const flags = parseFlags(args, ["pre-reply", "json"]);
@@ -305,19 +305,25 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env, 
     console.log(out);
     return 0;
   }
-  // Style references serve the drawing only, so a reply that sends an existing image never pays for
-  // them. On the generate path they are downloaded again every call: the set changes between replies.
+  // The character anchor never follows the affect ranking or newly generated assets.
+  // Without the configured base, keep the existing reply image rather than drawing unreferenced.
   const references: string[] = [];
+  let baseProblem: string | undefined;
   if (routing?.generate === true) {
-    const referenceSignal = deadlines.references();
-    const nearest = routing.nearest.slice(0, 3);
-    for (let i = 0; i < nearest.length; i += 1) {
-      const reference = nearest[i]!;
-      const got = await fetchMedia(config, reference.url, referenceSignal);
-      if (got.ok) references.push(saveMedia(dir, `ref${i}-${reference.filename}`, got.bytes));
+    const basePath = join(hentHome(env), "base.png");
+    try {
+      const bytes = readFileSync(basePath);
+      if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+        references.push(basePath);
+      } else {
+        baseProblem = "invalid_base_image";
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error)) throw error;
+      baseProblem = "base_image_unavailable";
     }
   }
-  console.log(mediaJson({ path: out, routing, references }));
+  console.log(mediaJson({ path: out, routing, references, ...(baseProblem ? { reason: baseProblem } : {}) }));
   return 0;
 };
 
