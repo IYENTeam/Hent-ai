@@ -26,6 +26,7 @@ export type SemanticAssetRouteInput = {
   readonly emotion?: Emotion;
   readonly text: string;
   readonly affect?: ResponseAffectV2;
+  readonly assetSetUpdatedAt?: string;
 };
 
 export type SemanticAssetSelection = {
@@ -33,6 +34,9 @@ export type SemanticAssetSelection = {
   readonly mode: "affect-v2" | "semantic" | "legacy-fallback";
   readonly score: number | null;
   readonly distance?: number | null;
+  readonly threshold?: number | null;
+  readonly generate?: boolean;
+  readonly nearest?: readonly { readonly media: SemanticAssetMedia; readonly distance: number }[];
 };
 
 export interface SemanticAssetRouter {

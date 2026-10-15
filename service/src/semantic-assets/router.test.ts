@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as affectSpace from "../../../shared/affect.js";
 import { SEMANTIC_ASSET_TAGS_SCHEMA_VERSION, type SemanticAssetTagsV1 } from "./contracts.js";
 import {
   AFFECT_DIMENSIONS,
@@ -73,7 +74,69 @@ function responseAffect(overrides: Partial<AffectDimensionsV2> = {}): ResponseAf
   };
 }
 
+function uniformDimensions(value: number): AffectDimensionsV2 {
+  return affectDimensions(Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, value])));
+}
+
+function uniformCandidate(value: number): SemanticAssetCandidate {
+  const tags = visualAffect(uniformDimensions(value));
+  return candidate(`${value}.png`, tags, affectVectorFromDimensions(tags.dimensions));
+}
+
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
 describe("DeterministicSemanticAssetRouter", () => {
+  it("returns three nearest references including the selected image and a hand-computed p95", () => {
+    // Uniform dimensions make weighted distances equal scalar differences.
+    // LOO minima: .1, .1, .1, .2, .2, .4; nearest-rank p95 is rank 6 = .4.
+    const router = new DeterministicSemanticAssetRouter(repository([0, 0.1, 0.2, 0.4, 0.6, 1].map(uniformCandidate)), () => 0);
+    const selection = router.route({ channelId: "c1", text: "near", affect: responseAffect(uniformDimensions(0)) });
+    expect(selection?.threshold).toBeCloseTo(0.4);
+    expect(selection?.generate).toBe(false);
+    expect(selection?.media.filename).toBe("0.png");
+    expect(selection?.nearest?.map(({ media }) => media.filename)).toEqual(["0.png", "0.1.png", "0.2.png"]);
+    selection?.nearest?.forEach(({ distance }, index) => expect(distance).toBeCloseTo(index / 10));
+  });
+
+  it.each([
+    ["0", 0.05, true, 0],
+    ["0", 0, false, 0],
+    ["0.125", 0.125, false, 0.125],
+    ["not-a-number", 0.05, true, 0],
+    ["Infinity", 0.05, true, 0],
+    ["", 0.05, true, 0],
+  ])("honors override %s at distance %s with generate=%s", (override, value, generate, threshold) => {
+    vi.stubEnv("HENT_AI_NATIVE_GENERATE_DISTANCE", override);
+    const selection = new DeterministicSemanticAssetRouter(repository([uniformCandidate(0)])).route({
+      channelId: "c1", text: "override", affect: responseAffect(uniformDimensions(value)),
+    });
+    expect(selection).toMatchObject({ threshold, generate });
+    expect(selection?.distance).toBeCloseTo(value);
+    expect(selection?.nearest).toHaveLength(1);
+  });
+
+  it.each(["count", "updatedAt"] as const)("invalidates the cached threshold when the set's %s changes", (change) => {
+    const candidates = [0, 0.25, 0.5].map(uniformCandidate);
+    const router = new DeterministicSemanticAssetRouter(repository(candidates));
+    const input = { channelId: "c1", text: "cached", affect: responseAffect(), assetSetUpdatedAt: "2026-10-15T00:00:00Z" };
+    expect(router.route(input)?.threshold).toBeCloseTo(0.25);
+    if (change === "count") candidates.push(uniformCandidate(1));
+    else candidates[2] = uniformCandidate(1);
+    expect(router.route({ ...input, ...(change === "updatedAt" ? { assetSetUpdatedAt: "2026-10-15T00:00:01Z" } : {}) })?.threshold)
+      .toBeCloseTo(change === "count" ? 0.5 : 0.75);
+  });
+
+  it("reuses the leave-one-out threshold for an unchanged set revision", () => {
+    const distance = vi.spyOn(affectSpace, "weightedAffectDistance");
+    const router = new DeterministicSemanticAssetRouter(repository([0, 0.25, 0.5].map(uniformCandidate)));
+    const input = { channelId: "c1", text: "cached", affect: responseAffect(), assetSetUpdatedAt: "revision" };
+    router.route(input);
+    distance.mockClear();
+    router.route(input);
+    // Only the three query distances, not six more leave-one-out distances.
+    expect(distance).toHaveBeenCalledTimes(3);
+  });
+
   it("ranks the complete mapped set in AffectSpaceV2 without a coarse-emotion filter", () => {
     const angry = visualAffect({ anger: 0.9, irritation: 0.8, playfulness: 0.7 });
     const cheerful = visualAffect({ joy: 0.9, smileIntensity: 0.9 });
@@ -114,7 +177,7 @@ describe("DeterministicSemanticAssetRouter", () => {
       text: "happy",
       affect: responseAffect({ joy: 0.8 }),
     });
-    expect(selection).toMatchObject({ mode: "legacy-fallback", media: { filename: "a-unmigrated.png" }, distance: null });
+    expect(selection).toMatchObject({ mode: "legacy-fallback", media: { filename: "a-unmigrated.png" }, distance: null, threshold: null, generate: false, nearest: [] });
   });
 
   it("ranks only mapped-set and selected-emotion candidates by cosine similarity", () => {
@@ -158,6 +221,9 @@ describe("DeterministicSemanticAssetRouter", () => {
     expect(selection).toEqual({
       mode: "legacy-fallback",
       score: null,
+      threshold: null,
+      generate: false,
+      nearest: [],
       media: {
         filename: "a.png",
         contentType: "image/png",
