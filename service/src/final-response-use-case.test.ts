@@ -31,6 +31,7 @@ describe("final-response application use case", () => {
     await expect(useCase.execute({ channelId: "c1", finalText: "좋아", validEmotions: ["happy"], responseAffect: affect })).resolves.toEqual({
       verdict: {
         affect,
+        routing: { mode: "semantic", distance: null, threshold: null, generate: false, nearest: [] },
         media: {
           filename: "semantic-neutral.png",
           contentType: "image/png",
@@ -83,6 +84,30 @@ describe("final-response application use case", () => {
       { channelId: "c1", text: "흥 😤", affect },
     ]);
     expect(db.db.prepare("SELECT COUNT(*) AS count FROM verifier_cache").get()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it("refreshes fit fields and reference URLs even on a cached verdict", async () => {
+    const db = new ServiceDatabase();
+    let distance = 0.5;
+    const useCase = createFinalResponseUseCase({ db, assetRouter: {
+      route: () => ({
+        media: routedMedia, mode: "affect-v2", score: 1 - distance, distance,
+        threshold: 0.25, generate: distance > 0.25, nearest: [{ media: routedMedia, distance }],
+      }),
+    } });
+    const request = { channelId: "c1", finalText: "fit", validEmotions: ["happy"], responseAffect: responseAffect() };
+    const first = await useCase.execute(request);
+    distance = 0;
+    const cached = await useCase.execute(request);
+    expect(first.verdict?.routing).toEqual({
+      mode: "affect-v2", distance: 0.5, threshold: 0.25, generate: true,
+      nearest: [{ url: routedMedia.objectUrl, filename: routedMedia.filename, distance: 0.5 }],
+    });
+    expect(cached.verdict?.routing).toEqual({
+      mode: "affect-v2", distance: 0, threshold: 0.25, generate: false,
+      nearest: [{ url: routedMedia.objectUrl, filename: routedMedia.filename, distance: 0 }],
+    });
     db.close();
   });
 });

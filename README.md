@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai attaches a matching emotion image to every bot reply. A Claude Code or Codex session is the bot's brain, the always-on `hent bridge` owns the Discord connection and token, and the **Hent-ai service** picks images.
+Hent-ai attaches a matching emotion image to every bot reply. A Codex session is the bot's brain, the always-on `hent bridge` owns the Discord connection and token, and the **Hent-ai service** picks images.
 
 ### Supported Emotions
 
@@ -26,7 +26,7 @@ Hent-ai attaches a matching emotion image to every bot reply. A Claude Code or C
 Discord  <->  hent bridge (Discord token, gateway, inbound journal, send API)
                  |  pushes every inbound message as one "[hent] INBOUND" line
                  v
-             Claude Code / Codex session with the hent-mode skill (the brain)
+             Codex session with the hent-mode skill (the brain)
                  |  hent send --to <channel> --reply-to <message> --text ... --affect ...
                  v
              Hent-ai HTTP service (token-free): affect router -> /static media
@@ -64,7 +64,7 @@ The generated pool, tags, manifests, setup state, and backups stay outside Git u
 > **Agent setup:** You can also tell Codex to read [`SKILL.md`](./SKILL.md) and set up a character pool. The skill uses the same one-shot entrypoint and only pauses for a real missing prerequisite.
 
 Run the bot: install the session kit (`kit/install.sh`), start the bridge, and say "hent mode" in a
-Claude Code or Codex session. See [`docs/agent-runbook.md`](docs/agent-runbook.md).
+Codex session. See [`docs/agent-runbook.md`](docs/agent-runbook.md).
 
 ## Creating Emotion Images
 

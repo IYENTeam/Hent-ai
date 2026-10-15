@@ -3,7 +3,18 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
-import { agentWorking, Deliverer, defaultFindTranscript, type Exec, formatPrompt, inboundLine, inputLine, type StoredSession, transcriptReceived } from "../src/bridge/deliver.ts";
+import {
+  agentWorking,
+  Deliverer,
+  defaultFindTranscript,
+  type Exec,
+  formatPrompt,
+  inboundLine,
+  inputLine,
+  readSession,
+  type StoredSession,
+  transcriptReceived,
+} from "../src/bridge/deliver.ts";
 import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
 import { realClock } from "../src/run.ts";
 
@@ -31,6 +42,12 @@ const event = (messageId: string, content: string, over: Partial<NewInboxEvent> 
 type Harness = ReturnType<typeof harness>;
 type FakeAgent = { agent: string; agent_status: string } | null;
 
+// Codex rollout records: a submitted line lands as a user message, the agent's own output does not.
+const userRecord = (text: string) =>
+  JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
+const agentRecord = (text: string) =>
+  JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+
 const harness = (session: StoredSession | null, opts: { bridged?: boolean; backoffMs?: number[] } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "hent-deliver-"));
   dirs.push(home);
@@ -40,14 +57,14 @@ const harness = (session: StoredSession | null, opts: { bridged?: boolean; backo
   if (session) writeFileSync(paths.session, JSON.stringify(session));
   const journal = Journal.open(paths, Date.now(), () => {});
   const handled = HandledLedger.open(paths.handled, Date.now());
-  // The fake pane agent writes where Claude Code does: <HOME>/.claude/projects/<cwd-slug>/<sessionId>.jsonl.
+  // The fake pane agent writes where Codex does: <HOME>/.codex/sessions/<y>/<m>/<d>/rollout-*<sessionId>*.jsonl.
   const sessionId = session?.sessionId ?? "none";
-  const projectDir = join(home, ".claude", "projects", "-tmp");
-  mkdirSync(projectDir, { recursive: true });
-  const transcript = join(projectDir, `${sessionId}.jsonl`);
-  writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: { role: "assistant", content: "이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200) } })}\n`);
+  const rolloutDir = join(home, ".codex", "sessions", "2026", "10", "15");
+  mkdirSync(rolloutDir, { recursive: true });
+  const transcript = join(rolloutDir, `rollout-2026-10-15T00-50-01-${sessionId}.jsonl`);
+  writeFileSync(transcript, `${agentRecord("이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200))}\n`);
   // Fake herdr: `agent get` reports the pane occupant, `agent read` the screen, `agent prompt` submits a line.
-  let agent: FakeAgent = { agent: session?.agent ?? "claude", agent_status: "idle" };
+  let agent: FakeAgent = { agent: session?.agent ?? "codex", agent_status: "idle" };
   let paneScreen: string | null = null;
   let paneInput = "";
   let paneWrites = true;
@@ -67,8 +84,7 @@ const harness = (session: StoredSession | null, opts: { bridged?: boolean; backo
       if (queueInput) queued.push(line);
       else {
         // A pane that "does not write" still produces agent output quoting the line, which must not count as receipt.
-        const record = paneWrites ? { type: "user", message: { role: "user", content: line } } : { type: "assistant", message: { role: "assistant", content: `echo: ${line}` } };
-        appendFileSync(transcript, `${JSON.stringify(record)}\n`);
+        appendFileSync(transcript, `${paneWrites ? userRecord(line) : agentRecord(`echo: ${line}`)}\n`);
       }
       return { code: 0, stdout: "" };
     }
@@ -105,7 +121,7 @@ const harness = (session: StoredSession | null, opts: { bridged?: boolean; backo
     setPromptFails: (fails: boolean) => (promptFails = fails),
     setQueueInput: (on: boolean) => (queueInput = on),
     readQueued: () => {
-      for (const line of queued.splice(0)) appendFileSync(transcript, `${JSON.stringify({ type: "user", message: { role: "user", content: line } })}\n`);
+      for (const line of queued.splice(0)) appendFileSync(transcript, `${userRecord(line)}\n`);
     },
     injected: () => calls.filter((c) => c[0] === "herdr" && c[2] === "prompt").map((c) => c[4]!),
     logs: () => logLines,
@@ -121,7 +137,7 @@ const settle = async (h: Harness, predicate: () => boolean, ms = 3000): Promise<
   h.deliverer.pendingCount();
 };
 
-const pane: StoredSession = { agent: "claude", sessionId: "11111111-2222-3333-4444-555555555555", pane: "w1:p1", cwd: "/tmp" };
+const pane: StoredSession = { agent: "codex", sessionId: "11111111-2222-3333-4444-555555555555", pane: "w1:p1", cwd: "/tmp" };
 
 test("three events are injected into the pane in seq order", async () => {
   const h = harness(pane);
@@ -152,7 +168,7 @@ test("with no live agent in the pane, events stay queued (never run elsewhere) u
   await settle(h, () => h.logs().filter((l) => l.includes("no_agent_in_pane")).length >= 2);
   expect(h.injected()).toEqual([]);
   expect(h.calls.every((c) => c[0] === "herdr")).toBe(true);
-  h.setAgent({ agent: "claude", agent_status: "idle" });
+  h.setAgent({ agent: "codex", agent_status: "idle" });
   h.deliverer.onSessionSet();
   await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
   expect(h.injected().length).toBe(1);
@@ -195,7 +211,7 @@ test("bridge restart resumes undelivered events and does not repeat delivered on
     log: () => {},
     exec: async (argv) => {
       calls.push([...argv]);
-      if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "claude", agent_status: "idle" } } }) };
+      if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", agent_status: "idle" } } }) };
       if (argv[2] === "read") return { code: 0, stdout: "> \n" };
       if (argv[2] === "prompt") h.handled.mark({ messageId: "m2", how: "replied", at: new Date().toISOString() });
       return { code: 0, stdout: "" };
@@ -242,7 +258,7 @@ test("a pane with unfinished typed input waits, then delivers once the input is 
 
 test("a pane where herdr sees another agent is never typed into", async () => {
   const h = harness(pane);
-  h.setAgent({ agent: "codex", agent_status: "idle" });
+  h.setAgent({ agent: "gemini", agent_status: "idle" });
   h.journal.append(event("m1", "hi"));
   await settle(h, () => h.logs().some((l) => l.includes("no_agent_in_pane")));
   expect(h.injected()).toEqual([]);
@@ -252,11 +268,11 @@ test("a pane where herdr sees another agent is never typed into", async () => {
 test("an agent herdr reports as working or blocked on a question waits", async () => {
   for (const status of ["working", "blocked", "unknown"]) {
     const h = harness(pane);
-    h.setAgent({ agent: "claude", agent_status: status });
+    h.setAgent({ agent: "codex", agent_status: status });
     h.journal.append(event("m1", "hi"));
     await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
     expect(h.injected()).toEqual([]);
-    h.setAgent({ agent: "claude", agent_status: "done" });
+    h.setAgent({ agent: "codex", agent_status: "done" });
     await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
     expect(h.injected().length).toBe(1);
     h.deliverer.stop();
@@ -289,12 +305,6 @@ test("inputLine reads a real herdr capture of Codex (CRLF lines, dim placeholder
   expect(agentWorking(screen("idle"))).toBe(false);
 });
 
-test("inputLine reads a real Claude Code 2.1 screen (❯ prompt, dim placeholder)", () => {
-  const screen = (name: string) => readFileSync(new URL(`./fixtures/claude-2.1-screen-${name}.ansi`, import.meta.url), "utf8");
-  expect(inputLine(screen("empty"))).toBe("empty");
-  expect(inputLine(screen("typed"))).toBe("typed");
-});
-
 test("hent session set restarts the backoff, so the new session is tried right away", async () => {
   const h = harness(pane, { backoffMs: [5, 60_000] });
   rmSync(h.paths.session);
@@ -310,18 +320,16 @@ test("hent session set restarts the backoff, so the new session is tried right a
   h.deliverer.stop();
 });
 
-test("agentWorking spots the live 'esc to interrupt' status of Claude Code and Codex", () => {
+test("agentWorking spots the live 'esc to interrupt' status of Codex", () => {
   const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-  expect(agentWorking(fixture("claude-2.1-screen-working.ansi"))).toBe(true);
   expect(agentWorking(fixture("codex-0.162-screen-working.ansi"))).toBe(true);
-  expect(agentWorking(fixture("claude-2.1-screen-empty.ansi"))).toBe(false);
-  expect(inputLine(fixture("claude-2.1-screen-working.ansi"))).toBe("empty");
+  expect(agentWorking(fixture("codex-0.162-herdr-screen-idle.ansi"))).toBe(false);
   expect(inputLine(fixture("codex-0.162-screen-working.ansi"))).toBe("empty");
 });
 
 test("an agent that is mid-turn with an empty input line is busy, never typed into", async () => {
   const h = harness(pane);
-  h.setPaneScreen(readFileSync(new URL("./fixtures/claude-2.1-screen-working.ansi", import.meta.url), "utf8"));
+  h.setPaneScreen(readFileSync(new URL("./fixtures/codex-0.162-screen-working.ansi", import.meta.url), "utf8"));
   h.journal.append(event("m1", "hi"));
   await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
   expect(h.injected()).toEqual([]);
@@ -354,14 +362,12 @@ test("a pane showing no input prompt is treated as busy, never typed into", asyn
 test("receipt needs the exact injected line in a user-input record", () => {
   const wanted = { ...event("wanted-id", "payload"), seq: 1 } as InboxEvent;
   const prompt = formatPrompt(wanted, []);
-  const user = (content: string) => JSON.stringify({ type: "user", message: { role: "user", content } });
-  const assistant = JSON.stringify({ type: "assistant", message: { role: "assistant", content: prompt } });
-  expect(transcriptReceived(assistant, wanted)).toBe(false);
-  expect(transcriptReceived(user('I saw [hent] INBOUND earlier; {"messageId":"wanted-id"} is pending'), wanted)).toBe(false);
-  expect(transcriptReceived(user(inboundLine({ ...wanted, content: "other payload" })), wanted)).toBe(false);
-  expect(transcriptReceived(user(prompt), wanted)).toBe(true);
-  const codexUser = JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: prompt }] } });
-  expect(transcriptReceived(codexUser, wanted)).toBe(true);
+  expect(transcriptReceived(agentRecord(prompt), wanted)).toBe(false);
+  expect(transcriptReceived(userRecord('I saw [hent] INBOUND earlier; {"messageId":"wanted-id"} is pending'), wanted)).toBe(false);
+  expect(transcriptReceived(userRecord(inboundLine({ ...wanted, content: "other payload" })), wanted)).toBe(false);
+  expect(transcriptReceived(userRecord(prompt), wanted)).toBe(true);
+  const eventMsg = JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: prompt } });
+  expect(transcriptReceived(eventMsg, wanted)).toBe(true);
 });
 
 test("typing without a submitted user record leaves the event unconfirmed", async () => {
@@ -373,17 +379,24 @@ test("typing without a submitted user record leaves the event unconfirmed", asyn
   h.deliverer.stop();
 });
 
-test("transcripts are found where Claude Code and Codex write them", () => {
+test("transcripts are found where Codex writes them", () => {
   const home = mkdtempSync(join(tmpdir(), "hent-find-"));
   dirs.push(home);
-  const claude = join(home, ".claude", "projects", "-Users-me-brain");
-  mkdirSync(claude, { recursive: true });
-  writeFileSync(join(claude, "aaaa-bbbb.jsonl"), "");
   const codex = join(home, ".codex", "sessions", "2026", "10", "14");
   mkdirSync(codex, { recursive: true });
   writeFileSync(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"), "");
-  expect(defaultFindTranscript({ agent: "claude", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/x" }, home)).toBe(join(claude, "aaaa-bbbb.jsonl"));
   expect(defaultFindTranscript({ agent: "codex", sessionId: "cccc-dddd", pane: "w1:p1", cwd: "/x" }, home)).toBe(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"));
+  expect(defaultFindTranscript({ agent: "codex", sessionId: "no-such-session", pane: "w1:p1", cwd: "/x" }, home)).toBeNull();
+});
+
+test("a session.json left by the removed Claude brain is ignored", () => {
+  const home = mkdtempSync(join(tmpdir(), "hent-stale-session-"));
+  dirs.push(home);
+  const path = join(home, "session.json");
+  writeFileSync(path, JSON.stringify({ agent: "claude", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/tmp" }));
+  expect(readSession(path)).toBeNull();
+  writeFileSync(path, JSON.stringify({ agent: "codex", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/tmp" }));
+  expect(readSession(path)).toMatchObject({ agent: "codex", sessionId: "aaaa-bbbb" });
 });
 
 test("prompt text carries quotes, newlines and $( verbatim as one herdr argv element", async () => {

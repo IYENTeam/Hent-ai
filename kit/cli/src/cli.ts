@@ -2,9 +2,9 @@
 // hent - Hent-ai session kit CLI.
 
 import { runBridgeCli } from "./bridge/index.ts";
-import { cmdBridgeInstall, cmdChannels, cmdHistory, cmdInbox, cmdMedia, cmdMemory, cmdSend, cmdSession, cmdSkip, cmdTyping } from "./commands.ts";
+import { cmdAsset, cmdBridgeInstall, cmdChannels, cmdHistory, cmdInbox, cmdMedia, cmdMemory, cmdSend, cmdSession, cmdSkip, cmdTyping } from "./commands.ts";
 
-const IMPLEMENTED: ReadonlySet<string> = new Set(["bridge", "session", "send", "skip", "media", "typing", "channels", "memory", "inbox", "history"]);
+const IMPLEMENTED: ReadonlySet<string> = new Set(["bridge", "session", "send", "skip", "media", "asset", "typing", "channels", "memory", "inbox", "history"]);
 
 const SUBCOMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["bridge", "run the token-owning Discord bridge"],
@@ -12,6 +12,7 @@ const SUBCOMMANDS: ReadonlyArray<readonly [string, string]> = [
   ["send", "send a reply (with emotion media) through the bridge"],
   ["skip", "mark an inbound message handled without replying"],
   ["media", "fetch the emotion image for a reply"],
+  ["asset", "register a generated image in the channel's asset set"],
   ["typing", "show the typing indicator in a channel"],
   ["channels", "list and configure bridged channels"],
   ["memory", "read and write session memory"],
@@ -38,6 +39,8 @@ export const main = (argv: readonly string[]): number | Promise<number> => {
       return cmdSend(rest);
     case "media":
       return cmdMedia(rest);
+    case "asset":
+      return cmdAsset(rest);
     case "typing":
       return cmdTyping(rest);
     case "skip":

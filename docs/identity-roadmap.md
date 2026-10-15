@@ -54,7 +54,7 @@ Hent-ai has three runtime parts and a **shared contract** ([ADR-0002](adr/ADR-00
   interactive agent in a herdr pane), retrying until the session replies or skips.
 - Sends what the session asks (`/v1/send`, idempotent on nonce). Never calls the Hent-ai service.
 
-### Brain - a Claude Code or Codex session with `hent-mode`
+### Brain - a Codex session with `hent-mode`
 
 - Decides whether and what to answer (`kit/skill/hent-mode/references/conversation.md`) in the
   persona of `references/persona.md`.
@@ -62,7 +62,8 @@ Hent-ai has three runtime parts and a **shared contract** ([ADR-0002](adr/ADR-00
 
 ### Image picker - the Hent-ai HTTP service
 
-- Owns profile/channel mappings, asset manifests/storage, the verdict cache, and generation jobs.
+- Owns profile/channel mappings, asset manifests/storage, the verdict cache, and registration of the
+  brain's natively generated images (`POST /v1/assets`). It runs no generation queue of its own.
 - Maps the session's affect to an image with the affect router; holds no messenger token and no
   Discord code.
 

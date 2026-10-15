@@ -1,6 +1,6 @@
 // Push delivery (plan todo 9, ADR-0002 "Push delivery"): every journaled inbound message in a
 // bridged channel (or an allowed DM) is injected into the brain session, one at a time in
-// seq order. The brain is an interactive Claude Code or Codex session in a herdr pane: herdr reports
+// seq order. The brain is an interactive Codex session in a herdr pane: herdr reports
 // whether the agent is idle, `herdr agent prompt` submits the line, and a user-input record in the
 // session transcript confirms it. While no live agent answers in the registered pane, events stay
 // queued and are retried with backoff, so nothing is lost while the session restarts.
@@ -92,7 +92,7 @@ const styledChars = (line: string): { ch: string; dim: boolean }[] => {
 };
 
 /**
- * Reads the agent's input line (the last ">", "›" (Codex) or "❯" (Claude Code 2.x) prompt on screen): "empty", "typed" when it
+ * Reads the agent's input line (the last ">" or "›" (Codex) prompt on screen): "empty", "typed" when it
  * already holds text, or "none" when no prompt is visible (the agent is busy or it is not an agent).
  */
 export const inputLine = (screen: string): "empty" | "typed" | "none" => {
@@ -100,7 +100,7 @@ export const inputLine = (screen: string): "empty" | "typed" | "none" => {
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const chars = styledChars(lines[i]!.replace(/\r/g, ""));
     const start = chars.findIndex((c) => !/[\s│|]/.test(c.ch));
-    if (start === -1 || !/[>›❯]/.test(chars[start]!.ch)) continue;
+    if (start === -1 || !/[>›]/.test(chars[start]!.ch)) continue;
     const typed = chars
       .slice(start + 1)
       .filter((c) => !c.dim)
@@ -114,9 +114,9 @@ export const inputLine = (screen: string): "empty" | "typed" | "none" => {
 };
 
 /**
- * True while the agent is mid-turn. Claude Code and Codex both keep an empty input line while working
- * (typed text is queued), so emptiness alone is not idleness; both show "esc to interrupt" in the
- * live status area at the bottom of the screen until the turn ends.
+ * True while the agent is mid-turn. Codex keeps an empty input line while working (typed text is
+ * queued), so emptiness alone is not idleness; it shows "esc to interrupt" in the live status area
+ * at the bottom of the screen until the turn ends.
  */
 export const agentWorking = (screen: string): boolean =>
   screen
@@ -129,15 +129,13 @@ export const agentWorking = (screen: string): boolean =>
 type JsonObject = { readonly [key: string]: unknown };
 const asObject = (value: unknown): JsonObject | null => (value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : null);
 
-/** Texts of a transcript record that is user input: Claude `{type:"user",message}`, Codex `{payload:{role:"user"}}` or `user_message`. */
+/** Texts of a transcript record that is user input: Codex `{payload:{role:"user"}}` or `{payload:{type:"user_message"}}`. */
 const userInputTexts = (record: unknown): string[] => {
   const r = asObject(record);
   if (!r) return [];
   const payload = asObject(r.payload);
-  const message = asObject(r.message);
   let content: unknown;
-  if (r.type === "user" && message?.role === "user") content = message.content;
-  else if (payload?.role === "user") content = payload.content;
+  if (payload?.role === "user") content = payload.content;
   else if (payload?.type === "user_message") content = payload.message;
   else return [];
   if (typeof content === "string") return [content];
@@ -164,10 +162,11 @@ export const transcriptReceived = (chunk: string, event: InboxEvent): boolean =>
 };
 const HISTORY_COUNT = 30;
 
+/** The registered pane session; a session.json left by the removed Claude brain is ignored. */
 export const readSession = (path: string): StoredSession | null => {
   try {
     const value = JSON.parse(readFileSync(path, "utf8")) as StoredSession;
-    return typeof value.sessionId === "string" && typeof value.pane === "string" && (value.agent === "claude" || value.agent === "codex") ? value : null;
+    return typeof value.sessionId === "string" && typeof value.pane === "string" && value.agent === "codex" ? value : null;
   } catch {
     return null;
   }
@@ -193,11 +192,9 @@ const walkFind = (dir: string, match: (name: string) => boolean, depth = 5): str
   return best?.path ?? null;
 };
 
-/** Claude Code: ~/.claude/projects/<slug>/<sessionId>.jsonl; Codex: ~/.codex/sessions/**\/rollout-*<sessionId>*.jsonl. */
+/** Codex: ~/.codex/sessions/**\/rollout-*<sessionId>*.jsonl. */
 export const defaultFindTranscript = (session: StoredSession, home = homedir()): string | null =>
-  session.agent === "claude"
-    ? walkFind(join(home, ".claude", "projects"), (n) => n === `${session.sessionId}.jsonl`, 2)
-    : walkFind(join(home, ".codex", "sessions"), (n) => n.endsWith(".jsonl") && n.includes(session.sessionId));
+  walkFind(join(home, ".codex", "sessions"), (n) => n.endsWith(".jsonl") && n.includes(session.sessionId));
 
 export const formatPrompt = (event: InboxEvent, history: readonly InboxEvent[]): string => {
   const slim = (e: InboxEvent) => ({ messageId: e.messageId, author: e.authorName, self: e.authorIsSelf, content: e.content, at: e.createdAt });

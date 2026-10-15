@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { CANONICAL_EMOTIONS, type Emotion } from "../../shared/emotions.js";
 import { parseResponseAffectV2, type ResponseAffectV2 } from "../../shared/affect.js";
 import type { ServiceDatabase } from "./db.js";
-import type { SemanticAssetMedia, SemanticAssetRouter } from "./semantic-assets/ports.js";
+import type { SemanticAssetMedia, SemanticAssetRouter, SemanticAssetSelection } from "./semantic-assets/ports.js";
 
 export const FINAL_VERDICT_SCHEMA_VERSION = "FinalEmotionVerdictV1";
 export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV2-ExplicitSensitivity";
@@ -31,6 +31,13 @@ export type FinalVerdict = {
   reason?: string;
   affect?: ResponseAffectV2;
   media?: ServiceMedia;
+  routing?: {
+    readonly mode: SemanticAssetSelection["mode"];
+    readonly distance: number | null;
+    readonly threshold: number | null;
+    readonly generate: boolean;
+    readonly nearest: readonly { readonly url: string; readonly filename: string; readonly distance: number }[];
+  };
 };
 
 export type FinalVerdictResult = {
@@ -69,10 +76,10 @@ export function createFinalResponseUseCase(dependencies: {
       const cached = cachedVerdict(dependencies.db, key, validEmotions);
       if (cached !== undefined) {
         if (!cached) return skippedVerdict("cached_null_verdict");
-        return verdictWithRoutedMedia(dependencies.assetRouter, request.channelId, request.finalText, cached);
+        return verdictWithRoutedMedia(dependencies, request.channelId, request.finalText, cached);
       }
 
-      const result = verdictWithRoutedMedia(dependencies.assetRouter, request.channelId, request.finalText, { affect: responseAffect });
+      const result = verdictWithRoutedMedia(dependencies, request.channelId, request.finalText, { affect: responseAffect });
       if (!result.verdict) {
         storeCachedVerdict(dependencies.db, key, null);
         return result;
@@ -84,7 +91,7 @@ export function createFinalResponseUseCase(dependencies: {
 }
 
 function verdictWithRoutedMedia(
-  assetRouter: SemanticAssetRouter,
+  dependencies: { readonly db: ServiceDatabase; readonly assetRouter: SemanticAssetRouter },
   channelId: string | undefined,
   finalText: string,
   verdict: FinalVerdict,
@@ -92,9 +99,22 @@ function verdictWithRoutedMedia(
   const emotion = normalizeEmotion(verdict.emotion);
   const affect = parseResponseAffectV2(verdict.affect);
   if (!channelId || (!emotion && !affect)) return skippedVerdict("no_asset_for_emotion");
-  const selection = assetRouter.route({ channelId, ...(emotion ? { emotion } : {}), text: finalText, ...(affect ? { affect } : {}) });
+  const selection = dependencies.assetRouter.route({
+    channelId, ...(emotion ? { emotion } : {}), text: finalText, ...(affect ? { affect } : {}),
+  });
   if (!selection) return skippedVerdict("no_asset_for_emotion");
-  return { verdict: { ...verdict, ...(emotion ? { emotion } : {}), media: serviceMediaFrom(selection.media) } };
+  return {
+    verdict: {
+      ...verdict, ...(emotion ? { emotion } : {}), media: serviceMediaFrom(selection.media),
+      routing: {
+        mode: selection.mode,
+        distance: selection.distance ?? null,
+        threshold: selection.threshold ?? null,
+        generate: selection.generate ?? false,
+        nearest: (selection.nearest ?? []).map(({ media, distance }) => ({ url: media.objectUrl, filename: media.filename, distance })),
+      },
+    },
+  };
 }
 
 function serviceMediaFrom(media: SemanticAssetMedia): ServiceMedia {

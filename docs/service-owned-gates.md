@@ -1,15 +1,14 @@
 # Service-owned PR and release gates
 
 Hent-ai's runtime is split by [ADR-0002](adr/ADR-0002-session-brain-bridge.md): the `hent bridge`
-daemon owns the Discord token and connection, a Claude Code or Codex session running `hent-mode` is
-the brain, and the Hent-ai service is a token-free image picker. PR and release gates protect that
-split.
+daemon owns the Discord token and connection, a Codex session running `hent-mode` is the brain, and
+the Hent-ai service is a token-free image picker. PR and release gates protect that split.
 
 ## Ownership
 
 - `service/` owns final-response verdict selection (affect routing + verdict cache), channel/profile
-  mappings, asset storage, generation jobs, and static media. It holds no messenger token and no
-  Discord code.
+  mappings, asset storage, registration of natively generated brain images (`POST /v1/assets`), and
+  static media. It runs no generation queue and holds no messenger token and no Discord code.
 - `kit/cli` owns the bridge (token, gateway, inbound journal, push delivery, send API) and the
   session commands (`hent send`, `skip`, `media`, `session`, `channels`, `memory`). It has zero runtime
   npm dependencies and fails open when the service is slow or down.

@@ -25,7 +25,6 @@ link_skill() {
 
 mkdir -p "$HOME/.agents/skills"
 link_skill "$HOME/.agents/skills"
-link_skill "$HOME/.claude/skills"
 link_skill "$HOME/.codex/skills"
 
 (cd "$KIT_DIR/cli" && bun install --frozen-lockfile >/dev/null && bun link >/dev/null)

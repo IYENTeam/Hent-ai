@@ -1,8 +1,8 @@
 # Hent-ai Agent Runbook
 
 Topology (see [ADR-0002](adr/ADR-0002-session-brain-bridge.md)): the always-on `hent bridge` owns the
-Discord token and connection and pushes every inbound message into the bot session; the Claude Code or
-Codex session running the `hent-mode` skill is the brain and replies with `hent send`; the Hent-ai
+Discord token and connection and pushes every inbound message into the bot session; the Codex
+session running the `hent-mode` skill is the brain and replies with `hent send`; the Hent-ai
 service is a token-free image picker and asset manager.
 
 ## Build
@@ -95,13 +95,14 @@ The bridge runs as the LaunchAgent `ai.hent.bridge` (`hent bridge install` rende
 `~/Library/LaunchAgents/ai.hent.bridge.plist`; it contains no token). Health: `GET
 http://127.0.0.1:8789/v1/health`.
 
-Brain session: an interactive Claude Code or Codex session in a herdr pane (herdr is required; there
-is no tmux or headless path). `kit/brain.sh start [--agent claude|codex] [--resume]` creates the
-`hent-brain` herdr workspace, starts the agent with restricted permissions, and has it run
-`hent session set` (the pane comes from `$HERDR_PANE_ID`); `kit/brain.sh stop` closes it. The bridge
-pushes each inbound message with `herdr agent prompt` once herdr reports the agent idle with an
-empty input line, and confirms it from the session transcript. While no agent is in the pane,
-messages stay queued and are delivered after the next `hent session set`.
+Brain session: an interactive Codex session in a herdr pane (herdr is required; there is no tmux or
+headless path). `kit/brain.sh start [--resume]` creates the `hent-brain` herdr workspace, starts
+Codex in its restricted sandbox, and has it run `hent session set` (the pane comes from
+`$HERDR_PANE_ID`); `--resume` continues the recorded thread (`~/.hent/brain-codex.sid`) and
+`kit/brain.sh stop` closes the workspace. The bridge pushes each inbound message with
+`herdr agent prompt` once herdr reports the agent idle with an empty input line, and confirms it
+from the session transcript under `~/.codex/sessions/`. While no agent is in the pane, messages stay
+queued and are delivered after the next `hent session set`.
 
 ## Affect asset routing and static media
 
@@ -128,52 +129,37 @@ The `gothic-affect-v3` corpus is external deployment data generated and reviewed
 workflow in `generate/README.md`. The release gate does not generate or call an LLM; it verifies
 the external 100-image manifest, every pixel hash, complete actual-pixel tags, and activation state.
 
-## Image Generation Job Path
+## Native Image Registration
 
-The service exposes an async generation path. `POST /v1/assets/generate` creates a queued job; a worker/provider later processes that job with `runNextGenerationJob(db, provider, { assetRoot })`.
-
-Minimum request shape:
+The service generates nothing and runs no job queue. The brain draws a missing image with its own
+native image tool and registers the bytes with `POST /v1/assets`:
 
 ```json
 {
-  "prompt": "image prompt",
-  "assetSetId": "gothic-v1",
+  "channelId": "123",
   "emotion": "sorry",
-  "filename": "sorry.png"
-}
-```
-
-Provider result shape for generated image persistence:
-
-```json
-{
-  "dataBase64": "<base64 image bytes>",
+  "visualAffect": { "schemaVersion": "VisualAffectV2", "affectSpaceVersion": "AffectSpaceV2", "dimensions": {} },
   "contentType": "image/png",
-  "metadata": {}
+  "dataBase64": "<base64 image bytes>",
+  "prompt": "optional prompt text"
 }
 ```
 
-When `assetRoot` is supplied, the worker writes the image under `generated/<assetSetId>/<emotion>/<jobId>-<filename>`, upserts `storage_objects` and `assets`, strips inline base64 from the stored job result, and exposes the image through `/static/...`. Tests must keep providers mocked; do not trigger paid image generation in CI.
+The service resolves the channel's mapped asset set (404 when the channel has none), checks the
+bytes against `contentType` by magic bytes (PNG/JPEG/WebP), requires a canonical emotion and a
+parsable `VisualAffectV2` block, then writes the image under
+`native/<assetSetId>/<emotion>/<content-hash>.<ext>` and upserts `storage_objects` (provenance
+`native`) and `assets` with the affect tags and vector, so the set stays fully tagged and keeps
+routing on affect. The reply is `201 { asset, media }`; re-registering identical bytes returns `200`
+with the stored asset, and `409` covers a conflicting asset id, storage key, or existing file.
+Registration is immutable: the service never overwrites an existing asset, storage object, or file,
+and it responds `503` when the deployment has no `assetRoot`. Tests must never call a real image
+generator; do not trigger paid image generation in CI.
 
-Persisted generated assets include provenance metadata on both `storage_objects` and `assets`: job id, content hash, content type, byte size, dimensions when known, source references, source (`hent-ai-generation-worker`), verification status, and hashes of request/provider metadata. The metadata intentionally avoids persisting raw prompts, conversation windows, or provider payloads with the long-lived storage object.
-
-Generated asset writes are treated as immutable. A worker must fail rather than overwrite an existing generated storage key or asset id; active-set changes are pointer updates, not root-file copy operations.
-
-For the community-cron workflow, `POST /v1/assets/generate` also accepts a cron selector request:
-
-```json
-{
-  "communitySelector": {
-    "conversationWindow": [
-      { "authorId": "u1", "content": "hello", "createdAt": "2026-06-03T00:00:00Z" }
-    ],
-    "draftReply": "draft reply text",
-    "channelId": "123",
-    "profileId": "gothic-v1",
-    "assetSetId": "gothic-v1"
-  }
-}
-```
+Batch generation of a whole set stays in the `generate` CLI (`generate/README.md`). The service-side
+queue (`POST /v1/assets/generate`, `GET /v1/jobs/:id`, `generation-worker.ts`) was removed; schema 7
+drops the `generation_jobs` table on startup and aborts with a clear error if that table still holds
+rows, so a deployment with queued jobs must export and delete them before running this version.
 
 The service also exposes `GET /v1/channels/cron-enabled`, which returns the service-owned cron allowlist plus a revision token so a poller can decide when to refresh its cached channel set.
 
@@ -213,7 +199,7 @@ Rollback per channel: `hent channels remove <channel>` and restore the OpenClaw 
 
 The service runs from a release directory under `~/.hent-ai/releases/<sha>` via its LaunchAgent; the
 bridge runs as `ai.hent.bridge`; the session kit is installed with `kit/install.sh` (links the skill
-into `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills` and `bun link`s `hent`).
+into `~/.agents/skills` and `~/.codex/skills`, and `bun link`s `hent`).
 
 ## Common Operations
 

@@ -2,13 +2,24 @@ import Database from "better-sqlite3";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ServiceDatabase } from "./db.js";
+import { ServiceDatabase, SCHEMA_VERSION } from "./db.js";
+import { initializeServiceSchema } from "./db-schema.js";
 import { importAssets } from "./importer.js";
 import { loadServiceConfig, redactBearerToken } from "./server.js";
-import { runNextGenerationJob } from "./generation-worker.js";
 import { SEMANTIC_ASSET_TAGS_SCHEMA_VERSION, type SemanticAssetTagsV1 } from "./semantic-assets/contracts.js";
 import { semanticVectorForTags } from "./semantic-assets/vector.js";
 import { request, responseAffect, tempDir, token, withServer, writeFixtureAssets } from "./service-test-helpers.js";
+
+/** The generation queue table as schema 6 and earlier created it. */
+const LEGACY_GENERATION_JOBS_DDL = `CREATE TABLE generation_jobs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed')),
+  request_json TEXT NOT NULL,
+  result_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`;
 
 describe("service auth, health, and config", () => {
   it("returns health without auth and protects v1 APIs with bearer auth", async () => {
@@ -93,13 +104,31 @@ describe("schema and importer", () => {
       "assets",
       "emotion_mappings",
       "storage_objects",
-      "generation_jobs",
       "verifier_cache",
       "rate_limits",
       "schema_migrations",
       "import_runs",
     ]));
+    expect(db.tableNames()).not.toContain("generation_jobs");
     db.close();
+  });
+
+  it("drops an empty legacy generation_jobs table and refuses to drop one that still has rows", () => {
+    const empty = new Database(":memory:");
+    empty.exec(LEGACY_GENERATION_JOBS_DDL);
+    initializeServiceSchema(empty, new Date().toISOString());
+    expect(empty.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'generation_jobs'").all()).toEqual([]);
+    expect(empty.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: SCHEMA_VERSION });
+    empty.close();
+
+    const populated = new Database(":memory:");
+    populated.exec(LEGACY_GENERATION_JOBS_DDL);
+    populated.prepare("INSERT INTO generation_jobs (id, status, request_json, created_at, updated_at) VALUES ('job_1', 'queued', '{}', ?, ?)")
+      .run("2026-10-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z");
+    expect(() => initializeServiceSchema(populated, new Date().toISOString()))
+      .toThrow(/Refusing to drop generation_jobs: 1 row\(s\) present/);
+    expect(populated.prepare("SELECT COUNT(*) AS count FROM generation_jobs").get()).toEqual({ count: 1 });
+    populated.close();
   });
 
   it("dry-runs without mutation and real imports are idempotent with storage metadata", () => {
@@ -196,13 +225,16 @@ describe("schema and importer", () => {
   });
 });
 
-describe("runtime and job APIs", () => {
-  it("rejects partial community selector generation requests", async () => {
+describe("runtime APIs", () => {
+  it("exposes no generation queue routes", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
-      const created = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ communitySelector: { draftReply: "missing channel" } }) });
-      expect(created.status).toBe(400);
-      expect(await created.json()).toMatchObject({ error: "bad_request", message: "communitySelector.channelId is required" });
+      const generate = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ prompt: "queue is gone" }) });
+      expect(generate.status).toBe(404);
+      expect(await generate.json()).toEqual({ error: "not_found" });
+
+      const job = await request(baseUrl, "/v1/jobs/job_1");
+      expect(job.status).toBe(404);
     });
   });
 
@@ -340,22 +372,5 @@ describe("runtime and job APIs", () => {
       const legacyDb = await fetch(`${baseUrl}/static/hentai.db`);
       expect(legacyDb.status).toBe(404);
     }, { assetRoot: root });
-  });
-
-  it("persists async generation jobs and exposes runner-processed status", async () => {
-    const db = new ServiceDatabase();
-    await withServer(db, async (baseUrl) => {
-      const created = await request(baseUrl, "/v1/assets/generate", { method: "POST", body: JSON.stringify({ communitySelector: { conversationWindow: [{ authorId: "u1", content: "hello", createdAt: new Date().toISOString() }], draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } }) });
-      expect(created.status).toBe(202);
-      const { jobId } = await created.json() as { jobId: string };
-      expect(jobId).toMatch(/^job_/);
-
-      const processed = await runNextGenerationJob(db, { generate: async (request) => ({ provider: "mock", request }) });
-      expect(processed).toMatchObject({ id: jobId, status: "succeeded", result: { provider: "mock", request: { communitySelector: { draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } } } });
-
-      const status = await request(baseUrl, `/v1/jobs/${jobId}`);
-      expect(status.status).toBe(200);
-      expect(await status.json()).toEqual({ jobId, id: jobId, status: "succeeded", result: { provider: "mock", request: { communitySelector: { conversationWindow: [{ authorId: "u1", content: "hello", createdAt: expect.any(String) }], draftReply: "hi there", channelId: "c1", profileId: "gothic-v1", assetSetId: "gothic-v1" } } }, createdAt: expect.any(String), updatedAt: expect.any(String) });
-    });
   });
 });
