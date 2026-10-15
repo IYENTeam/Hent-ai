@@ -4,7 +4,7 @@ import * as childProcess from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
@@ -163,8 +163,18 @@ test("ping receives a masked pong without disrupting a pending request", async (
 
 test.each(["terminate", "close"] as const)("ambiguous %s rejects all requests and clears resources once", async (mode) => {
   // Given a peer that disconnects after receiving a request.
-  const server = endpoint((ws) => mode === "terminate" ? ws.terminate() : ws.close());
+  let disconnected = false;
+  const server = await rawEndpoint((socket, message) => {
+    if (message.method === "initialize") {
+      socket.write(serverFrame(Buffer.from(JSON.stringify({ id: message.id, result: {} }))));
+    } else if (message.id !== undefined && !disconnected) {
+      disconnected = true;
+      if (mode === "terminate") socket.destroy();
+      else socket.end(serverFrame(Buffer.alloc(0), 8));
+    }
+  });
   const rpc = await connect(server.socketPath);
+  const peerClosed = event(server.events, "close");
   let calls = 0;
   let removedCalls = 0;
   rpc.onClose(() => { calls++; });
@@ -173,6 +183,7 @@ test.each(["terminate", "close"] as const)("ambiguous %s rejects all requests an
   // When multiple requests are in flight at disconnect.
   const results = await Promise.allSettled([rpc.request("first", {}), rpc.request("second", {})]);
   await closed;
+  await peerClosed;
   rpc.close();
   // Then every promise rejects, pending timers disappear, and later requests fail immediately.
   expect(results.every((result) => result.status === "rejected" && result.reason instanceof CodexRpcError)).toBe(true);
@@ -296,17 +307,23 @@ async function rawEndpoint(
   const socketPath = join(directory(), "raw.sock");
   const events = new EventEmitter();
   const sockets = new Set<Duplex>();
-  const server = createServer();
-  server.on("upgrade", (req, socket) => {
+  const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => { sockets.delete(socket); events.emit("close"); });
-    const key = req.headers["sec-websocket-key"];
-    if (typeof key !== "string") throw new Error("Missing upgrade key");
-    const digest = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept ? digest : "invalid"}\r\n\r\n`);
     let buffered: Buffer = Buffer.alloc(0);
+    let upgraded = false;
     socket.on("data", (chunk: Buffer) => {
       buffered = Buffer.concat([buffered, chunk]);
+      if (!upgraded) {
+        const end = buffered.indexOf("\r\n\r\n");
+        if (end < 0) return;
+        const key = /^Sec-WebSocket-Key: ([^\r]+)$/mi.exec(buffered.subarray(0, end).toString("latin1"))?.[1];
+        if (!key) throw new Error("Missing upgrade key");
+        const digest = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept ? digest : "invalid"}\r\n\r\n`);
+        buffered = buffered.subarray(end + 4);
+        upgraded = true;
+      }
       while (buffered.length >= 2) {
         const marker = buffered.readUInt8(1) & 127;
         const header = marker === 126 ? 4 : marker === 127 ? 10 : 2;

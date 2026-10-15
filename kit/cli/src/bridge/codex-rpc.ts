@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { request } from "node:http";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
@@ -68,36 +68,56 @@ export class CodexRpc {
     const socketPath = options.socketPath ?? join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-control/app-server-control.sock");
     const key = randomBytes(16).toString("base64");
     const rpc = await new Promise<CodexRpc>((resolve, reject) => {
-      const req = request({
-        socketPath, path: "/", headers: {
-          host: "localhost", upgrade: "websocket", connection: "Upgrade",
-          "sec-websocket-version": "13", "sec-websocket-key": key,
-        },
-      });
-      const timer = setTimeout(() => req.destroy(new CodexRpcError("Codex upgrade timeout")), timeoutMs);
-      req.on("error", (error) => { clearTimeout(timer); reject(rpcError(error)); });
-      req.on("response", (res) => {
+      const socket = createConnection({ path: socketPath });
+      let headers = Buffer.alloc(0);
+      const failed = (error: Error): void => {
         clearTimeout(timer);
-        res.destroy();
-        req.destroy();
-        reject(new CodexRpcError(`Codex upgrade returned ${res.statusCode}`));
-      });
-      req.on("upgrade", (res, socket, head) => {
-        clearTimeout(timer);
-        const expected = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-        const connection = res.headers.connection?.toLowerCase().split(",").map((token) => token.trim());
-        if (res.statusCode !== 101 || res.headers.upgrade?.toLowerCase() !== "websocket"
-          || !connection?.includes("upgrade") || res.headers["sec-websocket-accept"] !== expected
-          || res.headers["sec-websocket-extensions"] !== undefined || res.headers["sec-websocket-protocol"] !== undefined) {
-          socket.destroy();
-          reject(new CodexRpcError("Invalid Codex WebSocket handshake"));
-          return;
+        socket.off("data", upgrade);
+        socket.off("close", closed);
+        socket.destroy();
+        reject(rpcError(error));
+      };
+      const closed = (): void => failed(new CodexRpcError("Codex connection closed during upgrade"));
+      const timer = setTimeout(() => failed(new CodexRpcError("Codex upgrade timeout")), timeoutMs);
+      const upgrade = (chunk: Buffer): void => {
+        try {
+          headers = Buffer.concat([headers, chunk]);
+          const end = headers.indexOf("\r\n\r\n");
+          if (end < 0 && headers.length <= 16_384) return;
+          if (end < 0 || end > 16_384) throw new CodexRpcError("Codex upgrade headers exceed 16 KiB");
+          const lines = headers.subarray(0, end).toString("latin1").split("\r\n");
+          if (!/^HTTP\/1\.1 101(?: |$)/.test(lines.shift() ?? "")) throw new CodexRpcError("Codex refused WebSocket upgrade");
+          const fields = new Map<string, string>();
+          for (const line of lines) {
+            const colon = line.indexOf(":");
+            if (colon <= 0) throw new CodexRpcError("Invalid Codex WebSocket handshake");
+            const name = line.slice(0, colon).toLowerCase();
+            if (fields.has(name)) throw new CodexRpcError("Invalid Codex WebSocket handshake");
+            fields.set(name, line.slice(colon + 1).trim());
+          }
+          const expected = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+          if (fields.get("upgrade")?.toLowerCase() !== "websocket"
+            || !fields.get("connection")?.toLowerCase().split(",").map((token) => token.trim()).includes("upgrade")
+            || fields.get("sec-websocket-accept") !== expected || fields.has("sec-websocket-extensions") || fields.has("sec-websocket-protocol")) {
+            throw new CodexRpcError("Invalid Codex WebSocket handshake");
+          }
+          clearTimeout(timer);
+          socket.off("data", upgrade);
+          socket.off("error", failed);
+          socket.off("close", closed);
+          const client = new CodexRpc(socket, timeoutMs);
+          if (headers.length > end + 4) client.receive(headers.subarray(end + 4));
+          resolve(client);
+        } catch (error) {
+          failed(rpcError(error));
         }
-        const client = new CodexRpc(socket, timeoutMs);
-        if (head.length) client.receive(head);
-        resolve(client);
+      };
+      socket.once("error", failed);
+      socket.once("close", closed);
+      socket.on("data", upgrade);
+      socket.once("connect", () => {
+        socket.write(`GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`);
       });
-      req.end();
     });
     try {
       await rpc.request("initialize", { clientInfo: { name: "hent-bridge", version: "1" }, capabilities: { experimentalApi: true } });
