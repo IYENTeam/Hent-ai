@@ -1,8 +1,8 @@
 # Hent-ai Agent Runbook
 
 Topology (see [ADR-0002](adr/ADR-0002-session-brain-bridge.md)): the always-on `hent bridge` owns the
-Discord token and connection and pushes every inbound message into the bot session; the Claude Code or
-Codex session running the `hent-mode` skill is the brain and replies with `hent send`; the Hent-ai
+Discord token and connection and pushes every inbound message into the bot session; the Codex
+session running the `hent-mode` skill is the brain and replies with `hent send`; the Hent-ai
 service is a token-free image picker and asset manager.
 
 ## Build
@@ -95,13 +95,14 @@ The bridge runs as the LaunchAgent `ai.hent.bridge` (`hent bridge install` rende
 `~/Library/LaunchAgents/ai.hent.bridge.plist`; it contains no token). Health: `GET
 http://127.0.0.1:8789/v1/health`.
 
-Brain session: an interactive Claude Code or Codex session in a herdr pane (herdr is required; there
-is no tmux or headless path). `kit/brain.sh start [--agent claude|codex] [--resume]` creates the
-`hent-brain` herdr workspace, starts the agent with restricted permissions, and has it run
-`hent session set` (the pane comes from `$HERDR_PANE_ID`); `kit/brain.sh stop` closes it. The bridge
-pushes each inbound message with `herdr agent prompt` once herdr reports the agent idle with an
-empty input line, and confirms it from the session transcript. While no agent is in the pane,
-messages stay queued and are delivered after the next `hent session set`.
+Brain session: an interactive Codex session in a herdr pane (herdr is required; there is no tmux or
+headless path). `kit/brain.sh start [--resume]` creates the `hent-brain` herdr workspace, starts
+Codex in its restricted sandbox, and has it run `hent session set` (the pane comes from
+`$HERDR_PANE_ID`); `--resume` continues the recorded thread (`~/.hent/brain-codex.sid`) and
+`kit/brain.sh stop` closes the workspace. The bridge pushes each inbound message with
+`herdr agent prompt` once herdr reports the agent idle with an empty input line, and confirms it
+from the session transcript under `~/.codex/sessions/`. While no agent is in the pane, messages stay
+queued and are delivered after the next `hent session set`.
 
 ## Affect asset routing and static media
 
@@ -213,7 +214,7 @@ Rollback per channel: `hent channels remove <channel>` and restore the OpenClaw 
 
 The service runs from a release directory under `~/.hent-ai/releases/<sha>` via its LaunchAgent; the
 bridge runs as `ai.hent.bridge`; the session kit is installed with `kit/install.sh` (links the skill
-into `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills` and `bun link`s `hent`).
+into `~/.agents/skills` and `~/.codex/skills`, and `bun link`s `hent`).
 
 ## Common Operations
 

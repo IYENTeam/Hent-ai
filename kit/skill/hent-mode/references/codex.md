@@ -4,7 +4,7 @@ Verified with codex-cli 0.162.1 and herdr 0.8.2 (2026-10-14).
 
 ## Start
 
-`kit/brain.sh start --agent codex` creates the `hent-brain` herdr workspace and starts Codex with:
+`kit/brain.sh start` creates the `hent-brain` herdr workspace and starts Codex with:
 
 ```
 codex -s workspace-write -a never -c sandbox_workspace_write.network_access=true --add-dir ~/.hent
@@ -23,6 +23,7 @@ hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd "$PWD"
 
 ## How messages arrive
 
-Same as Claude Code: herdr reports the agent idle, the input line is empty, `herdr agent prompt`
-submits one `[hent] INBOUND ...` line, and the user record in the rollout file under
-`~/.codex/sessions/` confirms it. No hooks are needed.
+herdr reports the agent idle, the input line is empty, `herdr agent prompt` submits one
+`[hent] INBOUND ...` line, and the user record in the rollout file under `~/.codex/sessions/`
+confirms it. While the agent works, waits on a question, or the pane has no Codex, messages stay
+queued in order. No hooks are needed.

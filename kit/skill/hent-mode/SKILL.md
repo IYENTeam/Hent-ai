@@ -1,6 +1,6 @@
 ---
 name: hent-mode
-description: Turns a Claude Code or Codex session into the brain of the Hent-ai Discord bot. The always-on `hent bridge` holds the Discord token and pushes every inbound message into this session as a `[hent] INBOUND` line; the session decides whether and what to answer and replies with `hent send`, which attaches an emotion image chosen by the Hent-ai service. Use when the user says "hent mode", asks to run or answer as the Hent-ai bot, or a `[hent] INBOUND` / `[hent] HISTORY` line appears in the conversation.
+description: Turns a Codex session into the brain of the Hent-ai Discord bot. The always-on `hent bridge` holds the Discord token and pushes every inbound message into this session as a `[hent] INBOUND` line; the session decides whether and what to answer and replies with `hent send`, which attaches an emotion image chosen by the Hent-ai service. Use when the user says "hent mode", asks to run or answer as the Hent-ai bot, or a `[hent] INBOUND` / `[hent] HISTORY` line appears in the conversation.
 ---
 
 # hent mode
@@ -24,11 +24,11 @@ work.
 Register yourself so the bridge knows where to push:
 
 ```
-hent session set --agent claude --session-id <your session id> --cwd "$PWD"
+hent session set --agent codex --session-id "$CODEX_THREAD_ID" --cwd "$PWD"
 ```
 
-Use `--agent codex` (with `--session-id "$CODEX_THREAD_ID"`) under Codex. The session runs in a herdr
-pane and the pane is taken from `$HERDR_PANE_ID`; `kit/brain.sh start` sets all of this up.
+Codex is the only brain agent. The session runs in a herdr pane and the pane is taken from
+`$HERDR_PANE_ID`; `kit/brain.sh start` sets all of this up.
 Messages that arrived while you were away are pushed again in order, once. Read `references/memory.md` and `references/persona.md` before the first reply.
 
 ## Each `[hent] INBOUND {json}` line
@@ -74,4 +74,4 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 - `references/conversation.md` - when to speak, joining unaddressed conversations, anti-repetition, privacy.
 - `references/affect.md` - the 24 affect dimensions for `--affect`.
 - `references/memory.md` - per-channel and per-person notes that survive restarts.
-- `references/claude-code.md`, `references/codex.md` - agent-specific setup in herdr.
+- `references/codex.md` - Codex setup in herdr.

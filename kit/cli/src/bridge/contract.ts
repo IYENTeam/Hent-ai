@@ -124,7 +124,7 @@ export interface HandledRequest {
   how: HandledHow;
 }
 
-export type SessionAgent = "claude" | "codex";
+export type SessionAgent = "codex";
 
 /** The brain is an interactive agent in a herdr pane (`pane` is a herdr pane id such as `w1:p3`). */
 export interface SessionRequest {
@@ -385,7 +385,7 @@ export function parseSessionRequest(input: unknown): ParseResult<SessionRequest>
   return run(() => {
     const obj = asObject(input, "session request");
     onlyKeys(obj, ["agent", "sessionId", "pane", "cwd"], "session request");
-    const agent = oneOf(obj, "agent", ["claude", "codex"] as const);
+    const agent = oneOf(obj, "agent", ["codex"] as const);
     const sessionId = str(obj, "sessionId");
     if (!SESSION_ID.test(sessionId)) fail("sessionId must match [A-Za-z0-9._-]{1,128}");
     const pane = str(obj, "pane");

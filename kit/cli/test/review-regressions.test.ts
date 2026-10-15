@@ -190,7 +190,7 @@ test("a herdr agent that runs the real `hent skip` for its prompt is delivered e
   let envForChild: Record<string, string> = {};
   const exec = async (argv: readonly string[]) => {
     calls.push([...argv]);
-    if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "claude", agent_status: "idle" } } }) };
+    if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", agent_status: "idle" } } }) };
     if (argv[2] === "read") return { code: 0, stdout: "> \n" };
     if (argv[2] !== "prompt") return { code: 1, stdout: "" };
     const prompt = argv[4]!;
@@ -200,7 +200,7 @@ test("a herdr agent that runs the real `hent skip` for its prompt is delivered e
   };
   const { fake, bridge, home, env } = await setup({ deliver: true, exec });
   envForChild = env;
-  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w1:p1"], env)).toBe(0);
+  expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w1:p1"], env)).toBe(0);
   const question = await inbound(fake, bridge, "please answer");
   await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_DELIVERED") && line.includes(question.id), 10_000);
   const prompts = calls.filter((c) => c[2] === "prompt");

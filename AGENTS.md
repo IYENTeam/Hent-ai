@@ -1,6 +1,6 @@
 # Hent-ai — AGENTS.md
 
-Hent-ai attaches an emotion image to an AI agent's responses. A Claude Code or Codex session is the bot's brain; the always-on `hent bridge` daemon owns the Discord token and connection and pushes every inbound message into that session; the **Hent-ai HTTP service** is a token-free image picker and asset manager. See [`docs/adr/ADR-0002-session-brain-bridge.md`](docs/adr/ADR-0002-session-brain-bridge.md).
+Hent-ai attaches an emotion image to an AI agent's responses. A Codex session is the bot's brain; the always-on `hent bridge` daemon owns the Discord token and connection and pushes every inbound message into that session; the **Hent-ai HTTP service** is a token-free image picker and asset manager. See [`docs/adr/ADR-0002-session-brain-bridge.md`](docs/adr/ADR-0002-session-brain-bridge.md).
 
 See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical architecture/ownership decisions and [`docs/service-owned-gates.md`](docs/service-owned-gates.md) for the PR/release gate policy.
 
@@ -9,7 +9,7 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 | Path | Role |
 | --- | --- |
 | `service/` | Token-free image picker: final-response verdict (affect-routed media selection + cache), channel/profile mappings, asset storage, generation jobs, static media. No Discord code, no messenger token, no conversation engine. |
-| `kit/` | Session kit. `kit/cli` (bun, zero runtime deps, bin `hent`): `hent bridge` (Discord token, gateway, inbound journal, push delivery into the session, send API), `hent send`/`skip`/`media`/`session`/`channels`/`memory`. `kit/skill/hent-mode` is the skill that makes a Claude Code/Codex session the bot's brain. |
+| `kit/` | Session kit. `kit/cli` (bun, zero runtime deps, bin `hent`): `hent bridge` (Discord token, gateway, inbound journal, push delivery into the session, send API), `hent send`/`skip`/`media`/`session`/`channels`/`memory`. `kit/skill/hent-mode` is the skill that makes a Codex session the bot's brain. |
 | `shared/` | Contract layer: `shared/emotions.ts` (canonical 6-emotion set), `shared/affect.ts` (AffectSpaceV2), `shared/profile.ts`, `shared/db.ts`. |
 | `generate/` | Asset generation helper (`hent-ai generate`/`profile`/`sets` CLI). Codex-backed image generation; consumes shared emotion definitions. |
 | `assets/` | Image files and asset sets. |

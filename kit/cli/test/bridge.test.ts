@@ -258,7 +258,7 @@ test("HENT_HOME dirs are 0700 and every bridge file is 0600", async () => {
   await journaled(bridge, m.id);
   await api(bridge, "/v1/send", { method: "POST", body: JSON.stringify({ channelId: CH, text: "y", replyToMessageId: m.id, nonce: "modes" }) });
   await api(bridge, "/v1/inbox?consumer=qa&ack=1");
-  await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "claude", sessionId: "s1", pane: "w1:p1", cwd: "/tmp" }) });
+  await api(bridge, "/v1/session", { method: "POST", body: JSON.stringify({ agent: "codex", sessionId: "s1", pane: "w1:p1", cwd: "/tmp" }) });
   for (const dir of [home, join(home, "state"), join(home, "state", "consumers")]) expect(mode(dir)).toBe(0o700);
   for (const file of ["bridge.secret", "session.json", "state/inbox.jsonl", "state/journal-state.json", "state/sent.jsonl", "state/handled.jsonl", "state/consumers/qa.json"]) {
     expect([file, mode(join(home, file))]).toEqual([file, 0o600]);

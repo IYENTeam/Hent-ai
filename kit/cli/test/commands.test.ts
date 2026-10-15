@@ -120,15 +120,18 @@ test("hent skip records a deliberate non-reply", async () => {
   expect(readFileSync(join(env.HENT_HOME!, "state", "handled.jsonl"), "utf8")).toContain('"how":"skipped"');
 });
 
-test("hent session set registers the herdr pane it runs in, and refuses without one", async () => {
+test("hent session set registers the herdr pane it runs in, takes only --agent codex, and refuses without a pane", async () => {
   const { env } = await setup();
-  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp"], { ...env, HERDR_PANE_ID: "w1:p7" })).toBe(0);
+  expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp"], { ...env, HERDR_PANE_ID: "w1:p7" })).toBe(0);
   const session = JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"));
-  expect(session).toMatchObject({ agent: "claude", sessionId: "abc-123", pane: "w1:p7", cwd: "/tmp" });
+  expect(session).toMatchObject({ agent: "codex", sessionId: "abc-123", pane: "w1:p7", cwd: "/tmp" });
   expect(session.mode).toBeUndefined();
   expect(await cmdSession(["set", "--agent", "codex", "--session-id", "def-456", "--cwd", "/tmp", "--pane", "w2:p1"], env)).toBe(0);
   expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", pane: "w2:p1" });
-  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp"], env)).toBe(2);
+  // The Claude brain is gone: any other --agent is refused, and so is a run outside a herdr pane.
+  expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w3:p1"], env)).toBe(2);
+  expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp"], env)).toBe(2);
+  expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", pane: "w2:p1" });
 });
 
 test("a stopped bridge makes hent send exit 4 with BRIDGE_DOWN", async () => {

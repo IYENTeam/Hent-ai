@@ -296,15 +296,15 @@ export const cmdSkip = (args: readonly string[], env: Env = process.env): Promis
 export const cmdSession = (args: readonly string[], env: Env = process.env): Promise<number> => {
   const flags = parseFlags(args, []);
   if (flags.positional[0] !== "set") {
-    console.error("usage: hent session set --agent claude|codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID]");
+    console.error("usage: hent session set --agent codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID]");
     return Promise.resolve(2);
   }
   const agent = flags.values.get("agent");
   const sessionId = flags.values.get("session-id");
   const cwd = flags.values.get("cwd") ?? process.cwd();
   const pane = flags.values.get("pane") ?? env.HERDR_PANE_ID;
-  if ((agent !== "claude" && agent !== "codex") || !sessionId) {
-    console.error("hent session set: --agent claude|codex and --session-id are required");
+  if (agent !== "codex" || !sessionId) {
+    console.error("hent session set: --agent codex and --session-id are required");
     return Promise.resolve(2);
   }
   if (!pane) {

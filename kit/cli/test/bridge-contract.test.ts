@@ -200,17 +200,19 @@ describe("edit / typing / handled / session", () => {
     expectErr(parseHandledRequest({ messageId: "m1", how: "ignored" }), /replied\|skipped/);
   });
   test("session", () => {
-    expect(parseSessionRequest({ agent: "claude", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" })).toEqual({
+    expect(parseSessionRequest({ agent: "codex", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" })).toEqual({
       ok: true,
-      value: { agent: "claude", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" },
+      value: { agent: "codex", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" },
     });
     expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp" }).ok).toBe(true);
     expectErr(parseSessionRequest({ agent: "gpt", sessionId: "s1", pane: "w1:p3", cwd: "/tmp" }), /agent/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", cwd: "/tmp" }), /pane/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "%0", cwd: "/tmp" }), /herdr pane id/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", mode: "headless", cwd: "/tmp" }), /mode/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", cwd: "relative" }), /absolute/);
-    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s 1", pane: "w1:p3", cwd: "/tmp" }), /sessionId/);
+    // The brain is Codex only; the removed Claude agent is no longer accepted.
+    expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", cwd: "/tmp" }), /agent must be one of codex/);
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s1", cwd: "/tmp" }), /pane/);
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "%0", cwd: "/tmp" }), /herdr pane id/);
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "w1:p3", mode: "headless", cwd: "/tmp" }), /mode/);
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "w1:p3", cwd: "relative" }), /absolute/);
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s 1", pane: "w1:p3", cwd: "/tmp" }), /sessionId/);
   });
 
 });
