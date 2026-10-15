@@ -8,6 +8,7 @@ import { createFinalResponseUseCase } from "./final-response-use-case.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
+import { NativeAssetError, registerNativeAsset } from "./native-assets.js";
 
 export type ServiceConfig = {
   url: URL;
@@ -161,6 +162,15 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { mapping: options.db.setChannelMapping(decodeURIComponent(channelMatch[1]!), body) });
         return;
       }
+      if (req.method === "POST" && url.pathname === "/v1/assets") {
+        if (!options.assetRoot) {
+          sendJson(res, 503, { error: "asset_storage_unavailable" });
+          return;
+        }
+        const result = registerNativeAsset(options.db, options.assetRoot, await readJsonBody(req));
+        sendJson(res, result.status, result.body);
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/v1/assets/generate") {
         const body = validateCommunityGenerateRequest(await readJsonBody(req));
         const job = options.db.createGenerationJob(body);
@@ -176,6 +186,7 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
       }
       notFound(res);
     } catch (error) {
+      if (error instanceof NativeAssetError) return sendJson(res, error.status, { error: "native_asset_error", message: error.message });
       if (error instanceof SyntaxError) return badRequest(res, "Invalid JSON body");
       if (error instanceof Error && (error.message.includes("not found") || error.message.includes("required") || error.message.includes("Invalid"))) return badRequest(res, error.message);
       sendJson(res, 500, { error: "internal_error" });
