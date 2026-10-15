@@ -15,6 +15,9 @@ export const MAX_NONCE_LENGTH = 25;
 export const MAX_MESSAGE_TEXT_LENGTH = 2000;
 export const MAX_SEND_FILE_BYTES = 8 * 1024 * 1024;
 export const JOURNAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** Discord clears the typing indicator after ~10 s, so a held indicator is re-sent every 8 s. */
+export const TYPING_INTERVAL_MS = 8_000;
+export const MAX_TYPING_HOLD_SECONDS = 600;
 
 export const BRIDGE_ROUTES = {
   inbox: "/v1/inbox",
@@ -115,6 +118,17 @@ export interface EditRequest {
 
 export interface TypingRequest {
   channelId: string;
+  /** Hold the indicator for this many seconds; null sends it once. */
+  forSeconds: number | null;
+}
+
+/**
+ * Re-sends after the immediate one for a `forSeconds` hold: the ticks that still fall inside the
+ * window (20 s at 8 s -> re-sends at 8 s and 16 s, three typing calls in total).
+ */
+export function typingTicks(forSeconds: number, intervalMs: number = TYPING_INTERVAL_MS): number {
+  if (forSeconds <= 0 || intervalMs <= 0) return 0;
+  return Math.max(0, Math.ceil((forSeconds * 1000) / intervalMs) - 1);
 }
 
 export type HandledHow = "replied" | "skipped";
@@ -368,8 +382,12 @@ export function parseEditRequest(input: unknown): ParseResult<EditRequest> {
 export function parseTypingRequest(input: unknown): ParseResult<TypingRequest> {
   return run(() => {
     const obj = asObject(input, "typing request");
-    onlyKeys(obj, ["channelId"], "typing request");
-    return { channelId: id(obj, "channelId") };
+    onlyKeys(obj, ["channelId", "forSeconds"], "typing request");
+    const channelId = id(obj, "channelId");
+    if (obj.forSeconds === undefined || obj.forSeconds === null) return { channelId, forSeconds: null };
+    const forSeconds = uint(obj, "forSeconds", 1);
+    if (forSeconds > MAX_TYPING_HOLD_SECONDS) fail(`forSeconds must be <= ${MAX_TYPING_HOLD_SECONDS}`);
+    return { channelId, forSeconds };
   });
 }
 

@@ -27,6 +27,8 @@ import {
   type ParseResult,
   type SendRequest,
   type SessionRequest,
+  TYPING_INTERVAL_MS,
+  typingTicks,
 } from "./contract.ts";
 import { type BridgeLog, type ConsumerStore, type HandledLedger, type Journal, type SentLedger, writePrivateFile } from "./journal.ts";
 
@@ -56,6 +58,8 @@ export type BridgeServerDeps = {
   /** Window for retrying an ambiguous Discord outcome (timeout/5xx) with the same nonce. */
   readonly sendRetryWindowMs?: number;
   readonly sendRetryDelayMs?: number;
+  /** Gap between typing re-sends while a `forSeconds` hold runs (tests shorten it). */
+  readonly typingIntervalMs?: number;
 };
 
 const json = (body: unknown, status = 200): Response => Response.json(body, { status });
@@ -83,8 +87,59 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
   const { journal, consumers, sent, handled, clock, log } = deps;
   const inflightPolls = new Map<string, AbortController>();
   const inflightSends = new Map<string, Promise<string>>();
+  const typingHolds = new Map<string, { readonly cancel: () => void }>();
+  const typingIntervalMs = deps.typingIntervalMs ?? TYPING_INTERVAL_MS;
   const retryWindow = deps.sendRetryWindowMs ?? 60_000;
   const retryDelay = deps.sendRetryDelayMs ?? 2_000;
+
+  const stopTypingHold = (channelId: string, reason: string): void => {
+    const hold = typingHolds.get(channelId);
+    if (!hold) return;
+    typingHolds.delete(channelId);
+    hold.cancel();
+    log("BRIDGE_TYPING_HOLD_STOPPED", { channelId, reason });
+  };
+
+  /** Keeps the indicator up: re-sends typing every interval until the window ends or a message goes out. */
+  const holdTyping = (channelId: string, forSeconds: number): void => {
+    stopTypingHold(channelId, "replaced");
+    let cancelled = false;
+    let wake: (() => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const hold = {
+      cancel: (): void => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        wake?.();
+      },
+    };
+    typingHolds.set(channelId, hold);
+    const until = clock.now() + forSeconds * 1_000;
+    const ticks = typingTicks(forSeconds, typingIntervalMs);
+    log("BRIDGE_TYPING_HOLD", { channelId, forSeconds, ticks });
+    void (async () => {
+      try {
+        for (let tick = 0; tick < ticks; tick += 1) {
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            timer = setTimeout(resolve, typingIntervalMs);
+          });
+          if (cancelled || clock.now() >= until) return;
+          const discord = deps.discord();
+          if (!discord || deps.status().gateway === "fatal") return;
+          try {
+            await discord.typing(channelId);
+          } catch (error) {
+            log("BRIDGE_TYPING_HOLD_FAILED", { channelId, status: error instanceof MessengerError ? error.status : null });
+            return;
+          }
+        }
+      } finally {
+        if (typingHolds.get(channelId) === hold) typingHolds.delete(channelId);
+      }
+    })();
+  };
 
   const markHandled = (messageId: string, how: "replied" | "skipped"): void => {
     if (handled.mark({ messageId, how, at: new Date(clock.now()).toISOString() })) log("BRIDGE_HANDLED", { messageId, how });
@@ -149,6 +204,7 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
     const request = parsed.value;
     const prior = sent.get(request.nonce);
     if (prior) {
+      stopTypingHold(request.channelId, "sent");
       if (request.replyToMessageId) markHandled(request.replyToMessageId, "replied");
       log("BRIDGE_SEND_DEDUPED", { channelId: prior.channelId, messageId: prior.messageId });
       return json({ messageId: prior.messageId });
@@ -177,6 +233,7 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
     } finally {
       inflightSends.delete(request.nonce);
     }
+    stopTypingHold(request.channelId, "sent");
     if (!sent.get(request.nonce)) sent.record({ nonce: request.nonce, messageId, channelId: request.channelId, at: new Date(clock.now()).toISOString() });
     if (request.replyToMessageId) markHandled(request.replyToMessageId, "replied");
     log("BRIDGE_SENT", { channelId: request.channelId, messageId, file: "file" in request });
@@ -231,9 +288,10 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const body = await readJson(req);
         const parsed = body.ok ? parseTypingRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
-        const { channelId } = parsed.value;
+        const { channelId, forSeconds } = parsed.value;
         return discordCall(async (discord) => {
           await discord.typing(channelId);
+          if (forSeconds !== null) holdTyping(channelId, forSeconds);
           return new Response(null, { status: 204 });
         });
       }
@@ -257,7 +315,7 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
     return new Response("not found", { status: 404 });
   };
 
-  return Bun.serve({
+  const server = Bun.serve({
     hostname: "127.0.0.1",
     port: deps.port,
     idleTimeout: 60,
@@ -268,4 +326,14 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
       return fail(500, "invalid_request", "internal error");
     },
   });
+
+  return {
+    port: server.port,
+    /** Active `--for` typing holds, for tests and diagnostics. */
+    typingHolds: (): number => typingHolds.size,
+    stop: async (closeActiveConnections?: boolean): Promise<void> => {
+      for (const channelId of [...typingHolds.keys()]) stopTypingHold(channelId, "stopped");
+      await server.stop(closeActiveConnections);
+    },
+  };
 };

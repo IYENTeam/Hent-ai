@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
 import { parseChannelConfig } from "../src/bridge/index.ts";
-import { chunkText, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, readChannels } from "../src/commands.ts";
+import { chunkText, cmdAsset, cmdChannels, cmdMedia, cmdSend, cmdSession, cmdSkip, cmdTyping, readChannels } from "../src/commands.ts";
 import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
@@ -16,10 +16,30 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
 });
 
-type Service = { url: string; requests: string[]; mode: "media" | "hang" | "down" };
+type Service = {
+  url: string;
+  requests: string[];
+  mode: "media" | "hang" | "down";
+  /** Omitted entirely by an older service that has no fit signal. */
+  routing?: unknown;
+  assets: unknown[];
+  assetStatus: number;
+};
+
+const ROUTING = {
+  mode: "affect-v2",
+  distance: 0.42,
+  threshold: 0.3,
+  generate: true,
+  nearest: [
+    { url: "/static/sets/s/happy-1.png", filename: "happy-1.png", distance: 0.42 },
+    { url: "/static/sets/s/happy-2.png", filename: "happy-2.png", distance: 0.5 },
+    { url: "/static/sets/s/focused-1.png", filename: "focused-1.png", distance: 0.61 },
+  ],
+};
 
 const startService = (): Service => {
-  const state: Service = { url: "", requests: [], mode: "media" };
+  const state: Service = { url: "", requests: [], mode: "media", assets: [], assetStatus: 201 };
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -28,15 +48,38 @@ const startService = (): Service => {
       state.requests.push(`${req.method} ${path}`);
       if (state.mode === "hang") await Bun.sleep(5_000);
       if (path === "/v1/final-response/verdict") {
-        return Response.json({ verdict: { media: { url: "/static/sets/s/happy-1.png", filename: "happy-1.png", contentType: "image/png", sensitiveMedia: false } } });
+        const media = { url: "/static/sets/s/happy-1.png", filename: "happy-1.png", contentType: "image/png", sensitiveMedia: false };
+        return Response.json({ verdict: { media, ...(state.routing === undefined ? {} : { routing: state.routing }) } });
       }
-      if (path === "/static/sets/s/happy-1.png") return new Response(PNG, { headers: { "content-type": "image/png" } });
+      if (path === "/v1/assets") {
+        state.assets.push(await req.json());
+        if (state.assetStatus !== 201) return Response.json({ error: "native_asset_error", message: "Invalid image bytes or contentType" }, { status: state.assetStatus });
+        return Response.json({ asset: { id: "native_0123456789ab", assetSetId: "s", emotion: "happy", filename: "0123456789ab.png" }, media: { url: "/static/native/s/happy/0123456789ab.png" } }, { status: 201 });
+      }
+      if (path.startsWith("/static/")) return new Response(PNG, { headers: { "content-type": "image/png" } });
       return new Response("nf", { status: 404 });
     },
   });
   state.url = `http://127.0.0.1:${server.port}`;
   cleanups.push(() => server.stop(true));
   return state;
+};
+
+const capture = async (run: () => Promise<number>): Promise<{ code: number; lines: string[] }> => {
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => lines.push(line);
+  try {
+    return { code: await run(), lines };
+  } finally {
+    console.log = log;
+  }
+};
+
+const tempHome = (prefix: string): string => {
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  return home;
 };
 
 const setup = async (): Promise<{ fake: FakeDiscord; bridge: BridgeHandle; env: Record<string, string> }> => {
@@ -98,20 +141,121 @@ test("--reply-to marks the inbound message handled and a repeated nonce sends on
 
 test("hent media saves the chosen image into a fresh HENT_HOME and prints its path", async () => {
   const service = startService();
-  const home = mkdtempSync(join(tmpdir(), "hent-media-"));
-  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
-  const lines: string[] = [];
-  const log = console.log;
-  console.log = (line: string) => lines.push(line);
-  try {
-    expect(await cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" })).toBe(0);
-  } finally {
-    console.log = log;
-  }
+  const home = tempHome("hent-media-");
+  const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" }));
+  expect(code).toBe(0);
   const path = lines.at(-1)!;
   expect(path.startsWith(join(home, "state", "media"))).toBe(true);
   expect(new Uint8Array(readFileSync(path))).toEqual(PNG);
   expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+});
+
+test("hent media --json reports the fit signal and downloads the references, freshly on every call", async () => {
+  const service = startService();
+  service.routing = ROUTING;
+  const home = tempHome("hent-media-json-");
+  const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
+  const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], env));
+  expect(code).toBe(0);
+  expect(lines).toHaveLength(1);
+  const out = JSON.parse(lines[0]!) as { path: string; mode: string; distance: number; threshold: number; generate: boolean; references: string[] };
+  expect(out).toMatchObject({ mode: "affect-v2", distance: 0.42, threshold: 0.3, generate: true });
+  for (const file of [out.path, ...out.references]) {
+    expect(file.startsWith(join(home, "state", "media"))).toBe(true);
+    expect(new Uint8Array(readFileSync(file))).toEqual(PNG);
+    expect((statSync(file).mode & 0o777).toString(8)).toBe("600");
+  }
+  expect(out.references).toHaveLength(3);
+  expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toHaveLength(4);
+
+  await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], env));
+  expect(service.requests.filter((r) => r.startsWith("GET /static/"))).toHaveLength(8);
+});
+
+test("hent media --json against a service without routing never asks for generation", async () => {
+  const service = startService();
+  const home = tempHome("hent-media-old-");
+  const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" }));
+  expect(code).toBe(0);
+  const out = JSON.parse(lines[0]!) as Record<string, unknown>;
+  expect(out).toMatchObject({ mode: null, distance: null, threshold: null, generate: false, references: [] });
+  expect(typeof out.path).toBe("string");
+});
+
+test("hent media --json with no image answers with a null path instead of a picture", async () => {
+  const home = tempHome("hent-media-none-");
+  const { code, lines } = await capture(() => cmdMedia(["--channel", CH, "--text", "done", "--affect", AFFECT, "--json"], { HENT_HOME: home, HENT_URL: "http://127.0.0.1:1", HENT_SERVICE_TOKEN: "t" }));
+  expect(code).toBe(0);
+  expect(JSON.parse(lines[0]!)).toMatchObject({ path: null, generate: false, references: [] });
+});
+
+test("hent media refuses a malformed --affect instead of silently sending no image", async () => {
+  const service = startService();
+  const home = tempHome("hent-media-bad-");
+  expect(await cmdMedia(["--channel", CH, "--text", "x", "--affect", "1,2,3|90"], { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" })).toBe(2);
+  expect(service.requests).toEqual([]);
+});
+
+test("hent asset add uploads the file with its tags and prints the new asset id", async () => {
+  const service = startService();
+  const home = tempHome("hent-asset-");
+  const png = join(home, "happy.png");
+  writeFileSync(png, PNG);
+  const affectFile = join(home, "affect.json");
+  writeFileSync(affectFile, JSON.stringify({ schemaVersion: "VisualAffectV2", dimensions: { joy: 0.9 } }));
+  const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
+  const { code, lines } = await capture(() => cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", `@${affectFile}`, "--prompt", "a happy portrait"], env));
+  expect(code).toBe(0);
+  expect(lines).toEqual(["ASSET native_0123456789ab"]);
+  expect(service.assets).toHaveLength(1);
+  const body = service.assets[0] as { channelId: string; emotion: string; contentType: string; dataBase64: string; visualAffect: unknown; prompt: string };
+  expect(body).toMatchObject({ channelId: CH, emotion: "happy", contentType: "image/png", prompt: "a happy portrait", visualAffect: { schemaVersion: "VisualAffectV2", dimensions: { joy: 0.9 } } });
+  expect(new Uint8Array(Buffer.from(body.dataBase64, "base64"))).toEqual(PNG);
+
+  // Inline JSON works the same way.
+  const inline = await capture(() => cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", '{"schemaVersion":"VisualAffectV2"}'], env));
+  expect(inline.code).toBe(0);
+  expect(service.assets).toHaveLength(2);
+});
+
+test("hent asset add: malformed tags exit 2, a refused file exits 1, and neither reaches the set", async () => {
+  const service = startService();
+  const home = tempHome("hent-asset-bad-");
+  const png = join(home, "happy.png");
+  writeFileSync(png, PNG);
+  const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
+  expect(await cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", "{not json"], env)).toBe(2);
+  expect(await cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", "[1,2]"], env)).toBe(2);
+  expect(await cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", `@${join(home, "missing.json")}`], env)).toBe(2);
+  expect(await cmdAsset(["add", "--channel", CH, "--file", png, "--emotion", "happy"], env)).toBe(2);
+  expect(await cmdAsset(["--channel", CH, "--file", png, "--emotion", "happy", "--visual-affect", "{}"], env)).toBe(2);
+  expect(service.assets).toEqual([]);
+
+  const text = join(home, "notes.txt");
+  writeFileSync(text, "not an image");
+  service.assetStatus = 400;
+  expect(await cmdAsset(["add", "--channel", CH, "--file", text, "--emotion", "happy", "--visual-affect", "{}"], env)).toBe(1);
+  expect(await cmdAsset(["add", "--channel", CH, "--file", join(home, "gone.png"), "--emotion", "happy", "--visual-affect", "{}"], env)).toBe(1);
+  expect(service.assets).toHaveLength(1);
+});
+
+test("hent typing --for returns at once, the bridge holds the indicator, and a send ends the hold", async () => {
+  const { fake, bridge, env } = await setup();
+  const started = performance.now();
+  expect(await cmdTyping(["--to", CH, "--for", "20"], env)).toBe(0);
+  expect(performance.now() - started).toBeLessThan(1_000);
+  const typings = () => fake.requests.filter((r) => r.method === "POST" && r.path === `/channels/${CH}/typing`).length;
+  expect(typings()).toBe(1);
+  expect(bridge.typingHolds()).toBe(1);
+
+  expect(await cmdSend(["--to", CH, "--text", "here"], env)).toBe(0);
+  expect(bridge.typingHolds()).toBe(0);
+
+  expect(await cmdTyping(["--to", CH], env)).toBe(0);
+  expect(bridge.typingHolds()).toBe(0);
+  expect(await cmdTyping(["--to", CH, "--for", "0"], env)).toBe(2);
+  expect(await cmdTyping(["--to", CH, "--for", "soon"], env)).toBe(2);
+  expect(typings()).toBe(2);
 });
 
 test("hent skip records a deliberate non-reply", async () => {

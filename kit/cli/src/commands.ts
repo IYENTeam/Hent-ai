@@ -11,7 +11,7 @@ import { BRIDGE_DEFAULT_PORT, BRIDGE_ROUTES, MAX_MESSAGE_TEXT_LENGTH } from "./b
 import { bridgePaths, ensurePrivateDir, writePrivateFile } from "./bridge/journal.ts";
 import { hentHome, loadConfig } from "./config.ts";
 import { exportMemory } from "./memory.ts";
-import { fetchMedia, sendDeadline, verdict } from "./service.ts";
+import { assetDeadline, fetchMedia, mediaDeadline, registerAsset, sendDeadline, type ServiceRouting, verdict } from "./service.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -202,18 +202,44 @@ export const cmdSend = async (args: readonly string[], env: Env = process.env): 
   }
 };
 
+/** `{ path, mode, distance, threshold, generate, references }`, one line, for the session to read. */
+const mediaJson = (fields: {
+  path: string | null;
+  routing: ServiceRouting | null;
+  references: readonly string[];
+  reason?: string;
+}): string =>
+  JSON.stringify({
+    path: fields.path,
+    mode: fields.routing?.mode ?? null,
+    distance: fields.routing?.distance ?? null,
+    threshold: fields.routing?.threshold ?? null,
+    generate: fields.routing?.generate ?? false,
+    references: fields.references,
+    ...(fields.reason ? { reason: fields.reason } : {}),
+  });
+
+const saveMedia = (dir: string, name: string, bytes: Uint8Array): string => {
+  const out = join(dir, `${Date.now()}-${name.replace(/[^A-Za-z0-9._-]/g, "_")}`);
+  writeFileSync(out, bytes, { mode: 0o600 });
+  return out;
+};
+
 export const cmdMedia = async (args: readonly string[], env: Env = process.env): Promise<number> => {
-  const flags = parseFlags(args, ["pre-reply"]);
+  const flags = parseFlags(args, ["pre-reply", "json"]);
   const channelId = flags.values.get("channel");
   const text = flags.values.get("text") ?? "";
+  const asJson = flags.bools.has("json");
   if (!channelId) {
-    console.error("usage: hent media --channel CH --text T [--affect V|C] [--pre-reply]");
+    console.error("usage: hent media --channel CH --text T [--affect V|C] [--pre-reply] [--json]");
     return 2;
   }
   const config = loadConfig(env);
   let url: string | null = null;
   let filename = "media.png";
-  const signal = sendDeadline();
+  let routing: ServiceRouting | null = null;
+  let reason = "no_media";
+  const signal = asJson ? mediaDeadline() : sendDeadline();
   if (flags.bools.has("pre-reply")) {
     if (!config.url || !config.token) {
       console.log("NO_MEDIA not_configured");
@@ -237,28 +263,96 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env):
   } else {
     const affectArg = flags.values.get("affect");
     const affect = affectArg ? parseAffectArg(affectArg) : null;
-    if (affect && affect.ok) {
-      const picked = await verdict(config, channelId, text, affect.affect, signal);
-      if (picked.ok && picked.media) {
-        url = picked.media.url;
-        filename = picked.media.filename;
-      }
+    if (affect && !affect.ok) {
+      console.error(`hent media: --affect: ${affect.error}`);
+      return 2;
     }
+    if (affect) {
+      const picked = await verdict(config, channelId, text, affect.affect, signal);
+      if (!picked.ok) reason = picked.reason;
+      else {
+        routing = picked.routing;
+        if (picked.media) {
+          url = picked.media.url;
+          filename = picked.media.filename;
+        }
+      }
+    } else reason = "no_affect";
   }
   if (!url) {
-    console.log("NO_MEDIA");
+    console.log(asJson ? mediaJson({ path: null, routing, references: [], reason }) : "NO_MEDIA");
     return 0;
   }
   const fetched = await fetchMedia(config, url, signal);
   if (!fetched.ok) {
-    console.log(`NO_MEDIA ${fetched.reason}`);
+    console.log(asJson ? mediaJson({ path: null, routing, references: [], reason: fetched.reason }) : `NO_MEDIA ${fetched.reason}`);
     return 0;
   }
   const dir = join(hentHome(env), "state", "media");
   ensurePrivateDir(dir);
-  const out = join(dir, `${Date.now()}-${filename.replace(/[^A-Za-z0-9._-]/g, "_")}`);
-  writeFileSync(out, fetched.bytes, { mode: 0o600 });
-  console.log(out);
+  const out = saveMedia(dir, filename, fetched.bytes);
+  if (!asJson) {
+    console.log(out);
+    return 0;
+  }
+  // References are downloaded again on every call: the set can change between replies.
+  const references: string[] = [];
+  const nearest = (routing?.nearest ?? []).slice(0, 3);
+  for (let i = 0; i < nearest.length; i += 1) {
+    const reference = nearest[i]!;
+    const got = await fetchMedia(config, reference.url, signal);
+    if (got.ok) references.push(saveMedia(dir, `ref${i}-${reference.filename}`, got.bytes));
+  }
+  console.log(mediaJson({ path: out, routing, references }));
+  return 0;
+};
+
+export const cmdAsset = async (args: readonly string[], env: Env = process.env): Promise<number> => {
+  const flags = parseFlags(args);
+  const channelId = flags.values.get("channel");
+  const file = flags.values.get("file");
+  const emotion = flags.values.get("emotion");
+  const visualAffectArg = flags.values.get("visual-affect");
+  const prompt = flags.values.get("prompt");
+  if (flags.positional[0] !== "add" || !channelId || !file || !emotion || !visualAffectArg) {
+    console.error("usage: hent asset add --channel CH --file PATH --emotion E --visual-affect JSON|@FILE [--prompt P]");
+    return 2;
+  }
+  let visualAffect: unknown;
+  try {
+    visualAffect = JSON.parse(visualAffectArg.startsWith("@") ? readFileSync(visualAffectArg.slice(1), "utf8") : visualAffectArg);
+  } catch (error) {
+    console.error(`hent asset add: --visual-affect: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (typeof visualAffect !== "object" || visualAffect === null || Array.isArray(visualAffect)) {
+    console.error("hent asset add: --visual-affect must be a JSON object");
+    return 2;
+  }
+  let upload: NonNullable<MediaPick>;
+  try {
+    upload = readFileUpload(file)!;
+  } catch (error) {
+    console.error(`hent asset add: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+  const registered = await registerAsset(
+    loadConfig(env),
+    {
+      channelId,
+      emotion,
+      contentType: upload.contentType,
+      dataBase64: Buffer.from(upload.bytes).toString("base64"),
+      visualAffect,
+      ...(prompt !== undefined ? { prompt } : {}),
+    },
+    assetDeadline(),
+  );
+  if (!registered.ok) {
+    console.error(`hent asset add: ${registered.reason}`);
+    return 1;
+  }
+  console.log(`ASSET ${registered.id}`);
   return 0;
 };
 
@@ -272,13 +366,21 @@ const simpleBridgeCall = async (env: Env, op: (bridge: BridgeClient) => Promise<
   }
 };
 
+/** `--for SECONDS` hands the hold to the bridge and returns at once; the bridge keeps typing. */
 export const cmdTyping = (args: readonly string[], env: Env = process.env): Promise<number> => {
-  const channelId = parseFlags(args).values.get("to");
+  const flags = parseFlags(args);
+  const channelId = flags.values.get("to");
+  const forArg = flags.values.get("for");
   if (!channelId) {
-    console.error("usage: hent typing --to CHANNEL");
+    console.error("usage: hent typing --to CHANNEL [--for SECONDS]");
     return Promise.resolve(2);
   }
-  return simpleBridgeCall(env, (b) => b.json("POST", BRIDGE_ROUTES.typing, { channelId }).then(() => undefined));
+  if (forArg !== undefined && !/^[1-9]\d{0,3}$/.test(forArg.trim())) {
+    console.error(`hent typing: --for must be a whole number of seconds, got "${forArg}"`);
+    return Promise.resolve(2);
+  }
+  const body = { channelId, ...(forArg !== undefined ? { forSeconds: Number(forArg.trim()) } : {}) };
+  return simpleBridgeCall(env, (b) => b.json("POST", BRIDGE_ROUTES.typing, body).then(() => undefined));
 };
 
 export const cmdSkip = (args: readonly string[], env: Env = process.env): Promise<number> => {

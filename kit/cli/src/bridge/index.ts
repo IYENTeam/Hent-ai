@@ -149,6 +149,8 @@ export type StartBridgeOptions = {
   readonly gateway?: Pick<GatewayOptions, "reconnectDelayMs" | "invalidSessionDelayMs" | "random">;
   readonly readKeychain?: KeychainReader;
   readonly sendRetryDelayMs?: number;
+  /** Gap between typing re-sends while a `hent typing --for` hold runs (tests shorten it). */
+  readonly typingIntervalMs?: number;
   readonly deliver?: { readonly exec?: Exec; readonly backoffMs?: readonly number[]; readonly paneConfirmMs?: number; readonly findTranscript?: ConstructorParameters<typeof Deliverer>[0]["findTranscript"]; readonly disabled?: boolean };
 };
 
@@ -161,6 +163,8 @@ export type BridgeHandle = {
   readonly events: EventEmitter;
   gatewayState(): GatewayState;
   gateway(): Gateway | null;
+  /** Channels whose typing indicator is currently held by `hent typing --for`. */
+  typingHolds(): number;
   stop(): Promise<void>;
 };
 
@@ -394,6 +398,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       },
     },
     ...(opts.sendRetryDelayMs !== undefined ? { sendRetryDelayMs: opts.sendRetryDelayMs } : {}),
+    ...(opts.typingIntervalMs !== undefined ? { typingIntervalMs: opts.typingIntervalMs } : {}),
   });
   const boundPort = server.port ?? port;
   log("BRIDGE_LISTENING", { host: "127.0.0.1", port: boundPort });
@@ -424,6 +429,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     events,
     gatewayState: () => gatewayState,
     gateway: () => gateway,
+    typingHolds: () => server.typingHolds(),
     stop: async () => {
       stopped = true;
       if (tokenTimer) clearTimeout(tokenTimer);

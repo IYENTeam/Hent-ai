@@ -17,6 +17,8 @@ import {
   parseSendResponse,
   parseSessionRequest,
   parseTypingRequest,
+  TYPING_INTERVAL_MS,
+  typingTicks,
   type InboxEvent,
 } from "../src/bridge/contract";
 
@@ -191,8 +193,26 @@ describe("edit / typing / handled / session", () => {
     expectErr(parseEditRequest({ channelId: "c1", text: "fixed" }), /messageId/);
   });
   test("typing", () => {
-    expect(parseTypingRequest({ channelId: "c1" })).toEqual({ ok: true, value: { channelId: "c1" } });
+    expect(parseTypingRequest({ channelId: "c1" })).toEqual({ ok: true, value: { channelId: "c1", forSeconds: null } });
+    expect(parseTypingRequest({ channelId: "c1", forSeconds: 150 })).toEqual({ ok: true, value: { channelId: "c1", forSeconds: 150 } });
+    expect(parseTypingRequest({ channelId: "c1", forSeconds: null })).toEqual({ ok: true, value: { channelId: "c1", forSeconds: null } });
     expectErr(parseTypingRequest({}), /channelId/);
+    expectErr(parseTypingRequest({ channelId: "c1", forSeconds: 0 }), /forSeconds/);
+    expectErr(parseTypingRequest({ channelId: "c1", forSeconds: 1.5 }), /forSeconds/);
+    expectErr(parseTypingRequest({ channelId: "c1", forSeconds: 601 }), /forSeconds must be <= 600/);
+    expectErr(parseTypingRequest({ channelId: "c1", forSeconds: "20" }), /forSeconds/);
+    expectErr(parseTypingRequest({ channelId: "c1", hold: 20 }), /unknown field "hold"/);
+  });
+
+  test("a held typing window re-sends on every interval tick that is still inside it", () => {
+    expect(TYPING_INTERVAL_MS).toBe(8_000);
+    // --for 20: typing at 0 s, 8 s and 16 s -> two re-sends after the immediate one.
+    expect(typingTicks(20)).toBe(2);
+    expect(typingTicks(8)).toBe(0);
+    expect(typingTicks(16)).toBe(1);
+    expect(typingTicks(150)).toBe(18);
+    expect(typingTicks(1)).toBe(0);
+    expect(typingTicks(1, 20)).toBe(49);
   });
   test("handled", () => {
     expect(parseHandledRequest({ messageId: "m1", how: "skipped" })).toEqual({ ok: true, value: { messageId: "m1", how: "skipped" } });

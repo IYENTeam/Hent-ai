@@ -40,7 +40,9 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 2. Decide by `references/conversation.md` and your per-channel notes (`references/memory.md`):
    answer, stay silent, or join a conversation nobody addressed to you, under its budgets and
    cooldowns (count your own recent posts with `hent history --channel <id>`).
-3. To answer: optionally `hent typing --to <channelId>`, write the reply in the persona's voice,
+3. To answer: optionally `hent typing --to <channelId> [--for <seconds>]` (`--for` keeps the
+   indicator up until you send or the seconds run out; the command returns at once), write the
+   reply in the persona's voice,
    rate its emotional performance (`references/affect.md`), then send it:
 
    ```
@@ -50,6 +52,18 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
    Pass the text as one argument. Long replies are chunked automatically; the image goes on the
    last chunk. Pre-reply media: `hent media --channel <id> --text "<user message>" --pre-reply`
    prints a file path, then `hent send --to <id> --text "" --file <path>` sends it.
+
+   Two more commands exist for working with the images themselves:
+
+   ```
+   hent media --channel <id> --text "<reply>" --affect "<24 values>|<confidence>" --json
+   hent asset add --channel <id> --file <image> --emotion <emotion> --visual-affect <json|@file> [--prompt "<text>"]
+   ```
+
+   `hent media --json` prints one JSON line - `path` (the chosen image), `mode`, `distance`,
+   `threshold`, `generate` (true when no existing image fits) and `references` (up to three local
+   paths of the closest images). `hent asset add` registers an image into the channel's set and
+   prints `ASSET <id>`; it exits 2 on malformed tags and 1 when the service refuses the image.
 4. To stay silent on purpose: `hent skip <messageId>`. Every inbound message ends in exactly one
    `hent send --reply-to` or `hent skip`; otherwise the bridge pushes it to you again later.
 

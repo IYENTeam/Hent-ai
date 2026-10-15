@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { type InboxEvent, parseHealthResponse, parseInboxResponse } from "../src/bridge/contract.ts";
 import { GATEWAY_INTENTS } from "../src/bridge/gateway.ts";
 import { type BridgeHandle, type BridgeHooks, startBridge } from "../src/bridge/index.ts";
-import { type FakeDiscord, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
+import { type FakeDiscord, type FakeRequest, startFakeDiscord, waitForEvent } from "./fake-discord.ts";
 
 const CH = "100000000000000001";
 const OTHER = "100000000000000002";
@@ -33,7 +33,7 @@ const startFake = (): FakeDiscord => {
   return fake;
 };
 
-const launch = async (fake: FakeDiscord, home: string, extra: { env?: Record<string, string | undefined>; hooks?: BridgeHooks; tokenRetryMs?: number } = {}): Promise<Setup> => {
+const launch = async (fake: FakeDiscord, home: string, extra: { env?: Record<string, string | undefined>; hooks?: BridgeHooks; tokenRetryMs?: number; typingIntervalMs?: number } = {}): Promise<Setup> => {
   const logs: string[] = [];
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: TOKEN, HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl, ...extra.env };
   const bridge = await startBridge({ deliver: { disabled: true },
@@ -44,6 +44,7 @@ const launch = async (fake: FakeDiscord, home: string, extra: { env?: Record<str
     tokenRetryMs: extra.tokenRetryMs ?? 60_000,
     gateway: { reconnectDelayMs: () => 20, invalidSessionDelayMs: () => 20, random: () => 0.5 },
     sendRetryDelayMs: 10,
+    ...(extra.typingIntervalMs !== undefined ? { typingIntervalMs: extra.typingIntervalMs } : {}),
     ...(extra.hooks ? { hooks: extra.hooks } : {}),
   });
   const synced = waitForEvent(bridge.events, "synced");
@@ -213,6 +214,42 @@ test("a repeated nonce sends once, also across a bridge restart, and replyTo mar
   const third = (await (await api(again.bridge, "/v1/send", { method: "POST", body })).json()) as { messageId: string };
   expect(third.messageId).toBe(first.messageId);
   expect(posts()).toHaveLength(1);
+});
+
+test("a held typing indicator is re-sent on every tick and stops when the bridge posts to that channel", async () => {
+  const fake = startFake();
+  const home = newHome();
+  writeChannels(home, fake.guildId);
+  const { bridge, synced, logs } = await launch(fake, home, { typingIntervalMs: 200 });
+  await synced;
+  const typings = (): number => fake.requests.filter((r) => r.method === "POST" && r.path === `/channels/${CH}/typing`).length;
+  let seen = 0;
+  const thirdTyping = waitForEvent<FakeRequest>(fake.events, "request", (r) => r.path === `/channels/${CH}/typing` && ++seen === 3);
+
+  const held = await api(bridge, "/v1/typing", { method: "POST", body: JSON.stringify({ channelId: CH, forSeconds: 5 }) });
+  expect(held.status).toBe(204);
+  expect(typings()).toBe(1);
+  expect(bridge.typingHolds()).toBe(1);
+
+  await thirdTyping;
+  expect(logs.some((l) => l.includes("BRIDGE_TYPING_HOLD channelId=") && l.includes("forSeconds=5"))).toBe(true);
+
+  const send = await api(bridge, "/v1/send", { method: "POST", body: JSON.stringify({ channelId: CH, text: "answer", nonce: "holdstop1" }) });
+  expect(send.status).toBe(200);
+  expect(bridge.typingHolds()).toBe(0);
+  expect(logs.some((l) => l.includes("BRIDGE_TYPING_HOLD_STOPPED") && l.includes("reason=sent"))).toBe(true);
+  const afterSend = typings();
+  await waitForEvent<FakeRequest>(fake.events, "request", (r) => r.path === `/channels/${CH}/typing`, 600).catch(() => null);
+  expect(typings()).toBe(afterSend);
+});
+
+test("a one-shot typing request starts no hold, and an unknown hold field is refused", async () => {
+  const { bridge } = await setup();
+  expect((await api(bridge, "/v1/typing", { method: "POST", body: JSON.stringify({ channelId: CH }) })).status).toBe(204);
+  expect(bridge.typingHolds()).toBe(0);
+  const bad = await api(bridge, "/v1/typing", { method: "POST", body: JSON.stringify({ channelId: CH, forSeconds: 601 }) });
+  expect(bad.status).toBe(400);
+  expect(bridge.typingHolds()).toBe(0);
 });
 
 test("multipart send uploads the file to Discord", async () => {
