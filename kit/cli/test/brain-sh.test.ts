@@ -96,6 +96,7 @@ test("brain.sh start sends a startup instruction that allows the native image wo
   expect(got.calls[3]?.slice(1)).toEqual(["pane", "run", PANE, "bash", join(s.home, "state/brain-launch.sh")]);
   const startup = got.codexArgs;
   expect(startup.slice(0, 4)).toEqual(["--remote", "unix://", "-C", join(s.root, "hent-brain")]);
+  expect(startup).toEqual(expect.arrayContaining(["-s", "workspace-write", "-a", "never", "sandbox_workspace_write.network_access=true"]));
   expect(startup).toContain(`shell_environment_policy.set.HENT_HOME=${JSON.stringify(s.home)}`);
   expect(startup).toContain(`shell_environment_policy.set.HERDR_PANE_ID=${JSON.stringify(PANE)}`);
   expect(startup.some((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))).toBe(false);
@@ -134,7 +135,9 @@ test("brain.sh start --resume re-sends the current startup instruction as the fi
   const startArgs = resumed.codexArgs;
   expect(startArgs.slice(0, 5)).toEqual(["resume", "--remote", "unix://", "-C", join(s.root, "hent-brain")]);
   expect(startArgs.slice(-2, -1)).toEqual([SESSION_ID]);
-  expect(startArgs).toContain("sandbox_workspace_write.network_access=true");
+  for (const override of ["-s", "-a", "sandbox_workspace_write.network_access=true"]) {
+    expect(startArgs).not.toContain(override);
+  }
   expect(startArgs).toContain(`shell_environment_policy.set.HENT_HOME=${JSON.stringify(s.home)}`);
   expect(startArgs).toContain(`shell_environment_policy.set.HERDR_PANE_ID=${JSON.stringify(PANE)}`);
   expect(startArgs.some((arg) => arg.startsWith("sandbox_workspace_write.writable_roots="))).toBe(false);

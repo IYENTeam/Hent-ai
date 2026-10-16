@@ -61,14 +61,17 @@ ENV_HOME="$(bun -e 'console.log(JSON.stringify(process.argv[1]))' "$HENT_HOME")"
 ENV_PATH="$(bun -e 'console.log(JSON.stringify(process.argv[1]))' "$PATH")"
 ENV_ENABLED="$(bun -e 'console.log(JSON.stringify(process.argv[1]))' "${HENT_ENABLED:-1}")"
 ENV_URL="$(bun -e 'console.log(JSON.stringify(process.argv[1]))' "${HENT_URL:-}")"
-FLAGS=(--remote unix:// -C "$CWD" -s workspace-write -a never -c sandbox_workspace_write.network_access=true
+FLAGS=(--remote unix:// -C "$CWD"
   -c "shell_environment_policy.set.HENT_HOME=$ENV_HOME"
   -c "shell_environment_policy.set.HENT_BRIDGE_PORT=\"${HENT_BRIDGE_PORT:-8789}\""
   -c "shell_environment_policy.set.HENT_ENABLED=$ENV_ENABLED"
   -c "shell_environment_policy.set.HENT_URL=$ENV_URL"
   -c "shell_environment_policy.set.PATH=$ENV_PATH")
 if [ "$RESUME" = 1 ]; then
+  # Remote resumes inherit their permission policy; Codex rejects overrides.
   SID="$(cat "$HENT_HOME/brain-codex.sid" 2>/dev/null)" || { echo "brain: no recorded Codex session ($HENT_HOME/brain-codex.sid)" >&2; exit 1; }
+else
+  FLAGS+=(-s workspace-write -a never -c sandbox_workspace_write.network_access=true)
 fi
 
 # Use Codex's own shared server; never restart it or fall back to a separate brain.
