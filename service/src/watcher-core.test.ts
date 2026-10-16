@@ -301,11 +301,11 @@ describe("evaluateHostPolicyGate", () => {
     expect(audit.deliveryMessageId).toBeUndefined();
   });
 
-  it("suppresses for cooldown, duplicate and privacy in order", () => {
+  it("ignores cooldown while preserving duplicate and privacy safeguards", () => {
     expect(
       evaluateHostPolicyGate({ runtime: "openclaw", signal: sampleSignal(), criticConfidence: 1, cooldownHit: true })
         .suppressedReason,
-    ).toBe("cooldown");
+    ).toBeUndefined();
     expect(
       evaluateHostPolicyGate({ runtime: "openclaw", signal: sampleSignal(), criticConfidence: 1, duplicateHit: true })
         .suppressedReason,

@@ -25,6 +25,7 @@ export type AmbientAppraisalProposal = {
   readonly schema: typeof ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal; readonly decision: "observe" | "speak";
   readonly desiredDrive: number; readonly confidence: number; readonly chunks: readonly string[]; readonly relationshipProposals: readonly RelationshipProposal[];
   readonly silenceRequest: AmbientSilenceRequest;
+  readonly invitation?: boolean;
 };
 export type AmbientState = {
   readonly scope: DiscordParticipantScope; readonly drive: number; readonly version: number; readonly updatedAtMs: number;

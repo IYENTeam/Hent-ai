@@ -149,7 +149,7 @@ Service-side conversation knobs (defaults are conservative) can be controlled by
 - `HENT_AI_CONVERSATION_MIN_DELAY_MS` (default `650`)
 - `HENT_AI_CONVERSATION_MAX_DELAY_MS` (default `6500`)
 
-Other conversation policy defaults (`maxChunks`, `maxChunkChars`, `cooldownMs`, etc.) are currently owned by service runtime config and can be adjusted in service deployment settings.
+Service runtime config owns output bounds (`maxChunks`, `maxChunkChars`). Legacy cooldown, posting-budget, idle-delay and confidence settings remain compatible metadata and no longer suppress participation.
 
 The OpenClaw adapter intentionally contains no fallback classifier, no local asset selection, no manifest scanning, no `shared/db` access, no `@hent-ai/generate` calls, no Discord token, and no direct `discord.com` REST calls.
 

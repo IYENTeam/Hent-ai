@@ -158,17 +158,11 @@ function validDecision(
   }
 
   const validChunks = hasValidAmbientChunks(proposal);
-  const baseProbability = calculateAmbientProbability({
-    decision: proposal.decision,
-    validChunks,
-    nextDrive,
-    confidence: proposal.confidence,
-    evidenceWeight,
-  });
-  const opportunity = proposal.decision === "speak" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.7) && !input.observeOnly;
-  const probability = opportunity ? applyAmbientPityBoost(baseProbability, input.state, input.ambientPityEnabled ?? true) : baseProbability;
-  const draw = stableAmbientDraw(scopeId(input.roster), input.eventId);
-  const shouldSpeak = probability > 0 && draw < probability;
+  // The provider owns conversational participation. Scores remain telemetry only.
+  const opportunity = proposal.decision === "speak" && validChunks && !input.observeOnly;
+  const shouldSpeak = opportunity && proposal.silenceRequest?.present !== true;
+  const probability = shouldSpeak ? 1 : 0;
+  const draw = null;
   const streaks = nextAmbientStreaks(input.state, opportunity, shouldSpeak);
   const driveUpdate: AmbientStateWithStreaks = {
     scope: input.roster.scope,
@@ -195,15 +189,6 @@ function validDecision(
     draw,
     shouldSpeak,
   };
-}
-
-function applyAmbientPityBoost(baseProbability: number, state: AmbientStateWithStreaks | null, enabled: boolean): number {
-  if (!enabled || baseProbability <= 0) return baseProbability;
-  const skipStreak = ambientStreak(state?.skipStreak);
-  const speakStreak = ambientStreak(state?.speakStreak);
-  let probability = 1 - (1 - baseProbability) ** (1 + skipStreak);
-  if (speakStreak >= Math.floor(1 / baseProbability)) probability *= 0.5;
-  return clampUnitInterval(probability) ?? 0;
 }
 
 function nextAmbientStreaks(state: AmbientStateWithStreaks | null, opportunity: boolean, shouldSpeak: boolean): Pick<AmbientStateWithStreaks, "speakStreak" | "skipStreak"> {

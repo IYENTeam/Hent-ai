@@ -229,7 +229,7 @@ describe("Discord ambient worker localhost wire QA", () => {
     }
   });
 
-  it("accumulates silence pressure over a fake clock without suppressing an explicit mention", async () => {
+  it("retains pressure telemetry without suppressing useful ambient or addressed speech", async () => {
     const root = mkdtempSync(join(tmpdir(), "hent-ambient-pressure-wire-"));
     const dbPath = join(root, "service.sqlite");
     let now = Date.parse("2026-07-25T12:00:00.000Z");
@@ -274,7 +274,7 @@ describe("Discord ambient worker localhost wire QA", () => {
         const content = transcript.transcript?.at(-1)?.content;
         const appraisal = content === "조용히 해"
           ? { schema: service.ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: "observe", desiredDrive: 1, confidence: 1, chunks: [], relationshipProposals: [], silenceRequest: { present: true, intensity: "mild" } }
-          : { schema: service.ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: "speak", desiredDrive: 1, confidence: 1, chunks: [content?.includes(botId) ? "mention reply" : "ambient reply"], relationshipProposals: [] };
+          : { schema: service.ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: "speak", desiredDrive: 1, confidence: 1, chunks: [content?.includes(botId) ? "mention reply" : "ambient reply"], relationshipProposals: [], invitation: content?.includes("answer this") === true };
         return json(response, 200, { choices: [{ message: { content: JSON.stringify(appraisal) } }] });
       });
       const providerUrl = await listen(provider);
@@ -310,7 +310,7 @@ describe("Discord ambient worker localhost wire QA", () => {
         await addAndRun(id, "조용히 해", humanA);
       }
       await addAndRun("100000000000000205", "ordinary ambient conversation", humanB);
-      await addAndRun("100000000000000234", `<@${botId}> answer this`, humanB, [{ id: botId, username: "ambient-bot", bot: true }]);
+      await addAndRun("100000000000000234", `<@${botId}> answer this`, humanA, [{ id: botId, username: "ambient-bot", bot: true }]);
 
       const liveDb = new service.ServiceDatabase(dbPath);
       const pressure = liveDb.db.prepare("SELECT pressure FROM adaptive_ambient_state WHERE guild_id=? AND channel_id=?").get(scope.guildId, scope.channelId) as { pressure: number };
@@ -320,7 +320,7 @@ describe("Discord ambient worker localhost wire QA", () => {
 
       expect(pressure.pressure).toBeGreaterThan(0.9);
       expect(ambientAudit).toMatchObject({ outcome: "observe" });
-      expect(ambientAudit.probability).toBeLessThan(0.1);
+      expect(ambientAudit.probability).toBe(1);
       expect(mentionAudit).toEqual({ outcome: "planned", evidence_weight: 1 });
       expect(sent.map((entry) => entry.content)).toEqual(["mention reply"]);
     } finally {

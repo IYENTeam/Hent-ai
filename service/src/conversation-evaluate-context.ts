@@ -71,10 +71,6 @@ export async function evaluateConversationContextProvider(
   if (parsed.kind === "no_reply") {
     return { kind: "no_reply", diagnostics: providerFailureDiagnostics(parsed.diagnostics, recentTurns.length, memorySummaries) };
   }
-  const lowConfidence = contextLowConfidenceDiagnostic(parsed.value, input.config);
-  if (lowConfidence) {
-    return { kind: "no_reply", diagnostics: providerFailureDiagnostics([lowConfidence], recentTurns.length, memorySummaries) };
-  }
   return { kind: "ok", diagnostics: providerSuccessDiagnostics(parsed.value, recentTurns.length, memorySummaries) };
 }
 
@@ -134,15 +130,6 @@ function eventToTurn(event: ConversationRawEvent): readonly ConversationTurn[] {
     default:
       return assertNever(event.authorRole);
   }
-}
-
-function contextLowConfidenceDiagnostic(
-  context: ConversationShortTermContext,
-  config: ConversationServiceConfig,
-): ConversationProviderDiagnostic | null {
-  return context.confidence < config.confidenceThreshold
-    ? { code: "low_confidence", message: `context confidence ${context.confidence} is below threshold ${config.confidenceThreshold}` }
-    : null;
 }
 
 function assertNever(value: never): never {

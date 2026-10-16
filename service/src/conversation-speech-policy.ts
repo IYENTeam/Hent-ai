@@ -109,15 +109,7 @@ function suppressedReasonFor(input: ConversationSpeechPolicyInput): Conversation
   if (!input.safeguards.threadAllowed) return "thread_blocked";
   if (input.safeguards.duplicateSignal) return "duplicate_signal";
   if (input.safeguards.selfNudge) return "self_nudge";
-  if (isCoolingDown(input)) return "cooldown";
-  if (input.state.speechCountThisHour >= input.config.budgetPerHour) return "hourly_budget_exhausted";
-  if (input.state.lastHumanMessageAtMs === null) return "no_recent_human_activity";
-  if (input.nowMs - input.state.lastHumanMessageAtMs < input.config.minHumanIdleMs) return "recent_human_active";
-  return input.provider.confidence < input.config.confidenceThreshold ? "low_confidence" : null;
-}
-
-function isCoolingDown(input: ConversationSpeechPolicyInput): boolean {
-  return input.state.lastSpeechAtMs !== null && input.nowMs - input.state.lastSpeechAtMs < input.config.cooldownMs;
+  return null;
 }
 
 function withPersonaBoundary(candidate: PersonaCandidate): ConversationPolicyPersona {

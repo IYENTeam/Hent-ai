@@ -104,6 +104,7 @@ export function buildSpeechDecisionPrompt(input: SpeechPromptInput): Conversatio
     system: [
       `Return JSON only for schema ${CONVERSATION_CONTRACT_SCHEMAS.speechDecision}.`,
       "Decide whether the bot should speak naturally in the room. Never claim human identity.",
+      "Respect an actual request for quiet until invited to respond again. Avoid repetitive interruptions using conversational judgment, not numeric participation limits.",
       "Required fields: schema, decision, reason, confidence, chunks.",
     ].join("\n"),
     user: JSON.stringify({
@@ -112,7 +113,6 @@ export function buildSpeechDecisionPrompt(input: SpeechPromptInput): Conversatio
       memorySummaries: input.memorySummaries,
       persona: input.persona,
       policy: {
-        confidenceThreshold: input.config.confidenceThreshold,
         maxChunks: input.config.maxChunks,
         maxChunkChars: input.config.maxChunkChars,
       },
@@ -192,9 +192,6 @@ export function parseSpeechDecisionResponse(
   if (confidence.kind !== "ok") return failField(confidence);
   const chunks = readStringArray(objectResult.value, "chunks");
   if (chunks.kind !== "ok") return failField(chunks);
-  if (confidence.value < config.confidenceThreshold) {
-    return fail("low_confidence", `speech confidence ${confidence.value} is below threshold ${config.confidenceThreshold}`);
-  }
   if (decision.value === "no_reply") return ok({ kind: "no_reply", reason: reason.value, confidence: confidence.value });
   const chunkDiagnostic = validateSpeechChunks(chunks.value, config);
   if (chunkDiagnostic) return fail(chunkDiagnostic.code, chunkDiagnostic.message);

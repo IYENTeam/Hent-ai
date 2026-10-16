@@ -469,9 +469,7 @@ export function evaluateHostPolicyGate(input: HostPolicyGateInput): HostPolicyGa
       : "source and target thread mismatch";
   const suppressedReason = input.shadowMode
     ? "shadow_mode"
-    : input.cooldownHit
-      ? "cooldown"
-      : input.duplicateHit
+    : input.duplicateHit
         ? "duplicate"
         : input.privacyRisk
           ? "privacy"

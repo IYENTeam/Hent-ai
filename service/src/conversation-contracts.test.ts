@@ -51,7 +51,7 @@ describe("conversation llm contracts", () => {
     expect(speechPrompt.system).toContain(CONVERSATION_CONTRACT_SCHEMAS.speechDecision);
     expect(contextPrompt.system).toContain("JSON only");
     expect(memoryPrompt.user).toContain("channel:c1:session:s1");
-    expect(speechPrompt.user).toContain("confidenceThreshold");
+    expect(speechPrompt.user).not.toContain("confidenceThreshold");
   });
 
   it("parses valid context, summary, and speech JSON into typed values", () => {
@@ -233,7 +233,7 @@ describe("conversation llm contracts", () => {
     });
   });
 
-  it("fails closed on low-confidence speech decisions", () => {
+  it("accepts low-confidence speech decisions", () => {
     // Given: a speak decision is below the configured threshold.
     const lowConfidence = JSON.stringify({
       schema: CONVERSATION_CONTRACT_SCHEMAS.speechDecision,
@@ -246,15 +246,10 @@ describe("conversation llm contracts", () => {
     // When: the speech contract parser applies service config.
     const parsed = parseSpeechDecisionResponse(lowConfidence, DEFAULT_CONVERSATION_CONFIG);
 
-    // Then: the service suppresses the reply with a low-confidence diagnostic.
-    expect(parsed).toMatchObject({ kind: "no_reply", reason: "low_confidence" });
-    expect(parsed.diagnostics).toContainEqual({
-      code: "low_confidence",
-      message: "speech confidence 0.69 is below threshold 0.7",
-    });
+    expect(parsed).toMatchObject({ kind: "ok", diagnostics: [] });
   });
 
-  it("fails closed on low-confidence no-reply speech decisions", () => {
+  it("accepts low-confidence no-reply speech decisions", () => {
     // Given: a no-reply decision is below the configured confidence threshold.
     const lowConfidence = JSON.stringify({
       schema: CONVERSATION_CONTRACT_SCHEMAS.speechDecision,
@@ -267,12 +262,7 @@ describe("conversation llm contracts", () => {
     // When: the speech contract parser applies service config.
     const parsed = parseSpeechDecisionResponse(lowConfidence, DEFAULT_CONVERSATION_CONFIG);
 
-    // Then: even a no-reply decision fails closed with a low-confidence diagnostic.
-    expect(parsed).toMatchObject({ kind: "no_reply", reason: "low_confidence" });
-    expect(parsed.diagnostics).toContainEqual({
-      code: "low_confidence",
-      message: "speech confidence 0.1 is below threshold 0.7",
-    });
+    expect(parsed).toMatchObject({ kind: "ok", diagnostics: [] });
   });
 
   it("fails closed on prompt-injection-like outputs", () => {

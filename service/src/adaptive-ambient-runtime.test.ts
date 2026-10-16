@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as service from "./index.js";
 import { ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS, type DiscordInboundMessage, type DiscordMembershipSnapshot } from "./adaptive-ambient-contracts.js";
@@ -42,10 +45,10 @@ function auditEvidence(db: service.ServiceDatabase): { readonly evidenceWeight: 
   };
 }
 
-function setup(options: { readonly enabled?: boolean; readonly allowlisted?: boolean; readonly budgetPerHour?: number; readonly settings?: unknown; readonly result?: unknown; readonly scope?: typeof scope; readonly eventId?: string } = {}) {
+function setup(options: { readonly dbPath?: string; readonly enabled?: boolean; readonly allowlisted?: boolean; readonly budgetPerHour?: number; readonly settings?: unknown; readonly result?: unknown; readonly scope?: typeof scope; readonly eventId?: string } = {}) {
   const currentScope = options.scope ?? scope;
   const eventId = options.eventId ?? "event-1";
-  const db = new service.ServiceDatabase();
+  const db = new service.ServiceDatabase(options.dbPath);
   db.setChannelMapping(currentScope.channelId, { enabled: options.enabled ?? true, settings: options.settings });
   const store = service.createAdaptiveAmbientStore(db, () => now);
   const fence = store.acquireLease("discord-ambient-worker", "runtime")!;
@@ -61,6 +64,67 @@ function setup(options: { readonly enabled?: boolean; readonly allowlisted?: boo
 afterEach(() => { now = 1_000_000; vi.restoreAllMocks(); });
 
 describe("atomic adaptive ambient runtime", () => {
+  it("persists quiet through context truncation and runtime restart until the requester invites a response", async () => {
+    const root = mkdtempSync(join(tmpdir(), "hent-quiet-"));
+    const dbPath = join(root, "service.sqlite");
+    const fixture = setup({ dbPath, result: appraisal({ silenceRequest: { present: true, intensity: "mild" } }) });
+    const run = () => fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal });
+    expect(await run()).toBe("observe");
+    expect(fixture.store.quietRequester(scope)).toBe("100000000000000004");
+    // Newer unrelated messages push the request outside the 20-event provider window.
+    for (let index = 0; index < 25; index++) {
+      fixture.db.db.prepare(`INSERT INTO conversation_raw_events
+        (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+        SELECT scope_id,channel_id,?,'user',author_source,'unrelated',event_ts,observed_at,0,metadata_json,created_at
+        FROM conversation_raw_events WHERE message_id='event-1'`).run(`unrelated-${index}`);
+    }
+    fixture.db.close();
+    fixture.db = new service.ServiceDatabase(dbPath);
+    const restartedStore = service.createAdaptiveAmbientStore(fixture.db, () => now);
+    let current = appraisal();
+    let expectedEvent = "unrelated-0";
+    const enqueue = (id: string) => {
+      fixture.db.db.prepare(`INSERT INTO conversation_raw_events
+        (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+        SELECT scope_id,channel_id,?,'user',author_source,'continue',event_ts,observed_at,0,metadata_json,created_at
+        FROM conversation_raw_events WHERE message_id='event-1'`).run(id);
+      restartedStore.createWork({ id, eventId: id, eventDigest: id, scope });
+    };
+    // Use an old raw event outside the current window as the queued work event.
+    restartedStore.createWork({ id: "unrelated-work", eventId: "unrelated-0", eventDigest: "unrelated-0", scope });
+    // The provider must see the exact work event, even after truncation.
+    fixture.runtime = service.createAdaptiveAmbientRuntime({ serviceDb: fixture.db, store: restartedStore,
+      provider: { appraise: async (request) => {
+        expect(request.event?.eventId).toBe(expectedEvent);
+        expect(request.context?.archiveSummaries.join(" ")).toContain("Quiet requested by");
+        if (request.event?.eventId === "unrelated-0") expect(request.transcript.some((entry) => entry.eventId === "unrelated-0")).toBe(false);
+        return current as service.AmbientAppraisalParseResult;
+      } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId,
+      budgetPerHour: 0, clock: () => now, loadRoster: async () => ({ ...roster(), memberIds: [], complete: false }) });
+    const invitation = appraisal({ invitation: true });
+    expect(await run()).toBe("observe");
+    expect(restartedStore.quietRequester(scope)).toBe("100000000000000004");
+    expect(restartedStore.quietRequester({ ...scope, channelId: "other" })).toBeNull();
+    // A mention or an invitation by somebody else cannot release the requester’s quiet.
+    expectedEvent = "mention";
+    enqueue("mention");
+    expect(await run()).toBe("observe");
+    expectedEvent = "other-invite";
+    enqueue("other-invite");
+    fixture.db.db.prepare("UPDATE conversation_raw_events SET metadata_json=? WHERE message_id=?")
+      .run(JSON.stringify({ discordAuthorId: "100000000000000005", mentions: [botUserId] }), expectedEvent);
+    current = appraisal({ invitation: true, relationshipProposals: [] });
+    expect(await run()).toBe("observe");
+    expect(restartedStore.quietRequester(scope)).toBe("100000000000000004");
+    current = invitation;
+    expectedEvent = "invite";
+    enqueue("invite");
+    expect(await run()).toBe("planned");
+    expect(restartedStore.quietRequester(scope)).toBeNull();
+    fixture.db.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("commits adaptive outcome atomically", async () => {
     const fixture = setup();
     expect(runtimeFactory()).not.toBeNull();
@@ -82,7 +146,7 @@ describe("atomic adaptive ambient runtime", () => {
     await expect(planned.runtime!.run({ fence: planned.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     const plannedAudit = auditEvidence(planned.db);
     expect(plannedAudit).toEqual({
-      evidenceWeight: 1, probability: 0.625, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
+      evidenceWeight: 1, probability: 1, draw: null,
       driveBefore: 0.5, driveAfter: 0.625, activeHumanCount: 1, rosterFresh: 1,
     });
     if (plannedAudit.driveBefore === null || plannedAudit.driveAfter === null) throw new Error("planned audit must retain drive evidence");
@@ -96,7 +160,7 @@ describe("atomic adaptive ambient runtime", () => {
     const observed = setup({ result: appraisal({ decision: "observe", desiredDrive: 0.8, chunks: [] }) });
     await expect(observed.runtime!.run({ fence: observed.fence, signal: new AbortController().signal })).resolves.toBe("observe");
     expect(auditEvidence(observed.db)).toEqual({
-      evidenceWeight: 1, probability: 0, draw: service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, "event-1"),
+      evidenceWeight: 1, probability: 0, draw: null,
       driveBefore: 0.5, driveAfter: 0.575, activeHumanCount: 1, rosterFresh: 1,
     });
     observed.db.close();
@@ -135,16 +199,16 @@ describe("atomic adaptive ambient runtime", () => {
     db.close();
   });
 
-  it("blocks provider dispatch on allowlist, channel, budget, lease, and abort gates", async () => {
-    for (const options of [{ allowlisted: false }, { enabled: false }, { budgetPerHour: 0 }]) {
+  it("preserves allowlist, channel, lease and abort safeguards while ignoring budget", async () => {
+    for (const options of [{ allowlisted: false }, { enabled: false }]) {
       const fixture = setup(options);
       await fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal });
       expect(fixture.calls).toEqual([]); fixture.db.close();
     }
-    const budgeted = setup({ budgetPerHour: 1 });
+    const budgeted = setup({ budgetPerHour: 0 });
     budgeted.db.db.prepare("INSERT INTO adaptive_budgets (scope_key,budget_key,count,window_start_ms,updated_at_ms) VALUES (?, 'ambient', 1, ?, ?)").run(`${scope.guildId}:${scope.channelId}`, 0, now);
     await budgeted.runtime!.run({ fence: budgeted.fence, signal: new AbortController().signal });
-    expect(budgeted.calls).toEqual([]); budgeted.db.close();
+    expect(budgeted.calls).toEqual(["provider"]); budgeted.db.close();
     const aborted = setup(); const controller = new AbortController(); controller.abort();
     await expect(aborted.runtime!.run({ fence: aborted.fence, signal: controller.signal })).resolves.toBe("aborted");
     expect(aborted.calls).toEqual([]); aborted.db.close();
@@ -198,7 +262,7 @@ describe("atomic adaptive ambient runtime", () => {
     fixture.db.close();
   });
 
-  it("honors scoped decay, pressure, and disabled pity settings end-to-end", async () => {
+  it("retains scoped score telemetry without suppressing useful speech", async () => {
     const eventId = Array.from({ length: 100 }, (_, index) => `settings-${index}`).find((candidate) => {
       const draw = service.stableAmbientDraw(`${scope.guildId}:${scope.channelId}`, candidate);
       return draw > 0.6 && draw < 0.9;
@@ -208,7 +272,7 @@ describe("atomic adaptive ambient runtime", () => {
     fixture.db.db.prepare(`INSERT INTO adaptive_ambient_state (guild_id,channel_id,drive,version,updated_at_ms,pressure,pressure_updated_at_ms,speak_streak,skip_streak)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(scope.guildId, scope.channelId, 1, 4, now - 60_000, 0.5, now - 60_000, 0, 4);
 
-    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("observe");
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
     const decayedDrive = 0.5 + 0.5 * Math.exp(-1);
     const decayedPressure = 0.5 * Math.exp(-1);
     expect(fixture.store.state(scope)).toEqual({
@@ -217,8 +281,8 @@ describe("atomic adaptive ambient runtime", () => {
       updatedAtMs: now,
       pressure: decayedPressure,
       pressureUpdatedAtMs: now,
-      speakStreak: 0,
-      skipStreak: 5,
+      speakStreak: 1,
+      skipStreak: 0,
     });
     fixture.db.close();
   });
@@ -250,11 +314,11 @@ describe("atomic adaptive ambient runtime", () => {
     fixture.db.close();
   });
 
-  it("re-reads the scoped confidence floor when work begins", async () => {
+  it("ignores deprecated scoped confidence floors", async () => {
     const fixture = setup({ settings: { ambientConfidenceFloor: 0.6 }, result: appraisal({ confidence: 0.65 }) });
     fixture.db.setChannelMapping(scope.channelId, { enabled: true, settings: { ambientConfidenceFloor: 0.7 } });
-    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
-    expect(fixture.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 });
+    await expect(fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal })).resolves.toBe("planned");
+    expect(fixture.store.counts()).toEqual({ audits: 1, states: 1, budgets: 1, relationships: 1, plans: 1 });
     fixture.db.close();
   });
 
@@ -263,8 +327,8 @@ describe("atomic adaptive ambient runtime", () => {
     await expect(invalid.runtime!.run({ fence: invalid.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
     expect(invalid.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 }); invalid.db.close();
     const lowConfidence = setup({ result: appraisal({ confidence: 0.69 }) });
-    await expect(lowConfidence.runtime!.run({ fence: lowConfidence.fence, signal: new AbortController().signal })).resolves.toBe("invalid");
-    expect(lowConfidence.store.counts()).toEqual({ audits: 1, states: 0, budgets: 0, relationships: 0, plans: 0 }); lowConfidence.db.close();
+    await expect(lowConfidence.runtime!.run({ fence: lowConfidence.fence, signal: new AbortController().signal })).resolves.toBe("planned");
+    expect(lowConfidence.store.counts()).toEqual({ audits: 1, states: 1, budgets: 1, relationships: 1, plans: 1 }); lowConfidence.db.close();
     const thrown = setup();
     thrown.runtime = runtimeFactory()?.({ serviceDb: thrown.db, store: thrown.store, provider: { appraise: async () => { thrown.calls.push("provider"); throw new Error("provider failure"); } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId, budgetPerHour: 2, clock: () => now, loadRoster: async () => roster() });
     await expect(thrown.runtime!.run({ fence: thrown.fence, signal: new AbortController().signal })).resolves.toBe("provider_unavailable");

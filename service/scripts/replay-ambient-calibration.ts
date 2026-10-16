@@ -147,16 +147,16 @@ function main(): void {
 
   printScenario("Scenario A: baseline drive 0.5", baseline);
   printScenario("Scenario B: drive 0.8 then idle decay", idle);
-  printScenario("Scenario C: five mild silence requests, ambient suppression, explicit mention", pressure);
-  printScenario("Scenario D: eight consecutive failed draws with pity", pity);
+  printScenario("Scenario C: pressure telemetry does not veto useful speech", pressure);
+  printScenario("Scenario D: event IDs and streaks do not veto useful speech", pity);
 
   const idleDeviations = idle.map((row) => Math.abs(row.driveBefore - 0.5));
   assertInvariant(idleDeviations.every((value, index) => index === 0 || value < idleDeviations[index - 1]!), "idle decay is monotonic toward the 0.5 baseline");
   assertInvariant(pressure.every((row) => row.pressure >= 0 && row.pressure <= 1), "pressure remains bounded in [0,1]");
   assertInvariant(pressure.slice(0, 5).every((row, index) => index === 0 || row.pressure >= pressure[index - 1]!.pressure), "repeated silence requests raise pressure");
-  assertInvariant(!pressure[5]!.speak && pressure[6]!.speak, "pressure suppresses ambient speech but not an explicit mention");
-  assertInvariant(pity.every((row) => row.probability + Number.EPSILON >= row.baseProbability), "effective pity probability is never below base probability");
-  assertInvariant(pity.every((row) => !row.speak), "selected pity draws remain consecutive failures");
+  assertInvariant(pressure[5]!.speak && pressure[6]!.speak, "pressure telemetry does not suppress provider speech");
+  assertInvariant(pity.every((row) => row.probability + Number.EPSILON >= row.baseProbability), "provider permission is independent of the legacy score");
+  assertInvariant(pity.every((row) => row.speak), "event IDs and streaks do not suppress provider speech");
 }
 
 try {

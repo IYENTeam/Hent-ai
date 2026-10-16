@@ -25,7 +25,7 @@ function worker(input: Record<string, unknown>): Worker { return api()(input); }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("fenced Discord ambient worker core", () => {
-  it("seeds first boot, ingests ascending forward events atomically, preserves self evidence, and classifies the exact age boundary", async () => {
+  it("seeds first boot, ingests ascending forward events atomically, preserves self evidence, and queues forward messages regardless of their age", async () => {
     const fake = clock(); const db = new service.ServiceDatabase(path()); const store = service.createAdaptiveAmbientStore(db, () => fake.now);
     const first = worker({ store, client: client(async () => [message("3", fake.now)]), scope, startup, channelMapping: () => ({ enabled: true }), holderId: "first", clock: () => fake.now });
     expect(await first.runOnce()).toBe("seeded");
@@ -38,7 +38,7 @@ describe("fenced Discord ambient worker core", () => {
     expect(db.db.prepare("SELECT message_id,author_role,bot_self_loop FROM conversation_raw_events ORDER BY message_id").all()).toEqual([
       { message_id: "4", author_role: "user", bot_self_loop: 0 }, { message_id: "5", author_role: "user", bot_self_loop: 0 }, { message_id: "6", author_role: "assistant", bot_self_loop: 1 },
     ]);
-    expect(db.db.prepare("SELECT event_id,observe_only FROM participant_event_work ORDER BY event_id").all()).toEqual([{ event_id: "4", observe_only: 0 }, { event_id: "5", observe_only: 1 }]);
+    expect(db.db.prepare("SELECT event_id,observe_only FROM participant_event_work ORDER BY event_id").all()).toEqual([{ event_id: "4", observe_only: 0 }, { event_id: "5", observe_only: 0 }]);
     expect(db.db.prepare("SELECT message_id FROM participant_poll_cursors").get()).toEqual({ message_id: "6" });
     expect(second.claimNextWork()).toBe("discord:100:200:4");
     fake.advance(30_001); await second.stop();

@@ -115,7 +115,7 @@ function decisionInput(overrides: Partial<AmbientDecisionInput> = {}): AmbientDe
 }
 
 describe("adaptive ambient drive and evidence", () => {
-  it("calculates exact drive and evidence probability", () => {
+  it("records drive telemetry without rolling for a valid reply", () => {
     // Given: the public service boundary for the pure ambient decision algorithm.
     const api = conversationAmbientApi();
 
@@ -127,9 +127,8 @@ describe("adaptive ambient drive and evidence", () => {
     const outcome = ambient().evaluateAmbientDecision(decisionInput());
     expect(outcome.driveUpdate).toMatchObject({ drive: 0.575, version: 1, scope, updatedAtMs: nowMs });
     expect(outcome.evidenceWeight).toBe(1);
-    expect(outcome.probability).toBeCloseTo(0.46);
-    expect(outcome.draw).toBeGreaterThanOrEqual(0);
-    expect(outcome.draw).toBeLessThan(1);
+    expect(outcome.probability).toBe(1);
+    expect(outcome.draw).toBeNull();
   });
 
   it("weights explicit mentions and replies above fresh complete roster activity", () => {
@@ -169,7 +168,7 @@ describe("adaptive ambient drive and evidence", () => {
     expect(stale.driveUpdate).toMatchObject({ drive: 0.8, version: 8, updatedAtMs: nowMs });
   });
 
-  it("accumulates decaying silence pressure without making addressed speech impossible", () => {
+  it("honors explicit quiet while retaining decaying pressure telemetry", () => {
     const api = ambient();
     const mild = appraisal({ confidence: 0.7, silenceRequest: { present: true, intensity: "mild" } });
     const singleMild = api.evaluateAmbientDecision(decisionInput({ appraisal: mild }));
@@ -178,8 +177,8 @@ describe("adaptive ambient drive and evidence", () => {
     // so the EMA receives desiredDrive 0.8 * (1 - 0.35) = 0.52.
     expect(singleMild.driveUpdate).toMatchObject({ drive: 0.505, pressure: 0.35, pressureUpdatedAtMs: nowMs });
     expect(singleMild.evidenceWeight).toBe(1);
-    expect(singleMild.probability).toBeGreaterThan(0);
-    expect(singleMild.shouldSpeak).toBe(true);
+    expect(singleMild.probability).toBe(0);
+    expect(singleMild.shouldSpeak).toBe(false);
     expect("mute" in singleMild).toBe(false);
     expect("quietUntil" in singleMild).toBe(false);
     expect("forceSilent" in singleMild).toBe(false);
@@ -242,12 +241,12 @@ describe("adaptive ambient drive and evidence", () => {
     expect(outcome.shouldSpeak).toBe(false);
   });
 
-  it("keeps state version stable for invalid and low-confidence appraisals", () => {
+  it("keeps state version stable for invalid appraisals", () => {
     const existing: AmbientState = { scope, drive: 0.4, version: 7, updatedAtMs: nowMs - 1 };
     const malformed = appraisal({ chunks: [] });
     const lowConfidence = appraisal({ confidence: 0.69 });
 
-    for (const invalidAppraisal of [malformed, lowConfidence]) {
+    for (const invalidAppraisal of [malformed]) {
       const outcome = ambient().evaluateAmbientDecision(decisionInput({ state: existing, appraisal: invalidAppraisal }));
       expect(outcome.driveUpdate).toBeNull();
       expect(outcome.audit).toMatchObject({ outcome: "invalid", proposal: null });
@@ -256,53 +255,20 @@ describe("adaptive ambient drive and evidence", () => {
     }
   });
 
-  it("boosts probability after quiet streaks without forcing a decision", () => {
-    const api = ambient();
-    const baseState = { scope, drive: 0, version: 1, updatedAtMs: nowMs };
-    const baseInput = {
-      appraisal: appraisal({ desiredDrive: 0.5 }),
-      state: baseState,
-      eventId: "pity-high-draw",
-    };
-
-    const base = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 0 } }));
-    const boosted = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 } }));
-    const capped = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 0, speakStreak: 10 } }));
-    const disabled = api.evaluateAmbientDecision(decisionInput({ ...baseInput, state: { ...baseState, skipStreak: 4, speakStreak: 0 }, ambientPityEnabled: false }));
-
-    expect(base.probability).toBeCloseTo(0.1);
-    expect(boosted.probability).toBeCloseTo(1 - 0.9 ** 5);
-    expect(capped.probability).toBeCloseTo(0.05);
-    expect(disabled.probability).toBeCloseTo(0.1);
-    expect(boosted.shouldSpeak).toBe(false);
-    expect(boosted.shouldSpeak).toBe(boosted.draw! < boosted.probability);
-    expect(boosted.driveUpdate).toMatchObject({ speakStreak: 0, skipStreak: 5 });
-
-    const speech = api.evaluateAmbientDecision(decisionInput({
-      ...baseInput,
-      eventId: "event-1",
-      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
-    }));
-    expect(speech.shouldSpeak).toBe(true);
-    expect(speech.driveUpdate).toMatchObject({ speakStreak: 3, skipStreak: 0 });
-
-    const providerObserve = api.evaluateAmbientDecision(decisionInput({
-      ...baseInput,
-      appraisal: appraisal({ decision: "observe", desiredDrive: 0.5, chunks: [] }),
-      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
-    }));
-    expect(providerObserve.driveUpdate).toMatchObject({ speakStreak: 2, skipStreak: 4 });
-
-    const observeOnly = api.evaluateAmbientDecision(decisionInput({
-      ...baseInput,
-      eventId: "event-1",
-      observeOnly: true,
-      state: { ...baseState, skipStreak: 4, speakStreak: 2 },
-    }));
-    expect(observeOnly.driveUpdate).toMatchObject({ speakStreak: 2, skipStreak: 4 });
+  it("allows a useful reply regardless of roster freshness, address, confidence, drive, pressure and streaks", () => {
+    for (const complete of [true, false]) {
+      const outcome = ambient().evaluateAmbientDecision(decisionInput({
+        roster: { ...roster, complete, observedAtMs: 0 }, activeHumanIds: [],
+        message: { mentions: [], replyTo: null },
+        appraisal: appraisal({ confidence: 0, desiredDrive: 0 }),
+        state: { scope, drive: 0, version: 1, updatedAtMs: nowMs, pressure: 1, speakStreak: 999 },
+      }));
+      expect(outcome).toMatchObject({ shouldSpeak: true, probability: 1, draw: null });
+    }
+    expect(ambient().evaluateAmbientDecision(decisionInput({ observeOnly: true }))).toMatchObject({ shouldSpeak: false });
   });
 
-  it("treats a be quiet request as social evidence while allowing resistant defiant output", () => {
+  it("does not treat drive telemetry as permission to ignore quiet", () => {
     const api = ambient();
     const quietRequest = "be quiet";
     const baseline = api.evaluateAmbientDecision(decisionInput({
@@ -312,11 +278,11 @@ describe("adaptive ambient drive and evidence", () => {
     const resistant = api.evaluateAmbientDecision(decisionInput({
       eventId: "quiet-request-event",
       message: { mentions: [botUserId], replyTo: null },
-      appraisal: appraisal({ desiredDrive: 0.95, chunks: ["I hear the request, but I have one defiant point to make."] }),
+      appraisal: appraisal({ silenceRequest: { present: true, intensity: "mild" }, desiredDrive: 0.95, chunks: ["I hear the request, but I have one defiant point to make."] }),
     }));
 
     expect(quietRequest).toBe("be quiet");
-    expect(resistant.driveUpdate?.drive).toBeGreaterThan(baseline.driveUpdate?.drive ?? 0);
+    expect(resistant.shouldSpeak).toBe(false);
     expect(resistant.audit).toMatchObject({ outcome: resistant.shouldSpeak ? "planned" : "observe", proposal: { decision: "speak" } });
     expect("mute" in resistant).toBe(false);
     expect("quit" in resistant).toBe(false);

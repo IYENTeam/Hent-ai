@@ -4,6 +4,26 @@ import { createHentAiServer, listen } from "./server.js";
 import { enabledConversationConfig, nullVerifier, request, token, withServer } from "./service-test-helpers.js";
 
 describe("service-owned watcher API", () => {
+  it("does not let watcher nudges bypass scoped quiet and keeps other threads independent", async () => {
+    const db = new ServiceDatabase();
+    db.db.prepare(`INSERT INTO adaptive_ambient_audits
+      (event_id,guild_id,channel_id,outcome,proposal_json,recorded_at_ms) VALUES ('quiet','guild','quiet-thread','observe',?,0)`)
+      .run(JSON.stringify({ quietRequester: "human" }));
+    await withServer(db, async (baseUrl) => {
+      for (const thread of ["quiet-thread", "other-thread"]) {
+        let result: unknown;
+        for (const id of ["a1", "a2"]) {
+          const response = await request(baseUrl, "/v1/watcher/evaluate", { method: "POST", body: JSON.stringify({
+            scopeId: `scope:${thread}`, channelId: "parent", sourceThreadId: thread, targetThreadId: thread,
+            text: "Repeat the same stale deployment plan", messageId: id,
+          }) });
+          result = await response.json();
+        }
+        expect(result).toMatchObject({ decision: thread === "quiet-thread" ? "no_reply" : "nudge" });
+      }
+    }, { conversationConfig: enabledConversationConfig });
+  });
+
   it("conversation records user turns with context checkpoint diagnostics through service endpoints", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
@@ -62,7 +82,7 @@ describe("service-owned watcher API", () => {
     }, { conversationConfig: enabledConversationConfig });
   });
 
-  it("suppresses duplicate/cooldown after committed watcher nudge delivery", async () => {
+  it("allows a new signal immediately after committed watcher nudge delivery", async () => {
     const db = new ServiceDatabase();
     await withServer(db, async (baseUrl) => {
       await request(baseUrl, "/v1/watcher/evaluate", {
@@ -87,11 +107,11 @@ describe("service-owned watcher API", () => {
         method: "POST",
         body: JSON.stringify({ scopeId: "scope-cool", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a3" }),
       });
-      expect(await second.json()).toMatchObject({ decision: "no_reply", audit: { allowed: false, suppressedReason: "cooldown" } });
+      expect(await second.json()).toMatchObject({ decision: "nudge", audit: { allowed: true } });
     }, { conversationConfig: enabledConversationConfig });
   });
 
-  it("persists committed watcher cooldown across service handler restarts", async () => {
+  it("preserves delivery dedup state without enforcing cooldown across restarts", async () => {
     const db = new ServiceDatabase();
     const firstBinding = await listen(createHentAiServer({ db, token, verifier: nullVerifier, conversationConfig: enabledConversationConfig }));
     try {
@@ -121,7 +141,7 @@ describe("service-owned watcher API", () => {
         method: "POST",
         body: JSON.stringify({ scopeId: "scope-restart", channelId: "c1", text: "Repeat the same stale deployment plan", messageId: "a3" }),
       });
-      expect(await second.json()).toMatchObject({ decision: "no_reply", audit: { allowed: false, suppressedReason: "cooldown" } });
+      expect(await second.json()).toMatchObject({ decision: "nudge", audit: { allowed: true } });
       expect(db.db.prepare("SELECT state_key, last_signal_id FROM conversation_gate_state WHERE scope_id = ?").all("scope-restart")).toMatchObject([
         { state_key: "scope-restart:stale_expression_repeated", last_signal_id: "sig-stale-a2" },
       ]);

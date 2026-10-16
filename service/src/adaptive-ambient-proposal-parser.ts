@@ -7,13 +7,13 @@ import {
 } from "./adaptive-ambient-contracts.js";
 
 const APPRAISAL_REQUIRED_FIELDS = ["schema", "decision", "desiredDrive", "confidence", "chunks", "relationshipProposals"] as const;
-const APPRAISAL_FIELDS = [...APPRAISAL_REQUIRED_FIELDS, "silenceRequest"] as const;
+const APPRAISAL_FIELDS = [...APPRAISAL_REQUIRED_FIELDS, "silenceRequest", "invitation"] as const;
 const RELATIONSHIP_FIELDS = ["userId", "rapportDelta", "familiarityDelta", "notes"] as const;
 const SNOWFLAKE = /^[1-9][0-9]{0,19}$/;
 const MAX_SNOWFLAKE = (1n << 64n) - 1n;
 const MAX_RELATIONSHIP_PROPOSALS = 3;
 
-export function parseAmbientAppraisalProposal(text: string | null, confidenceThreshold = 0.7): AmbientAppraisalParseResult {
+export function parseAmbientAppraisalProposal(text: string | null, _confidenceThreshold = 0.7): AmbientAppraisalParseResult {
   if (!text || text.trim().length === 0) return invalid("provider output must be a non-empty JSON object");
   if (containsInjectionMarker(text)) return invalid("provider output contained prompt-injection-like content");
   const normalized = stripCodeFence(text.trim());
@@ -25,13 +25,13 @@ export function parseAmbientAppraisalProposal(text: string | null, confidenceThr
   if (parsed.decision !== "observe" && parsed.decision !== "speak") return invalid("decision must be observe or speak");
   if (!unit(parsed.desiredDrive)) return invalid("desiredDrive must be a finite number between 0 and 1");
   if (!unit(parsed.confidence)) return invalid("confidence must be a finite number between 0 and 1");
-  if (parsed.confidence < confidenceThreshold) return invalid(`confidence ${parsed.confidence} is below threshold ${confidenceThreshold}`);
   const chunks = parseChunks(parsed.chunks, parsed.decision);
   if (!chunks) return invalid("chunks must match the decision and contain one to five non-empty safe bubbles of at most 1800 characters");
   const relationshipProposals = parseRelationships(parsed.relationshipProposals);
   if (!relationshipProposals) return invalid("relationshipProposals must contain only bounded relationship proposals");
+  if (parsed.invitation !== undefined && typeof parsed.invitation !== "boolean") return invalid("invitation must be boolean");
   const silenceRequest = parseSilenceRequest(parsed.silenceRequest);
-  return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: parsed.decision, desiredDrive: parsed.desiredDrive, confidence: parsed.confidence, chunks, relationshipProposals, silenceRequest } };
+  return { kind: "valid", proposal: { schema: ADAPTIVE_AMBIENT_CONTRACT_SCHEMAS.appraisal, decision: parsed.decision, desiredDrive: parsed.desiredDrive, confidence: parsed.confidence, chunks, relationshipProposals, silenceRequest, ...(parsed.invitation === undefined ? {} : { invitation: parsed.invitation }) } };
 }
 
 function stripCodeFence(text: string): string {

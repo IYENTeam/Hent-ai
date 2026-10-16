@@ -111,7 +111,7 @@ describe("adaptive ambient participant startup configuration", () => {
     expect(parseAmbientAppraisalProposal(valid)).toMatchObject({ kind: "valid", proposal: { decision: "speak" } });
     expect(parseAmbientAppraisalProposal(unsafeField)).toMatchObject({ kind: "invalid" });
     expect(parseAmbientAppraisalProposal(injectedChunk)).toMatchObject({ kind: "invalid" });
-    expect(parseAmbientAppraisalProposal(lowConfidence)).toMatchObject({ kind: "invalid" });
+    expect(parseAmbientAppraisalProposal(lowConfidence)).toMatchObject({ kind: "valid" });
   });
 
   it("reads only independently valid per-channel ambient settings", () => {

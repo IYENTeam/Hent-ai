@@ -42,7 +42,7 @@ PR #99 is the reference case: it started as a useful audit repro, but after the 
 | OpenClaw adapter code | OpenClaw tests plus proof that `openclaw/` remains service-thin: no local classifier, no local asset/profile lookup, no direct Discord REST. |
 | Service verdict/verifier changes | Service verifier/service tests, finite verifier-cache expiry evidence, and a request/response fixture or contract version for `/v1/final-response/verdict`. |
 | Affect routing/tags/vector changes | Strict `VisualAffectV2`/`ResponseAffectV2` parsing, shared dimension order and weights, full mapped-set nearest-distance evidence, random equal-distance tie tests, and all-or-nothing legacy fallback tests. |
-| Watcher behavior | Watcher core/service tests covering state lifetime, dedup/cooldown, self-nudge prevention, and scope/thread handling. |
+| Watcher behavior | Watcher core/service tests covering state lifetime, dedup, absence of participation cooldowns, self-nudge prevention, and scope/thread handling. |
 | Hermes compatibility rules | Hermes tests plus parity evidence against `shared/` fixtures or an explicit documented difference. |
 | Shared classifier/fixture changes | Cross-surface fixture updates where practical, including Korean, English, mixed-language, progress, apology, uncertainty, greeting, and noisy media-tag cases. `tests/fixtures/emotion-contract-v1.json` is the current fixture. |
 | Asset/manifest/profile DB mutations | Diff/readback evidence; DB migrations require backup or reversible plan. |

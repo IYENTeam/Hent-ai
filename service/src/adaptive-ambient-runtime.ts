@@ -54,7 +54,6 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
     const budgetLimit = ambientSettings.ambientBudgetPerHour ?? options.budgetPerHour;
     if (input.signal.aborted) return "aborted";
     if (!options.store.isFenceCurrent(input.fence)) return "lease_unavailable";
-    if (!budgetAvailable(options.store, options.scope, budgetLimit, clock())) return "idle";
 
     const workId = options.store.claimNextWork(options.scope, input.fence);
     if (!workId) return "idle";
@@ -78,13 +77,15 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       const now = clock();
       const state = options.store.state(options.scope);
       const activeHumanIds = loadActiveHumanIds(options.serviceDb, options.scope, roster, now);
+      const quietRequester = options.store.quietRequester(options.scope);
       let appraisal: AmbientAppraisalParseResult;
       try {
         appraisal = await options.provider.appraise({
           scope: options.scope,
           persona: personaFor(options.serviceDb, beforeProviderMapping?.profileId ?? null, options.globalPersona),
           transcript: context.transcript,
-          context: { archiveSummaries: context.archiveSummaries, relationships: context.relationships },
+          event: context.event,
+          context: { archiveSummaries: [...context.archiveSummaries, ...(quietRequester ? [`Quiet requested by ${quietRequester}; remain quiet until this person invites a response again.`] : [])], relationships: context.relationships },
           audience: {
             rosterComplete: roster.complete,
             activeHumanCount: activeHumanIds.length,
@@ -99,10 +100,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       const afterProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);
       if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterProviderMapping)) return "disabled";
       if (appraisal.kind === "unavailable") return "provider_unavailable";
-      if (appraisal.kind === "valid" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? 0.7)) {
-        appraisal = { kind: "invalid", diagnostic: "provider confidence was below threshold" };
-      }
-      if (appraisal.kind === "valid" && !relationshipTargetsAuthorized(appraisal.proposal.relationshipProposals, context.transcript, roster)) {
+      if (appraisal.kind === "valid" && !relationshipTargetsAuthorized(appraisal.proposal.relationshipProposals, [...context.transcript, context.event], roster)) {
         appraisal = { kind: "invalid", diagnostic: "relationship target was not authenticated by transcript or roster" };
       }
 
@@ -124,7 +122,9 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       });
       const proposal = appraisal.kind === "valid" ? appraisal.proposal : undefined;
       const bubbles = proposal ? normalizeDiscordAmbientBubbles(proposal.chunks) : null;
-      const planned = decision.shouldSpeak && !work.observeOnly && bubbles !== null;
+      const nextQuietRequester = proposal?.silenceRequest?.present === true ? context.event.authorId
+        : proposal?.invitation === true && context.event.authorId === quietRequester ? null : quietRequester;
+      const planned = decision.shouldSpeak && nextQuietRequester === null && !work.observeOnly && bubbles !== null;
       const budget = planned ? nextBudget(options.store, options.scope, clock()) : undefined;
       const driveBefore = decision.driveUpdate === null ? null : state === null ? DEFAULT_AMBIENT_DRIVE
         : applyAmbientIdleDecay(state.drive, state.updatedAtMs, now, ambientSettings.ambientIdleDecayTauMs ?? IDLE_DECAY_TAU_MS);
@@ -134,7 +134,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         scope: options.scope,
         outcome: decision.audit.outcome === "invalid" ? "invalid" : planned ? "planned" : "observe",
         diagnostic: decision.audit.diagnostic,
-        proposal,
+        proposal: proposal && { ...proposal, quietRequester: nextQuietRequester },
         auditEvidence: {
           evidenceWeight: decision.evidenceWeight,
           probability: decision.probability,
@@ -172,7 +172,10 @@ function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: nu
   const rows = db.db.prepare(`SELECT message_id,text,event_ts,author_role,metadata_json FROM conversation_raw_events
     WHERE scope_id=? ORDER BY event_ts DESC,id DESC LIMIT ?`).all(scopeId, RECENT_CONTEXT_LIMIT) as RawRow[];
   const transcript = rows.reverse().map((row) => inbound(row, scope));
-  const event = transcript.find((entry) => entry.eventId === eventId) ?? { eventId, scope, authorId: "unknown", authorIsBot: false, content: "", mentions: [], replyTo: null, createdAtMs: now };
+  const eventRow = db.db.prepare(`SELECT message_id,text,event_ts,author_role,metadata_json FROM conversation_raw_events
+    WHERE scope_id=? AND message_id=?`).get(scopeId, eventId) as RawRow | undefined;
+  if (!eventRow) throw new Error("participant work event was missing from its scope");
+  const event = inbound(eventRow, scope);
   const archiveSummaries = db.db.prepare(`SELECT s.summary FROM conversation_archive_summaries s JOIN conversation_archive_batches b ON b.batch_key=s.batch_key
     WHERE b.scope_id=? AND b.status='completed' ORDER BY s.created_at_ms DESC LIMIT 20`).all(scopeId).map((row) => String((row as { summary: string }).summary));
   const relationships = db.db.prepare("SELECT user_id,rapport,familiarity,notes_json FROM adaptive_relationship_profiles WHERE guild_id=? AND channel_id=? ORDER BY user_id")
@@ -228,10 +231,6 @@ function isFreshCompleteRoster(roster: DiscordMembershipSnapshot, now: number): 
     && now >= roster.observedAtMs && now - roster.observedAtMs <= ROSTER_FRESHNESS_MS;
 }
 
-function budgetAvailable(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): boolean {
-  if (!Number.isInteger(limit) || limit <= 0) return false;
-  return budgetRemaining(store, scope, limit, now) > 0;
-}
 function budgetRemaining(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): number {
   const current = store.budget(scope, BUDGET_KEY); const windowStartMs = hourStart(now);
   return !current || current.windowStartMs !== windowStartMs ? limit : Math.max(0, limit - current.count);

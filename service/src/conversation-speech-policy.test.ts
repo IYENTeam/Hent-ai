@@ -77,60 +77,13 @@ describe("conversation speech policy", () => {
     expectSuppressed(allowedInput({ channel: { enabled: null } }), "channel_disabled");
   });
 
-  it("suppresses during cooldown", () => {
-    expectSuppressed(
-      allowedInput({
-        state: {
-          lastSpeechAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.cooldownMs + 1,
-          speechCountThisHour: 0,
-          lastHumanMessageAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.minHumanIdleMs - 1,
-        },
-      }),
-      "cooldown",
-    );
-  });
-
-  it("suppresses when the hourly budget is exhausted", () => {
-    expectSuppressed(
-      allowedInput({
-        state: {
-          lastSpeechAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.cooldownMs - 1,
-          speechCountThisHour: DEFAULT_CONVERSATION_CONFIG.budgetPerHour,
-          lastHumanMessageAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.minHumanIdleMs - 1,
-        },
-      }),
-      "hourly_budget_exhausted",
-    );
-  });
-
-  it("suppresses when humans are not idle long enough", () => {
-    expectSuppressed(
-      allowedInput({
-        state: {
-          lastSpeechAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.cooldownMs - 1,
-          speechCountThisHour: 0,
-          lastHumanMessageAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.minHumanIdleMs + 1,
-        },
-      }),
-      "recent_human_active",
-    );
-  });
-
-  it("suppresses when there is no recent human activity timestamp", () => {
-    expectSuppressed(
-      allowedInput({
-        state: {
-          lastSpeechAtMs: nowMs - DEFAULT_CONVERSATION_CONFIG.cooldownMs - 1,
-          speechCountThisHour: 0,
-          lastHumanMessageAtMs: null,
-        },
-      }),
-      "no_recent_human_activity",
-    );
-  });
-
-  it("suppresses low-confidence provider decisions", () => {
-    expectSuppressed(allowedInput({ provider: { confidence: DEFAULT_CONVERSATION_CONFIG.confidenceThreshold - 0.01 } }), "low_confidence");
+  it("allows useful replies despite cooldown, exhausted budget, fresh activity or low confidence", () => {
+    for (const lastHumanMessageAtMs of [nowMs, null]) {
+      expect(evaluateConversationSpeechPolicy(allowedInput({
+        state: { lastSpeechAtMs: nowMs, speechCountThisHour: 999, lastHumanMessageAtMs },
+        provider: { confidence: 0 },
+      }))).toMatchObject({ allowed: true });
+    }
   });
 
   it("suppresses when privacy policy disallows ambient speech", () => {

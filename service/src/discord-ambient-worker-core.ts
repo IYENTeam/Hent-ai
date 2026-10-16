@@ -8,7 +8,6 @@ import type { AdaptiveAmbientStore, Fence, ParticipantIngressEvent, ServiceClock
 import type { DiscordParticipantClient, DiscordParticipantMessage } from "./discord-participant-client.js";
 
 const LEGACY_LEASE_KEY = "discord-ambient-worker";
-const STALE_EVENT_MS = 10 * 60_000;
 const MESSAGE_PAGE_SIZE = 100;
 const MAX_MESSAGE_PAGES = 1_000;
 
@@ -148,7 +147,6 @@ export function createDiscordAmbientWorkerCore(options: DiscordAmbientWorkerCore
 
 function ingressEvent(message: DiscordParticipantMessage, scope: Scope, selfUserId: string | undefined, now: number): ParticipantIngressEvent {
   const self = selfUserId !== undefined && message.author.id === selfUserId;
-  const createdAtMs = Date.parse(message.timestamp);
   const metadata = {
     discordAuthorId: message.author.id,
     discordAuthorBot: message.author.bot,
@@ -157,7 +155,7 @@ function ingressEvent(message: DiscordParticipantMessage, scope: Scope, selfUser
     ingressDigest: digest(message),
   };
   return {
-    eventId: message.id, eventDigest: digest(message), queue: !self, observeOnly: !self && now - createdAtMs > STALE_EVENT_MS,
+    eventId: message.id, eventDigest: digest(message), queue: !self, observeOnly: false,
     raw: { scopeId: `discord:${scope.guildId}:${scope.channelId}`, channelId: scope.channelId, messageId: message.id,
       authorRole: self ? "assistant" : "user", text: message.content, eventTs: message.timestamp, botSelfLoop: self, metadata },
   };

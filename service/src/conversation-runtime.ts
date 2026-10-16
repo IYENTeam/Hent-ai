@@ -134,6 +134,12 @@ export class ConversationRuntime {
     const now = new Date();
     this.recordAssistantEvent(input, now);
 
+    // A watcher nudge must not bypass an ambient request for quiet in the same channel/thread.
+    const quiet = this.serviceDb.db.prepare(`SELECT json_extract(proposal_json, '$.quietRequester') AS requester
+      FROM adaptive_ambient_audits WHERE channel_id=? AND outcome!='invalid'
+      AND json_type(proposal_json, '$.quietRequester') IS NOT NULL ORDER BY id DESC LIMIT 1`)
+      .get(input.sourceThreadId ?? input.channelId) as { requester: string | null } | undefined;
+    if (quiet?.requester) return { decision: "no_reply", audit: null };
     const nowIso = now.toISOString();
     const messages = this.recentMessages(input.scopeId);
     const contextProviderResult = this.options.contextProvider
@@ -157,10 +163,8 @@ export class ConversationRuntime {
     }
 
     const context = createNeutralConversationContext(input.scopeId, messages, nowIso);
-    const cooldownMs = validCooldownMs(input.cooldownMs);
     const cooldownKey = `${input.scopeId}:${signal.fixationPattern}`;
     const gateState = this.store.getGateState(input.scopeId, cooldownKey);
-    const cooldownHit = gateState ? now.getTime() - Date.parse(gateState.updatedAt) < cooldownMs : false;
     const duplicateHit = gateState?.lastSignalId === signal.signalId || this.hasCommittedSignal(input.scopeId, signal.signalId);
     const audit = evaluateHostPolicyGate({
       runtime: "openclaw",
@@ -170,7 +174,6 @@ export class ConversationRuntime {
       targetThreadId: input.targetThreadId,
       sessionId: input.sessionId,
       shadowMode: false,
-      cooldownHit,
       duplicateHit,
       privacyRisk: input.privacyRisk === true,
       crossThreadRisk: input.crossThreadRisk === true,

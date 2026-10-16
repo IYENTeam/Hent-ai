@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONVERSATION_CONFIG } from "./conversation-config.js";
 import { createConversationRuntime } from "./conversation-runtime.js";
 import { createDiscordPollerIntegration, loadDiscordPollerConfigFromEnv } from "./discord-poller-integration.js";
@@ -189,6 +189,8 @@ describe("Discord poller integration", () => {
   });
 
   it("records incoming messages immediately and commits delivery on the evaluation tick", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const db = new ServiceDatabase();
     const runtime = createConversationRuntime(db, {
       ...DEFAULT_CONVERSATION_CONFIG,
@@ -200,6 +202,7 @@ describe("Discord poller integration", () => {
     const originalEvaluate = runtime.evaluate.bind(runtime);
     const evaluatedMessageIds: string[] = [];
     vi.spyOn(runtime, "evaluate").mockImplementation(async (input) => {
+      vi.setSystemTime(Date.now() + 1_000);
       evaluatedMessageIds.push(input.messageId);
       return originalEvaluate(input);
     });
@@ -223,7 +226,7 @@ describe("Discord poller integration", () => {
     await integration.evaluateOnce();
 
     expect(evaluatedMessageIds).toEqual(["b1", "b2"]);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(db.db.prepare("SELECT message_id, author_role FROM conversation_raw_events WHERE scope_id = ? ORDER BY id").all("discord:c1")).toMatchObject([
       { message_id: "u1", author_role: "user" },
       { message_id: "b1", author_role: "assistant" },
@@ -256,3 +259,5 @@ describe("Discord poller integration", () => {
     db.close();
   });
 });
+
+afterEach(() => vi.useRealTimers());

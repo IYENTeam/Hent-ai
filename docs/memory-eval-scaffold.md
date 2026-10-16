@@ -6,7 +6,7 @@ This is the deferred design/evaluation scaffold for the broader ConversationRunt
 
 - `ConversationIntakeService`: normalize host events, persist raw events, deduplicate by host message id, and retain source/target thread metadata.
 - `ConversationEvaluationService`: build memory windows, run anti-fixation/memory policy, emit auditable signals, and avoid delivery side effects.
-- `ConversationDeliveryService`: turn allowed signals into delivery plans, enforce cooldown/budget gates, and commit delivery ledgers.
+- `ConversationDeliveryService`: turn allowed signals into delivery plans, preserve privacy, scope and duplicate safeguards, and commit delivery ledgers.
 - `ConversationMemoryStore`: own memory tiers, decay, summarization, and retrieval scoring independent of host adapters.
 
 ## Candidate Evaluation Cases

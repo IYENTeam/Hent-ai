@@ -18,13 +18,13 @@ Each allowed guild/channel gets its own lease key, so one worker process can own
 
 Guild/user relationships are bounded and idempotent. Membership v1 uses complete paged guild rosters; active humans are recent (10-minute) non-bot authors intersected with a fresh complete roster. First polling seeds a cursor without replying; later work is durable. Raw events are marked archived after 14 days, while raw events and source-linked summaries remain permanently: neither is deleted.
 
-Ambient participation is continuous and probabilistic. A normal request for silence is social transcript evidence: the model may accept, ignore, resist, or escalate. It must never become deterministic mute, quit, or quiet-until state. Only operational kill switches, lease loss, disabled mappings, and invalid startup configuration are deterministic. Delivery uses one to five typed bubbles, bounded length delay, durable nonces/receipts, and cancels remaining bubbles on newer human ingress.
+Ambient participation follows the provider’s conversational judgment, without cooldowns, posting budgets, confidence floors, address weights, roster freshness requirements, random draws or streak suppression. Actual requests for quiet persist in the scoped outcome journal until the requester invites a response again. Delivery retains bounded bubbles, durable nonces/receipts, cancellation on newer ingress and operational authorization/lease fences.
 
 ## Ambient hardening addendum
 
 Typing is used only for the documented short-processing exception immediately before delivery; the worker must never sustain Discord typing for more than 10 seconds.
 
-Each valid appraisal first relaxes stored drive toward the 0.5 baseline after idle time. Silence requests add bounded, decaying social pressure, which scales desired drive but never deterministically mutes an explicit mention. Consecutive missed valid speak opportunities increase the effective probability with `p_eff = 1 - (1 - p)^(1 + skipStreak)`; a long speech streak halves the probability after its soft cap. Both mechanisms remain per-event probabilistic draws.
+Drive, pressure, evidence weights, roster freshness and streaks remain compatibility telemetry; they do not veto valid useful speech. Optional invitation appraisal identifies an actual invitation by the current event author; a mention alone does not clear quiet.
 
 Per-channel overrides live in `channel_settings.settings_json`; invalid or absent values fall back independently:
 
