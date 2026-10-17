@@ -50,7 +50,7 @@ hent-ai 서비스는 단체 대화방에서 사람처럼 대화하는 에이전�
 - **D3. 페르소나 SSOT는 DB(`profiles.soul_snippet`)다.**
   soul.md 파일은 기존 `profile set-soul` CLI로 DB에 주입하는 플로우를 유지한다.
   채널 → `channel_mappings.profile_id` → `profiles.soul_snippet` 순으로 해석한다.
-- **D4 (supersedes the original numeric policy).** Preserve privacy, bot identity, same-thread routing, duplicate/self-message safeguards. Cooldown, budget, idle-age, confidence and stored quiet state no longer veto useful speech; how to respond to a request for quiet is the provider's conversational judgment.
+- **D4. 안전 게이트는 기존 `evaluateConversationSpeechPolicy`를 유지한다** (쿨다운·시간당 예산·사람 idle·신뢰도·페르소나 새니타이즈). 완화는 env로만 한다.
 
 ---
 
@@ -192,8 +192,8 @@ export function createLlmConversationDecisionProvider(deps: DecisionProviderDeps
 - [ ] mock chat-completions 서버로: 사람 메시지 기록 → 평가 tick → speak 결정 → persona 텍스트가 프롬프트 user JSON에 포함됨을 검증.
 - [ ] `soul_snippet` 있는 프로필이 매핑된 채널은 `persona.source === "channel_profile"`.
 - [ ] 프로바이더 5xx/타임아웃/비JSON 응답 → no_reply + 진단, 프로세스 생존.
-- [ ] Valid low-confidence decisions remain usable; confidence is telemetry, not a participation veto.
-- [ ] Valid speak remains allowed despite cooldown, exhausted budgets, fresh activity or low numeric confidence.
+- [ ] 신뢰도 < threshold → no_reply(`low_confidence`).
+- [ ] 쿨다운/예산/사람 idle 게이트가 speak를 억제하는 케이스 각 1개.
 
 ---
 
@@ -361,10 +361,10 @@ export function createLlmConversationDecisionProvider(deps: DecisionProviderDeps
 ### P5-2. 롤아웃 순서
 
 1. Phase 0 머지 (동작 변화 없음, 실행 가능화만) → 스테이징 채널 1개로 기동 확인.
-2. Phase 1 + Phase 3 함께 배포 (발화가 생기는 최초 시점) — posting budgets no longer gate participation; 채널 1개, `HENT_AI_CONVERSATION_ENABLED=true`는 스테이징만.
+2. Phase 1 + Phase 3 함께 배포 (발화가 생기는 최초 시점) — `budgetPerHour` 낮게(예: 6), 채널 1개, `HENT_AI_CONVERSATION_ENABLED=true`는 스테이징만.
 3. 1주 관찰(로그: no_reply 사유 분포, 발화 빈도, 청크 품질) 후 Phase 2 배포.
 4. Phase 4는 각 항목 독립 PR로 수시 배포 가능.
-5. 프로덕션 확대: 채널 목록 확장; numerical posting budgets no longer apply.
+5. 프로덕션 확대: 채널 목록 확장 + 예산 상향.
 
 ### P5-3. 관측 지표 (로그 기반)
 
@@ -392,10 +392,10 @@ export function createLlmConversationDecisionProvider(deps: DecisionProviderDeps
 | `HENT_AI_CONVERSATION_PROVIDER_EXTRA_HEADERS/_EXTRA_BODY` | — | P1 | JSON |
 | `HENT_AI_CONVERSATION_DECISION_MODEL/_CONTEXT_MODEL/_MEMORY_MODEL` | provider model | P1/P2 | 용도별 오버라이드 |
 | `HENT_AI_CONVERSATION_PERSONA` | — | P1 | 프로필 없을 때 폴백 페르소나 |
-| `HENT_AI_CONVERSATION_COOLDOWN_MS` | 600000 | P1 | Deprecated; no participation veto |
-| `HENT_AI_CONVERSATION_BUDGET_PER_HOUR` | 20 | P1 | Deprecated; no participation veto |
-| `HENT_AI_CONVERSATION_MIN_HUMAN_IDLE_MS` | 12000 | P1 | Deprecated; no participation veto |
-| `HENT_AI_CONVERSATION_CONFIDENCE_THRESHOLD` | 0.7 | P1 | Deprecated; telemetry only |
+| `HENT_AI_CONVERSATION_COOLDOWN_MS` | 600000 | P1 | 발화 쿨다운 |
+| `HENT_AI_CONVERSATION_BUDGET_PER_HOUR` | 20 | P1 | 시간당 발화 예산 |
+| `HENT_AI_CONVERSATION_MIN_HUMAN_IDLE_MS` | 12000 | P1 | 사람 발화 직후 대기 |
+| `HENT_AI_CONVERSATION_CONFIDENCE_THRESHOLD` | 0.7 | P1 | |
 | `HENT_AI_CONVERSATION_RECENT_TURNS` | 24 | P2 | 최근 턴 윈도우 |
 | `HENT_AI_CONVERSATION_CONTEXT_REFRESH` | on | P2 | 단기 맥락 LLM 갱신 |
 | `HENT_AI_CONVERSATION_COMPACTION_INTERVAL_MS` | 21600000 | P2 | 압축 주기 |
@@ -438,8 +438,8 @@ export function createLlmConversationDecisionProvider(deps: DecisionProviderDeps
 
 | 리스크 | 완화 |
 |---|---|
-| LLM 비용 폭증 (tick마다 decide+context 호출) | pending 있는 채널만 호출(기존 구조), `CONTEXT_REFRESH=off` 스위치; provider/API transport limits remain |
-| 봇 자기 루프 | assistant 기록 + selfEcho/duplicate safeguard |
+| LLM 비용 폭증 (tick마다 decide+context 호출) | pending 있는 채널만 호출(기존 구조), `CONTEXT_REFRESH=off` 스위치, 예산·쿨다운 게이트 |
+| 봇 자기 루프 | assistant 기록 + selfEcho/duplicate safeguard + 사람 idle 게이트 (사람 발화 없으면 no_reply) |
 | 프롬프트 주입 (방 참여자가 지시 삽입) | speech_decision 파서의 주입 마커 검증 유지 + redteam 케이스 추가 |
 | 사람 사칭 | 페르소나 새니타이저 + "Never claim to be human" 경계 (기존, 완화 금지) |
 | 프로바이더 장애 | 모든 프로바이더 오류 fail-closed(no_reply), naive 폴백(컨텍스트), 폴러 생존 |

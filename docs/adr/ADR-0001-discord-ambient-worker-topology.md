@@ -1,3 +1,5 @@
+> Superseded by [ADR-0002](ADR-0002-session-brain-bridge.md) (2026-10-13): the session is the brain, a token-owning bridge holds the Discord connection, and the service no longer runs a Discord worker.
+
 # ADR-0001: Separate Discord ambient worker from the HTTP API
 
 - Status: accepted
@@ -18,13 +20,13 @@ Each allowed guild/channel gets its own lease key, so one worker process can own
 
 Guild/user relationships are bounded and idempotent. Membership v1 uses complete paged guild rosters; active humans are recent (10-minute) non-bot authors intersected with a fresh complete roster. First polling seeds a cursor without replying; later work is durable. Raw events are marked archived after 14 days, while raw events and source-linked summaries remain permanently: neither is deleted.
 
-Ambient participation follows the provider’s conversational judgment, without cooldowns, posting budgets, confidence floors, address weights, roster freshness requirements, random draws or streak suppression. Requests for quiet are conversational context for the provider, not a stored service veto; the outcome journal does not record or enforce quiet. Delivery retains bounded bubbles, durable nonces/receipts, cancellation on newer ingress and operational authorization/lease fences.
+Ambient participation is continuous and probabilistic. A normal request for silence is social transcript evidence: the model may accept, ignore, resist, or escalate. It must never become deterministic mute, quit, or quiet-until state. Only operational kill switches, lease loss, disabled mappings, and invalid startup configuration are deterministic. Delivery uses one to five typed bubbles, bounded length delay, durable nonces/receipts, and cancels remaining bubbles on newer human ingress.
 
 ## Ambient hardening addendum
 
 Typing is used only for the documented short-processing exception immediately before delivery; the worker must never sustain Discord typing for more than 10 seconds.
 
-Drive, pressure, evidence weights, roster freshness and streaks remain compatibility telemetry; they do not veto valid useful speech. Optional invitation and silence-request appraisal fields are telemetry only; neither blocks nor releases delivery.
+Each valid appraisal first relaxes stored drive toward the 0.5 baseline after idle time. Silence requests add bounded, decaying social pressure, which scales desired drive but never deterministically mutes an explicit mention. Consecutive missed valid speak opportunities increase the effective probability with `p_eff = 1 - (1 - p)^(1 + skipStreak)`; a long speech streak halves the probability after its soft cap. Both mechanisms remain per-event probabilistic draws.
 
 Per-channel overrides live in `channel_settings.settings_json`; invalid or absent values fall back independently:
 

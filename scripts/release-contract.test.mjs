@@ -27,7 +27,7 @@ test("local release documentation retains the existing blocking gate", async () 
   // When: the preserved baseline contract is inspected.
   // Then: both original test lanes and the operator command remain documented.
   assert.match(gate, /service full regression suite/);
-  assert.match(gate, /openclaw full regression suite/);
+  assert.match(gate, /session kit full regression suite/);
   assert.match(runbook, /node scripts\/release-gate\.mjs/);
   assert.match(runbook, /local gate/);
 });
@@ -45,12 +45,12 @@ test("release workflow and full local lane contract are present", async () => {
   const requiredLaneIds = [
     "service-typescript",
     "service-tests",
-    "openclaw-typescript",
-    "openclaw-tests",
     "generate-build",
     "generate-tests",
     "shared-tests",
-    "hermes-unittest",
+    "kit-install",
+    "kit-typescript",
+    "kit-tests",
     "static-contracts",
   ];
 
@@ -80,21 +80,15 @@ test("list-json returns the exact nine release lanes without executing them", ()
   assert.deepEqual(listed.lanes.map((lane) => lane.id), [
     "service-typescript",
     "service-tests",
-    "openclaw-typescript",
-    "openclaw-tests",
     "generate-build",
     "generate-tests",
     "shared-tests",
-    "hermes-unittest",
+    "kit-install",
+    "kit-typescript",
+    "kit-tests",
     "static-contracts",
   ]);
-  assert.deepEqual(listed.lanes[0].envUnset, [
-    "HENT_AI_DISCORD_POLLER_TOKEN",
-    "HENT_AI_DISCORD_POLLER_CHANNELS",
-    "HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT",
-    "DISCORD_BOT_TOKEN",
-  ]);
-  assert.deepEqual(listed.lanes[1].envUnset, listed.lanes[0].envUnset);
+  assert.equal(listed.lanes.some((lane) => /openclaw|hermes/i.test(lane.id)), false);
 });
 
 test("release gate propagates a real child exit and stops before later lanes", async (context) => {
@@ -172,7 +166,7 @@ test("operator docs preserve rollback ancestry and durable hardening integration
   assert.match(process, /revert[^\n]*`main`[\s\S]*?`main`[^\n]*`release`[\s\S]*?`release`[^\n]*`dev`/i);
   assert.match(process, /fresh\s+short-lived branch created from the current `dev`/i);
   assert.match(process, /verify the resulting import graph[\s\S]*?restore every runtime\s+module and test/i);
-  assert.match(process, /node scripts\/release-gate\.mjs[\s\S]*?VisualAffectV2[\s\S]*?local OpenClaw E2E/i);
+  assert.match(process, /node scripts\/release-gate\.mjs[\s\S]*?VisualAffectV2/i);
   assert.match(process, /--ci[\s\S]*?does not\s+replace the local host evidence/i);
   assert.match(process, /`dev` to `release`[\s\S]*?`release` to `main`[\s\S]*?human-only/i);
 });

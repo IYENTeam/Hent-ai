@@ -1,4 +1,4 @@
-import { CANONICAL_EMOTIONS, type Emotion } from "@hent-ai/shared";
+import { CANONICAL_EMOTIONS, type Emotion } from "../../shared/emotions.js";
 
 export const SEMANTIC_GENERATION_PLAN_SCHEMA_VERSION = "SemanticGenerationPlanV1" as const;
 export const SEMANTIC_SET_ID = "gothic-semantic-v1";
