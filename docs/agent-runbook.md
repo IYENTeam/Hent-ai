@@ -202,7 +202,7 @@ Set per-channel overrides in `channel_settings.settings_json`; absent or invalid
 
 Participation uses natural conversational judgment. Legacy numeric settings and drive/pressure/streak telemetry do not impose posting limits. Roster freshness is informational for participation; relationship targets still require authenticated evidence. Forward messages are never suppressed by timestamp age. First-boot cursor seeding skips existing history. Explicitly observe-only work remains non-delivering, but normal ingress never assigns it by age.
 
-Quiet requests persist in the scoped outcome journal, survive restart and the 20-event transcript window, and clear only on an actual invitation from the requester. The journal stores the most recent requester for that scope; a newer quiet request replaces that requester. The provider receives the exact current event separately from recent context. No live configuration, restart or deployment is implied by these source changes.
+Requests for quiet are not stored or enforced by the service. The provider sees them in recent transcript context and decides with ordinary conversational judgment; legacy `quietRequester` fields in old outcome journal rows are ignored, and watcher nudges do not consult them. The provider receives the exact current event separately from recent context. No live configuration, restart or deployment is implied by these source changes.
 
 Run the deterministic domain calibration (no provider, network, or wait) after changing ambient decision behavior:
 
@@ -211,7 +211,7 @@ cd service
 npx tsx scripts/replay-ambient-calibration.ts
 ```
 
-The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or score/streak/event-ID telemetry suppresses valid provider speech. Runtime tests separately verify durable quiet and invitations.
+The script exits nonzero when idle decay is not monotonic, pressure leaves `[0,1]`, or score/streak/event-ID telemetry suppresses valid provider speech. Runtime tests separately verify that quiet requests and legacy quiet journal rows do not veto provider speech or watcher nudges.
 
 ## Real local OpenClaw E2E
 

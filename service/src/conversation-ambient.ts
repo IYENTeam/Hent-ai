@@ -160,7 +160,7 @@ function validDecision(
   const validChunks = hasValidAmbientChunks(proposal);
   // The provider owns conversational participation. Scores remain telemetry only.
   const opportunity = proposal.decision === "speak" && validChunks && !input.observeOnly;
-  const shouldSpeak = opportunity && proposal.silenceRequest?.present !== true;
+  const shouldSpeak = opportunity;
   const probability = shouldSpeak ? 1 : 0;
   const draw = null;
   const streaks = nextAmbientStreaks(input.state, opportunity, shouldSpeak);

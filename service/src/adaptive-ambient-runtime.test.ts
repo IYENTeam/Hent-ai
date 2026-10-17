@@ -64,63 +64,36 @@ function setup(options: { readonly dbPath?: string; readonly enabled?: boolean; 
 afterEach(() => { now = 1_000_000; vi.restoreAllMocks(); });
 
 describe("atomic adaptive ambient runtime", () => {
-  it("persists quiet through context truncation and runtime restart until the requester invites a response", async () => {
+  it("delivers provider speech after a quiet request and ignores legacy quiet journal records across restart", async () => {
     const root = mkdtempSync(join(tmpdir(), "hent-quiet-"));
     const dbPath = join(root, "service.sqlite");
-    const fixture = setup({ dbPath, result: appraisal({ silenceRequest: { present: true, intensity: "mild" } }) });
+    const fixture = setup({ dbPath, result: appraisal({ silenceRequest: { present: true, intensity: "strong" } }) });
     const run = () => fixture.runtime!.run({ fence: fixture.fence, signal: new AbortController().signal });
-    expect(await run()).toBe("observe");
-    expect(fixture.store.quietRequester(scope)).toBe("100000000000000004");
-    // Newer unrelated messages push the request outside the 20-event provider window.
-    for (let index = 0; index < 25; index++) {
-      fixture.db.db.prepare(`INSERT INTO conversation_raw_events
-        (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
-        SELECT scope_id,channel_id,?,'user',author_source,'unrelated',event_ts,observed_at,0,metadata_json,created_at
-        FROM conversation_raw_events WHERE message_id='event-1'`).run(`unrelated-${index}`);
-    }
+    // The provider saw "please be quiet" and still chose to speak: the service does not veto it.
+    expect(await run()).toBe("planned");
+    const recorded = fixture.db.db.prepare("SELECT outcome, proposal_json AS proposal FROM adaptive_ambient_audits WHERE event_id='event-1'").get() as { outcome: string; proposal: string };
+    expect(recorded.outcome).toBe("planned");
+    expect(JSON.parse(recorded.proposal)).not.toHaveProperty("quietRequester");
+    // A quiet record written by an earlier build stays in the journal but is ignored.
+    fixture.db.db.prepare(`INSERT INTO adaptive_ambient_audits (event_id,guild_id,channel_id,outcome,proposal_json,recorded_at_ms)
+      VALUES ('legacy-quiet',?,?,'observe',?,?)`).run(scope.guildId, scope.channelId, JSON.stringify({ quietRequester: "100000000000000004" }), now);
     fixture.db.close();
     fixture.db = new service.ServiceDatabase(dbPath);
     const restartedStore = service.createAdaptiveAmbientStore(fixture.db, () => now);
-    let current = appraisal();
-    let expectedEvent = "unrelated-0";
-    const enqueue = (id: string) => {
-      fixture.db.db.prepare(`INSERT INTO conversation_raw_events
-        (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
-        SELECT scope_id,channel_id,?,'user',author_source,'continue',event_ts,observed_at,0,metadata_json,created_at
-        FROM conversation_raw_events WHERE message_id='event-1'`).run(id);
-      restartedStore.createWork({ id, eventId: id, eventDigest: id, scope });
-    };
-    // Use an old raw event outside the current window as the queued work event.
-    restartedStore.createWork({ id: "unrelated-work", eventId: "unrelated-0", eventDigest: "unrelated-0", scope });
-    // The provider must see the exact work event, even after truncation.
+    fixture.db.db.prepare(`INSERT INTO conversation_raw_events
+      (scope_id,channel_id,message_id,author_role,author_source,text,event_ts,observed_at,bot_self_loop,metadata_json,created_at)
+      SELECT scope_id,channel_id,'after-restart','user',author_source,'continue',event_ts,observed_at,0,metadata_json,created_at
+      FROM conversation_raw_events WHERE message_id='event-1'`).run();
+    restartedStore.createWork({ id: "after-restart", eventId: "after-restart", eventDigest: "after-restart", scope });
+    const summaries: string[][] = [];
     fixture.runtime = service.createAdaptiveAmbientRuntime({ serviceDb: fixture.db, store: restartedStore,
       provider: { appraise: async (request) => {
-        expect(request.event?.eventId).toBe(expectedEvent);
-        expect(request.context?.archiveSummaries.join(" ")).toContain("Quiet requested by");
-        if (request.event?.eventId === "unrelated-0") expect(request.transcript.some((entry) => entry.eventId === "unrelated-0")).toBe(false);
-        return current as service.AmbientAppraisalParseResult;
+        summaries.push([...(request.context?.archiveSummaries ?? [])]);
+        return appraisal() as service.AmbientAppraisalParseResult;
       } }, startup: { enabled: true, allowlist: [scope], diagnostics: [] }, scope, botUserId,
-      budgetPerHour: 0, clock: () => now, loadRoster: async () => ({ ...roster(), memberIds: [], complete: false }) });
-    const invitation = appraisal({ invitation: true });
-    expect(await run()).toBe("observe");
-    expect(restartedStore.quietRequester(scope)).toBe("100000000000000004");
-    expect(restartedStore.quietRequester({ ...scope, channelId: "other" })).toBeNull();
-    // A mention or an invitation by somebody else cannot release the requester’s quiet.
-    expectedEvent = "mention";
-    enqueue("mention");
-    expect(await run()).toBe("observe");
-    expectedEvent = "other-invite";
-    enqueue("other-invite");
-    fixture.db.db.prepare("UPDATE conversation_raw_events SET metadata_json=? WHERE message_id=?")
-      .run(JSON.stringify({ discordAuthorId: "100000000000000005", mentions: [botUserId] }), expectedEvent);
-    current = appraisal({ invitation: true, relationshipProposals: [] });
-    expect(await run()).toBe("observe");
-    expect(restartedStore.quietRequester(scope)).toBe("100000000000000004");
-    current = invitation;
-    expectedEvent = "invite";
-    enqueue("invite");
+      budgetPerHour: 0, clock: () => now, loadRoster: async () => roster() });
     expect(await run()).toBe("planned");
-    expect(restartedStore.quietRequester(scope)).toBeNull();
+    expect(summaries.flat().join(" ")).not.toContain("Quiet requested");
     fixture.db.close();
     rmSync(root, { recursive: true, force: true });
   });

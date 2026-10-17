@@ -83,16 +83,6 @@ export class AdaptiveAmbientStore {
   renewWorkClaim(workId: string, fence: Fence): boolean { return renewParticipantWorkClaim(this.serviceDb.db, this.clock, workId, fence, this.fencedWhere(), (current, now) => this.fencedArgs(current, now)); }
   isWorkClaimCurrent(workId: string, fence: Fence): boolean { return this.isFenceCurrent(fence) && isParticipantWorkClaimCurrent(this.serviceDb.db, this.clock, workId, fence); }
 
-  // Quiet state is committed atomically in the existing outcome journal, survives
-  // restart/context truncation, and is scoped to the exact Discord conversation.
-  quietRequester(scope: Scope): string | null {
-    const row = this.serviceDb.db.prepare(`SELECT json_extract(proposal_json, '$.quietRequester') AS requester
-      FROM adaptive_ambient_audits WHERE guild_id=? AND channel_id=? AND outcome!='invalid'
-      AND json_type(proposal_json, '$.quietRequester') IS NOT NULL ORDER BY id DESC LIMIT 1`)
-      .get(scope.guildId, scope.channelId) as { requester: string | null } | undefined;
-    return row?.requester ?? null;
-  }
-
   recordOutcome(input: OutcomeInput): "applied" | "idempotent" {
     const now = this.clock(); this.serviceDb.db.exec("BEGIN IMMEDIATE");
     try {

@@ -319,10 +319,11 @@ describe("Discord ambient worker localhost wire QA", () => {
       liveDb.close();
 
       expect(pressure.pressure).toBeGreaterThan(0.9);
-      expect(ambientAudit).toMatchObject({ outcome: "observe" });
+      // Earlier quiet requests are not a service veto: the provider chose to speak.
+      expect(ambientAudit).toMatchObject({ outcome: "planned" });
       expect(ambientAudit.probability).toBe(1);
       expect(mentionAudit).toEqual({ outcome: "planned", evidence_weight: 1 });
-      expect(sent.map((entry) => entry.content)).toEqual(["mention reply"]);
+      expect(sent.map((entry) => entry.content)).toEqual(["ambient reply", "mention reply"]);
     } finally {
       if (worker) await worker.stop();
       if (discord) await close(discord);

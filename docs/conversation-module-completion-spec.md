@@ -50,7 +50,7 @@ hent-ai 서비스는 단체 대화방에서 사람처럼 대화하는 에이전�
 - **D3. 페르소나 SSOT는 DB(`profiles.soul_snippet`)다.**
   soul.md 파일은 기존 `profile set-soul` CLI로 DB에 주입하는 플로우를 유지한다.
   채널 → `channel_mappings.profile_id` → `profiles.soul_snippet` 순으로 해석한다.
-- **D4 (supersedes the original numeric policy).** Preserve privacy, bot identity, same-thread routing, duplicate/self-message safeguards and actual requests for quiet. Cooldown, budget, idle-age and confidence fields no longer veto useful speech.
+- **D4 (supersedes the original numeric policy).** Preserve privacy, bot identity, same-thread routing, duplicate/self-message safeguards. Cooldown, budget, idle-age, confidence and stored quiet state no longer veto useful speech; how to respond to a request for quiet is the provider's conversational judgment.
 
 ---
 

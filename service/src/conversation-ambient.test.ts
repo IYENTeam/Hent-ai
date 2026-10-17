@@ -168,7 +168,7 @@ describe("adaptive ambient drive and evidence", () => {
     expect(stale.driveUpdate).toMatchObject({ drive: 0.8, version: 8, updatedAtMs: nowMs });
   });
 
-  it("honors explicit quiet while retaining decaying pressure telemetry", () => {
+  it("leaves quiet to the provider while retaining decaying pressure telemetry", () => {
     const api = ambient();
     const mild = appraisal({ confidence: 0.7, silenceRequest: { present: true, intensity: "mild" } });
     const singleMild = api.evaluateAmbientDecision(decisionInput({ appraisal: mild }));
@@ -177,8 +177,8 @@ describe("adaptive ambient drive and evidence", () => {
     // so the EMA receives desiredDrive 0.8 * (1 - 0.35) = 0.52.
     expect(singleMild.driveUpdate).toMatchObject({ drive: 0.505, pressure: 0.35, pressureUpdatedAtMs: nowMs });
     expect(singleMild.evidenceWeight).toBe(1);
-    expect(singleMild.probability).toBe(0);
-    expect(singleMild.shouldSpeak).toBe(false);
+    expect(singleMild.probability).toBe(1);
+    expect(singleMild.shouldSpeak).toBe(true);
     expect("mute" in singleMild).toBe(false);
     expect("quietUntil" in singleMild).toBe(false);
     expect("forceSilent" in singleMild).toBe(false);
@@ -268,7 +268,7 @@ describe("adaptive ambient drive and evidence", () => {
     expect(ambient().evaluateAmbientDecision(decisionInput({ observeOnly: true }))).toMatchObject({ shouldSpeak: false });
   });
 
-  it("does not treat drive telemetry as permission to ignore quiet", () => {
+  it("does not veto provider speech because a quiet request was detected", () => {
     const api = ambient();
     const quietRequest = "be quiet";
     const baseline = api.evaluateAmbientDecision(decisionInput({
@@ -282,7 +282,7 @@ describe("adaptive ambient drive and evidence", () => {
     }));
 
     expect(quietRequest).toBe("be quiet");
-    expect(resistant.shouldSpeak).toBe(false);
+    expect(resistant.shouldSpeak).toBe(true);
     expect(resistant.audit).toMatchObject({ outcome: resistant.shouldSpeak ? "planned" : "observe", proposal: { decision: "speak" } });
     expect("mute" in resistant).toBe(false);
     expect("quit" in resistant).toBe(false);

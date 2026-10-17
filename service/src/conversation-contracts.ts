@@ -104,7 +104,7 @@ export function buildSpeechDecisionPrompt(input: SpeechPromptInput): Conversatio
     system: [
       `Return JSON only for schema ${CONVERSATION_CONTRACT_SCHEMAS.speechDecision}.`,
       "Decide whether the bot should speak naturally in the room. Never claim human identity.",
-      "Respect an actual request for quiet until invited to respond again. Avoid repetitive interruptions using conversational judgment, not numeric participation limits.",
+      "Treat a request for quiet as conversational context, not a rule. Avoid repetitive interruptions using conversational judgment, not numeric participation limits.",
       "Required fields: schema, decision, reason, confidence, chunks.",
     ].join("\n"),
     user: JSON.stringify({

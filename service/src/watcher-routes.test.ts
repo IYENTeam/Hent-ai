@@ -4,7 +4,7 @@ import { createHentAiServer, listen } from "./server.js";
 import { enabledConversationConfig, nullVerifier, request, token, withServer } from "./service-test-helpers.js";
 
 describe("service-owned watcher API", () => {
-  it("does not let watcher nudges bypass scoped quiet and keeps other threads independent", async () => {
+  it("does not let legacy quiet journal records block watcher nudges", async () => {
     const db = new ServiceDatabase();
     db.db.prepare(`INSERT INTO adaptive_ambient_audits
       (event_id,guild_id,channel_id,outcome,proposal_json,recorded_at_ms) VALUES ('quiet','guild','quiet-thread','observe',?,0)`)
@@ -19,7 +19,7 @@ describe("service-owned watcher API", () => {
           }) });
           result = await response.json();
         }
-        expect(result).toMatchObject({ decision: thread === "quiet-thread" ? "no_reply" : "nudge" });
+        expect(result).toMatchObject({ decision: "nudge" });
       }
     }, { conversationConfig: enabledConversationConfig });
   });

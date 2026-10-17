@@ -77,7 +77,6 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       const now = clock();
       const state = options.store.state(options.scope);
       const activeHumanIds = loadActiveHumanIds(options.serviceDb, options.scope, roster, now);
-      const quietRequester = options.store.quietRequester(options.scope);
       let appraisal: AmbientAppraisalParseResult;
       try {
         appraisal = await options.provider.appraise({
@@ -85,7 +84,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
           persona: personaFor(options.serviceDb, beforeProviderMapping?.profileId ?? null, options.globalPersona),
           transcript: context.transcript,
           event: context.event,
-          context: { archiveSummaries: [...context.archiveSummaries, ...(quietRequester ? [`Quiet requested by ${quietRequester}; remain quiet until this person invites a response again.`] : [])], relationships: context.relationships },
+          context: { archiveSummaries: context.archiveSummaries, relationships: context.relationships },
           audience: {
             rosterComplete: roster.complete,
             activeHumanCount: activeHumanIds.length,
@@ -122,9 +121,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
       });
       const proposal = appraisal.kind === "valid" ? appraisal.proposal : undefined;
       const bubbles = proposal ? normalizeDiscordAmbientBubbles(proposal.chunks) : null;
-      const nextQuietRequester = proposal?.silenceRequest?.present === true ? context.event.authorId
-        : proposal?.invitation === true && context.event.authorId === quietRequester ? null : quietRequester;
-      const planned = decision.shouldSpeak && nextQuietRequester === null && !work.observeOnly && bubbles !== null;
+      const planned = decision.shouldSpeak && !work.observeOnly && bubbles !== null;
       const budget = planned ? nextBudget(options.store, options.scope, clock()) : undefined;
       const driveBefore = decision.driveUpdate === null ? null : state === null ? DEFAULT_AMBIENT_DRIVE
         : applyAmbientIdleDecay(state.drive, state.updatedAtMs, now, ambientSettings.ambientIdleDecayTauMs ?? IDLE_DECAY_TAU_MS);
@@ -134,7 +131,7 @@ export function createAdaptiveAmbientRuntime(options: AdaptiveAmbientRuntimeOpti
         scope: options.scope,
         outcome: decision.audit.outcome === "invalid" ? "invalid" : planned ? "planned" : "observe",
         diagnostic: decision.audit.diagnostic,
-        proposal: proposal && { ...proposal, quietRequester: nextQuietRequester },
+        proposal,
         auditEvidence: {
           evidenceWeight: decision.evidenceWeight,
           probability: decision.probability,
