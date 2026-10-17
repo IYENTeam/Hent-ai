@@ -21,8 +21,6 @@ describe("conversation thresholds", () => {
   test("table covers the required thresholds", () => {
     const keys = new Set(rows.map((r) => `${r.path}:${r.line}`));
     for (const key of [
-      "service/src/conversation-ambient.ts:13",
-      "service/src/conversation-ambient.ts:14",
       "service/src/watcher-core.ts:165",
       "service/src/watcher-core.ts:270",
       "service/src/watcher-core.ts:271",

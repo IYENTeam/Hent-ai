@@ -42,8 +42,9 @@ The JSON carries `channelId`, `messageId`, `authorName`, `content`, `referencedM
 1. Skip anything you already handled (same `messageId`) and anything marked as yours.
 2. Decide by `references/conversation.md`, the host's channel rules (see "Channel rules" below) and
    your per-channel notes (`references/memory.md`): answer, stay silent, or join a conversation
-   nobody addressed to you, under its budgets and cooldowns (count your own recent posts with
-   `hent history --channel <id>`).
+   nobody addressed to you, by conversational judgment. There are no cooldowns, budgets, confidence
+   floors or probability rolls, and a request for quiet is context to weigh, not a stored rule
+   (`hent history --channel <id>` shows the recent conversation).
 3. To answer: write the reply in the persona's voice, rate its emotional performance
    (`references/affect.md`), then ask which image fits it:
 
