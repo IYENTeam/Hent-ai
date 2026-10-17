@@ -18,7 +18,7 @@ Three roles, three processes, each owning one thing:
 
 The bridge is deliberately dumb: it is the only Hent-ai component that holds the token, and its job is connection, journal and delivery. The session is the brain. The service is an image picker that `hent send` asks under one shared 2000 ms deadline and skips on any failure, so the reply always goes out (IS-4, IS-8).
 
-The ADR-0001 topology (an ambient worker inside the service with its own token, provider appraisal and drive model) is retired. Its speaking, budget and anti-repetition rules move into skill guidance (`kit/skill/hent-mode/references/conversation.md`); its database tables stay, with no DROP.
+The ADR-0001 topology (an ambient worker inside the service with its own token, provider appraisal and drive model) is retired. Its speaking safety and anti-repetition rules move into skill guidance (`kit/skill/hent-mode/references/conversation.md`); its mechanical participation gates (cooldowns, budgets, confidence floors, drive/pressure, probability rolls, enforced quiet) are dropped in favor of conversational judgment; its database tables stay, with no DROP.
 
 ## Token
 
