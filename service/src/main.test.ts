@@ -13,7 +13,6 @@ describe("API-only entrypoint", () => {
     let configuredAssetRoot: string | undefined;
     const api = (candidate as typeof service.createApiService)({
       config: { dbPath: ":memory:", token: "test-token", port: 8787, hostname: "127.0.0.1", assetRoot: "/tmp/hent-assets" },
-      verifier: { verify: async () => null },
       createDatabase: () => ({ close: () => { closed += 1; } }) as unknown as service.ServiceDatabase,
       createServer: (options) => {
         configuredAssetRoot = options.assetRoot;
@@ -53,7 +52,6 @@ describe("API-only entrypoint", () => {
 
     const api = service.createApiService({
       config: { dbPath, token: "test-token", port: 0, hostname: "127.0.0.1", assetRoot: root },
-      verifier: { verify: async () => null },
     });
     const binding = await api.start();
     try {

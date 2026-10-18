@@ -1,6 +1,6 @@
 # Hent-ai — AGENTS.md
 
-Hent-ai attaches an emotion image to an AI agent's responses. The canonical runtime is the **Hent-ai HTTP service**; OpenClaw runs a thin adapter that delegates to it. Hermes is a compatibility adapter.
+Hent-ai attaches an emotion image to an AI agent's responses. A Codex session is the bot's brain; the always-on `hent bridge` daemon owns the Discord token and connection and pushes every inbound message into that session; the **Hent-ai HTTP service** is a token-free image picker and asset manager. See [`docs/adr/ADR-0002-session-brain-bridge.md`](docs/adr/ADR-0002-session-brain-bridge.md).
 
 See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical architecture/ownership decisions and [`docs/service-owned-gates.md`](docs/service-owned-gates.md) for the PR/release gate policy.
 
@@ -8,43 +8,35 @@ See [`docs/identity-roadmap.md`](docs/identity-roadmap.md) for canonical archite
 
 | Path | Role |
 | --- | --- |
-| `service/` | Canonical runtime: final-response verdict selection, verifier + cache, channel/profile mappings, semantic asset routing, asset storage, generation jobs, watcher state, static media. |
-| `openclaw/` | Thin OpenClaw adapter. Forwards hooks to the service; owns no classifier/profile/asset logic. Entry: `openclaw/index.ts`. |
-| `shared/` | Contract layer: `shared/emotions.ts` (canonical 6-emotion set + prompts/labels/rules), `shared/profile.ts`, `shared/db.ts`. |
+| `service/` | Token-free image picker: final-response verdict (affect-routed media selection + cache), channel/profile mappings, asset storage and native asset registration (`POST /v1/assets`), static media. No Discord code, no messenger token, no conversation engine, no generation queue. |
+| `kit/` | Session kit. `kit/cli` (bun, zero runtime deps, bin `hent`): `hent bridge` (Discord token, gateway, inbound journal, push delivery into the session, send API), `hent send`/`skip`/`media`/`session`/`channels`/`memory`. `kit/skill/hent-mode` is the skill that makes a Codex session the bot's brain. |
+| `shared/` | Contract layer: `shared/emotions.ts` (canonical 6-emotion set), `shared/affect.ts` (AffectSpaceV2), `shared/profile.ts`, `shared/db.ts`. |
 | `generate/` | Asset generation helper (`hent-ai generate`/`profile`/`sets` CLI). Codex-backed image generation; consumes shared emotion definitions. |
-| `hermes/` | Python Hermes compatibility plugin (`transform_llm_output`, rule-based detection, `MEDIA:` directive). |
 | `assets/` | Image files and asset sets. |
-
-> Legacy OpenClaw modules (`profile-manager.ts`, `dynamic-persona.ts`, `channel-filter.ts`, `date-mode.ts`, `migration.ts`) are **not** wired into the service adapter entry. Do not treat them as the runtime path.
 
 ## Rules
 
 - TypeScript: follow existing code style, strict mode.
-- All changes must pass the relevant package test suite (`npx vitest run`) before push.
-- Plugin is loaded by OpenClaw at runtime — changes require gateway restart or hot-reload.
-- The OpenClaw adapter must stay service-thin: no local classifier, no manifest scan, no profile DB read, no `@hent-ai/generate` call, no direct `discord.com` REST. Pre-reply/watcher delivery uses OpenClaw's outbound channel adapter, not direct Discord.
-- Image generation costs real money. Never trigger generation (Codex / `/v1/assets/generate` worker) in tests without mocking.
-- Semantic routing is second-stage only: the service verifier chooses one canonical emotion, then
-  the service ranks that emotion's fully tagged candidates. Partial/malformed semantic metadata
-  must keep the whole candidate set on deterministic legacy fallback.
-- `scripts/e2e-hent-openclaw.mjs` temporarily replaces the process listening on the real local
-  gateway port. Run it only on the documented macOS/LaunchAgent topology after checking that the
-  gateway is healthy and no external work is active. Its disposable config must contain no MCP or
-  external channel/provider endpoint, and the original config/state/LaunchAgent must be restored.
+- All changes must pass the relevant package test suite (`npx vitest run` for service/generate/shared, `bun test` for kit/cli) before push.
+- The service holds no messenger token and no Discord code (`scripts/service-owned-boundary-check.mjs` enforces it). Only `hent bridge` reads the Discord token (`~/.hent/discord.token`, 0600).
+- The session kit has zero runtime npm dependencies (bun builtins only) and fails open: a slow or down service never adds more than about 2 s to a reply and never blocks it.
+- Hent-ai must never block or slow the agent's main work; every feature stays switchable (`HENT_ENABLED=0`, per-channel `hent channels`).
+- Image generation costs real money. The brain generates images natively and registers them with `POST /v1/assets`; the `generate` CLI generates whole sets through Codex. Never trigger a real image generation in tests.
+- Affect routing: the session states the reply's affect (`hent send --affect`); the service ranks every image in the channel's fully migrated VisualAffectV2 set. Partial/malformed metadata keeps the set on deterministic legacy fallback.
 
 ## Build & Test
 
 ```bash
-# Node.js 22 baseline: service/generate/OpenClaw regressions, complete semantic corpus,
-# typechecks, and the isolated/restored real-local-OpenClaw E2E
+# Node.js 22 baseline release gate: service/generate/shared regressions, session kit lanes,
+# static contracts, boundary check, and the external affect corpus
 node scripts/release-gate.mjs    # or: npm run release:check
 
 # Per-package
-cd openclaw && npx vitest run
 cd service && npx vitest run
+cd kit/cli && bun test && bunx tsc --noEmit -p .
 ```
 
-See [`docs/agent-runbook.md`](docs/agent-runbook.md) for deploy, verifier config, and the image-generation job path.
+See [`docs/agent-runbook.md`](docs/agent-runbook.md) for the bridge, the session setup, cutover, and native image registration.
 
 ## Forbidden
 
@@ -52,8 +44,8 @@ See [`docs/agent-runbook.md`](docs/agent-runbook.md) for deploy, verifier config
 - Never auto-merge PRs. Create PR only; merge is human-only.
 - Never modify `manifest.json` / asset sets without diff verification (2026-05-18 incident: script deleted an entire private set).
 - Never push to main without all tests passing.
-- Never reintroduce OpenClaw-local classifier/asset/profile/delivery logic without an owner-approved architecture decision.
+- Never put a messenger token or Discord client back into `service/` without an owner-approved architecture decision.
 
 ## Emotion contract
 
-The canonical emotion set lives in `shared/emotions.ts`: `sorry`, `happy`, `confused`, `focused`, `loyalty`, `neutral`. Adding an emotion requires a roadmap decision (asset expectations, classifier behavior, generation prompt, tests). Final-response emotion selection is owned by the service verifier (a configurable remote provider — see the runbook), not a local OpenClaw classifier.
+The canonical emotion set lives in `shared/emotions.ts`: `sorry`, `happy`, `confused`, `focused`, `loyalty`, `neutral`. Adding an emotion requires a roadmap decision (asset expectations, classifier behavior, generation prompt, tests). The session rates each reply's affect itself; the service maps that affect to an image.

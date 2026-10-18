@@ -2,17 +2,19 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFileSync, existsSync } from "node:fs";
 import { join, normalize } from "node:path";
 import type { ServiceDatabase } from "./db.js";
-import type { FinalResponseVerifier } from "./verifier.js";
-import type { ConversationContextProvider } from "./conversation-evaluate-context.js";
-import { createConversationRuntime, type ConversationRuntime } from "./conversation-runtime.js";
-import { loadConversationConfigFromEnv, type ConversationServiceConfig } from "./conversation-config.js";
-import { type CronEnabledChannelResponse, serializeJob, validateCommunityGenerateRequest } from "./community-routes.js";
 import { channelIdFromHookBody, finalResponseRequestFromBody, mediaResponseForChannel } from "./final-response-routes.js";
 import { createFinalResponseUseCase } from "./final-response-use-case.js";
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
-import { handleWatcherRoute, isWatcherRoute } from "./watcher-routes.js";
+import { MAX_NATIVE_ASSET_BYTES, NativeAssetError, registerNativeAsset } from "./native-assets.js";
+
+export type CronEnabledChannelResponse = {
+  channelId: string;
+  profileId: string | null;
+  assetSetId: string | null;
+  updatedAt: string | null;
+};
 
 export type ServiceConfig = {
   url: URL;
@@ -25,11 +27,7 @@ export type HentAiServerOptions = {
   db: ServiceDatabase;
   token: string;
   assetRoot?: string;
-  verifier: FinalResponseVerifier;
   semanticAssetRouter?: SemanticAssetRouter;
-  conversationConfig?: ConversationServiceConfig;
-  conversationContextProvider?: ConversationContextProvider;
-  conversationRuntime?: ConversationRuntime;
 };
 
 export function redactBearerToken(value: string): string {
@@ -76,9 +74,25 @@ function authorized(req: IncomingMessage, token: string): boolean {
   return req.headers.authorization === `Bearer ${token}`;
 }
 
+export class PayloadTooLargeError extends Error {}
+
+/** POST /v1/assets carries a base64 image, so every body is capped at the image limit. */
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let total = 0;
+  let overflow = false;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.byteLength;
+    if (total > MAX_NATIVE_ASSET_BYTES) {
+      // Keep draining with nothing buffered: the rejected request still gets its 413.
+      overflow = true;
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(buffer);
+  }
+  if (overflow) throw new PayloadTooLargeError(`Request body is larger than ${MAX_NATIVE_ASSET_BYTES} bytes`);
   if (chunks.length === 0) return {};
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
@@ -103,10 +117,7 @@ function serveStatic(db: ServiceDatabase, assetRoot: string | undefined, pathnam
 export function createHentAiHandler(options: HentAiServerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const semanticAssetRouter = options.semanticAssetRouter
     ?? new DeterministicSemanticAssetRouter(new ServiceDatabaseSemanticAssetRepository(options.db));
-  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, verifier: options.verifier, assetRouter: semanticAssetRouter });
-  const conversationRuntime = options.conversationRuntime ?? createConversationRuntime(options.db, options.conversationConfig ?? loadConversationConfigFromEnv(), {
-    ...(options.conversationContextProvider ? { contextProvider: options.conversationContextProvider } : {}),
-  });
+  const finalResponseUseCase = createFinalResponseUseCase({ db: options.db, assetRouter: semanticAssetRouter });
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     try {
@@ -131,17 +142,6 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { verdict: result.verdict, ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) });
         return;
       }
-      if (isWatcherRoute(req.method, url.pathname)) {
-        const result = await handleWatcherRoute({
-          method: req.method,
-          pathname: url.pathname,
-          body: await readJsonBody(req),
-          runtime: conversationRuntime,
-        });
-        if (!result) return notFound(res);
-        sendJson(res, result.status, result.body);
-        return;
-      }
       if (req.method === "GET" && url.pathname === "/v1/profiles") {
         sendJson(res, 200, { profiles: options.db.listProfiles() });
         return;
@@ -163,6 +163,10 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { profile: options.db.updateProfile(decodeURIComponent(profileMatch[1]!), body) });
         return;
       }
+      if (req.method === "GET" && url.pathname === "/v1/channels") {
+        sendJson(res, 200, { channels: options.db.listChannelSettings() });
+        return;
+      }
       if (req.method === "GET" && url.pathname === "/v1/channels/cron-enabled") {
         sendJson(res, 200, {
           revision: options.db.cronEnabledRevision(),
@@ -180,21 +184,19 @@ export function createHentAiHandler(options: HentAiServerOptions): (req: Incomin
         sendJson(res, 200, { mapping: options.db.setChannelMapping(decodeURIComponent(channelMatch[1]!), body) });
         return;
       }
-      if (req.method === "POST" && url.pathname === "/v1/assets/generate") {
-        const body = validateCommunityGenerateRequest(await readJsonBody(req));
-        const job = options.db.createGenerationJob(body);
-        sendJson(res, 202, { jobId: job.id });
-        return;
-      }
-      const jobMatch = url.pathname.match(/^\/v1\/jobs\/([^/]+)$/);
-      if (jobMatch && req.method === "GET") {
-        const job = options.db.getGenerationJob(decodeURIComponent(jobMatch[1]!));
-        if (!job) return notFound(res);
-        sendJson(res, 200, serializeJob(job));
+      if (req.method === "POST" && url.pathname === "/v1/assets") {
+        if (!options.assetRoot) {
+          sendJson(res, 503, { error: "asset_storage_unavailable" });
+          return;
+        }
+        const result = registerNativeAsset(options.db, options.assetRoot, await readJsonBody(req));
+        sendJson(res, result.status, result.body);
         return;
       }
       notFound(res);
     } catch (error) {
+      if (error instanceof PayloadTooLargeError) return sendJson(res, 413, { error: "payload_too_large", message: error.message });
+      if (error instanceof NativeAssetError) return sendJson(res, error.status, { error: "native_asset_error", message: error.message });
       if (error instanceof SyntaxError) return badRequest(res, "Invalid JSON body");
       if (error instanceof Error && (error.message.includes("not found") || error.message.includes("required") || error.message.includes("Invalid"))) return badRequest(res, error.message);
       sendJson(res, 500, { error: "internal_error" });

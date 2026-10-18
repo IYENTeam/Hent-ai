@@ -1,10 +1,10 @@
 import Database from "better-sqlite3";
 import { initializeServiceSchema } from "./db-schema.js";
 import { prepareDatabasePath, secureDatabaseFiles } from "./db-file-security.js";
-import { rowToJob, rowToProfile, rowToStoredSemanticAssetCandidate } from "./db-rows.js";
-import type { AssetUpsertInput, ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
+import { rowToProfile, rowToStoredSemanticAssetCandidate } from "./db-rows.js";
+import type { AssetUpsertInput, ChannelMapping, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
 
-export type { AssetUpsertInput, ChannelMapping, GenerationJob, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
+export type { AssetUpsertInput, ChannelMapping, Profile, ProfileCreateInput, ProfileUpdateInput, StorageObjectInput, StoredSemanticAssetCandidate } from "./db-types.js";
 
 export { SCHEMA_VERSION } from "./db-schema.js";
 
@@ -131,6 +131,24 @@ export class ServiceDatabase {
     }));
   }
 
+  listChannelSettings(): Array<{ channelId: string; profileId: string | null; mode: string | null; enabled: boolean | null; cronEnabled: boolean | null; assetSetId: string | null; settings: unknown; updatedAt: string }> {
+    return this.db.prepare(`SELECT s.channel_id, m.profile_id, m.mode, s.enabled, s.cron_enabled, s.asset_set_id, s.settings_json, s.updated_at
+      FROM channel_settings s LEFT JOIN channel_mappings m ON m.channel_id = s.channel_id
+      ORDER BY s.channel_id`).all().map((value) => {
+      const row = value as Record<string, unknown>;
+      return {
+        channelId: String(row.channel_id),
+        profileId: (row.profile_id as string | null) ?? null,
+        mode: (row.mode as string | null) ?? null,
+        enabled: row.enabled == null ? null : Number(row.enabled) === 1,
+        cronEnabled: row.cron_enabled == null ? null : Number(row.cron_enabled) === 1,
+        assetSetId: (row.asset_set_id as string | null) ?? null,
+        settings: typeof row.settings_json === "string" ? JSON.parse(row.settings_json) as unknown : null,
+        updatedAt: String(row.updated_at),
+      };
+    });
+  }
+
   cronEnabledRevision(): string {
     const row = this.db.prepare(`SELECT COALESCE(MAX(COALESCE(updated_at, created_at)), '') AS revision
       FROM channel_settings
@@ -195,6 +213,12 @@ export class ServiceDatabase {
       .map((row) => rowToStoredSemanticAssetCandidate(row as Record<string, unknown>));
   }
 
+  /** Newest asset timestamp in a set: the semantic router's cache revision for its generate threshold. */
+  assetSetRevision(assetSetId: string): string | null {
+    const row = this.db.prepare("SELECT MAX(updated_at) AS revision FROM assets WHERE asset_set_id = ?").get(assetSetId) as { revision: string | null };
+    return row.revision ?? null;
+  }
+
   firstAssetForChannel(channelId: string): { filename: string; contentType: string; objectUrl: string; storageKey: string } | null {
     const mapping = this.getChannelMapping(channelId);
     if (!mapping || mapping.enabled === false || !mapping.assetSetId) return null;
@@ -212,47 +236,6 @@ export class ServiceDatabase {
       WHERE a.asset_set_id = ? AND lower(a.emotion) = ? ORDER BY a.filename LIMIT 1`)
       .get(mapping.assetSetId, emotion.toLowerCase()) as Record<string, unknown> | undefined;
     return row ? { filename: String(row.filename), contentType: String(row.content_type), objectUrl: String(row.object_url), storageKey: String(row.storage_key) } : null;
-  }
-
-  createGenerationJob(request: unknown): GenerationJob {
-    const id = `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-    const stamp = now();
-    this.db.prepare(`INSERT INTO generation_jobs (id, status, request_json, result_json, error, created_at, updated_at)
-      VALUES (?, 'queued', ?, NULL, NULL, ?, ?)`).run(id, JSON.stringify(request ?? {}), stamp, stamp);
-    return this.getGenerationJob(id)!;
-  }
-
-  getGenerationJob(id: string): GenerationJob | null {
-    const row = this.db.prepare("SELECT * FROM generation_jobs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    return row ? rowToJob(row) : null;
-  }
-  claimNextGenerationJob(staleRunningBefore?: string): GenerationJob | null {
-    const stamp = now();
-    if (staleRunningBefore) {
-      this.db.prepare("UPDATE generation_jobs SET status = 'queued', updated_at = ? WHERE status = 'running' AND updated_at <= ?")
-        .run(stamp, staleRunningBefore);
-    }
-    const row = this.db.prepare("SELECT id FROM generation_jobs WHERE status = 'queued' ORDER BY created_at, id LIMIT 1").get() as { id: string } | undefined;
-    if (!row) return null;
-    const result = this.db.prepare("UPDATE generation_jobs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'").run(stamp, row.id);
-    if (result.changes !== 1) return null;
-    return this.getGenerationJob(row.id);
-  }
-
-  markGenerationJobSucceeded(id: string, resultValue: unknown): GenerationJob {
-    const stamp = now();
-    const result = this.db.prepare("UPDATE generation_jobs SET status = 'succeeded', result_json = ?, error = NULL, updated_at = ? WHERE id = ? AND status = 'running'")
-      .run(JSON.stringify(resultValue ?? null), stamp, id);
-    if (result.changes !== 1) throw new Error("Generation job is not running");
-    return this.getGenerationJob(id)!;
-  }
-
-  markGenerationJobFailed(id: string, error: string): GenerationJob {
-    const stamp = now();
-    const result = this.db.prepare("UPDATE generation_jobs SET status = 'failed', result_json = NULL, error = ?, updated_at = ? WHERE id = ? AND status = 'running'")
-      .run(error, stamp, id);
-    if (result.changes !== 1) throw new Error("Generation job is not running");
-    return this.getGenerationJob(id)!;
   }
 
   recordImportRun(checksum: string, dryRun: boolean, report: unknown): void {

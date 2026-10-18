@@ -16,8 +16,8 @@ const otherSha = "b".repeat(40);
 
 async function createRepository() {
   const root = await mkdtemp(join(tmpdir(), "hent-ai-release-metadata-"));
-  await mkdir(join(root, "openclaw"));
-  await writeFile(join(root, "openclaw/package.json"), '{"version":"2026.5.6"}\n');
+  await mkdir(join(root, "kit/cli"), { recursive: true });
+  await writeFile(join(root, "kit/cli/package.json"), '{"version":"2026.5.6"}\n');
   await writeFile(join(root, "tracked.txt"), "release fixture\n");
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.name", "Release Test"], { cwd: root });
@@ -66,7 +66,7 @@ test("malformed and empty versions are rejected", () => {
 test("package version mismatch is rejected", () => {
   // Given: a valid version that differs from the package metadata.
   // When/Then: release planning fails.
-  assert.throws(() => buildReleasePlan(input({ version: "2026.5.7" })), /does not equal openclaw package version/);
+  assert.throws(() => buildReleasePlan(input({ version: "2026.5.7" })), /does not equal kit package version/);
 });
 
 test("stale target SHA is rejected", () => {

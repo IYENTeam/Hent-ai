@@ -16,7 +16,7 @@ npm run setup:affect -- \
   --apply
 ```
 
-Omit `--apply` for a free preflight. The applied command launches Codex in an external writable setup directory, generates exactly 100 accepted images, tags each accepted image immediately from anonymous pixel input, resumes immutable receipts, migrates to `HENT_AI_ASSET_ROOT`, and performs available service/OpenClaw checks. See [`../references/codex-image-generation-and-tagging.md`](../references/codex-image-generation-and-tagging.md) for the complete contract.
+Omit `--apply` for a free preflight. The applied command launches Codex in an external writable setup directory, generates exactly 100 accepted images, tags each accepted image immediately from anonymous pixel input, resumes immutable receipts, migrates to `HENT_AI_ASSET_ROOT`, and performs available service checks. See [`../references/codex-image-generation-and-tagging.md`](../references/codex-image-generation-and-tagging.md) for the complete contract.
 
 ## Install
 
@@ -77,13 +77,15 @@ Dry-run first:
 
 Review count, bytes, checksum, and destination. Then repeat with `--apply --activate`. The migration verifies every provenance hash, never overwrites different bytes, copies all images before atomically writing the external manifest, and safely resumes identical files.
 
+Migration and the sets CLI share a `manifest.json.lock`. Migration rereads the manifest under this lock and merges its set; concurrent explicit activations are serialized, so the last completed activation wins. The sets CLI rejects saving a stale loaded manifest and requires a reload. External writers must use the same helper to participate in this coordination. A lock left by a terminated writer produces a timeout; confirm the writer has stopped and inspect the manifest diff before removing that lock and retrying.
+
 Verify the deployed pool from the repository root:
 
 ```bash
 node scripts/verify-affect-assets.mjs ~/.hent-ai/assets <target-set-id>
 ```
 
-Back up the service DB and service-manager configuration before import or channel remapping. Change `HENT_AI_ASSET_ROOT` only after import succeeds, then verify live API routing, exact static bytes, and OpenClaw delivery. Runtime images, affect records, and the live manifest are deployment data and must not be committed to this repository.
+Back up the service DB and service-manager configuration before import or channel remapping. Change `HENT_AI_ASSET_ROOT` only after import succeeds, then verify live API routing, exact static bytes, and delivery through `hent send`. Runtime images, affect records, and the live manifest are deployment data and must not be committed to this repository.
 
 ## Compatibility and provenance
 
@@ -99,4 +101,7 @@ npm test
 npm pack --dry-run --json
 ```
 
-The tarball must include `dist/main.js` and `dist/index.js`.
+The tarball includes `dist/main.js`, `dist/index.js`, and the compiled shared JS
+under `dist/shared/`. `npm pack` builds these files through `prepack`; installed
+consumers need no sibling shared checkout or TypeScript loader. Check the CLI
+without generating images using `node dist/main.js --help` and `--version`.

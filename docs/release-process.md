@@ -1,8 +1,8 @@
 # Release Process
 
 Hent-ai releases are repository metadata only: an immutable annotated tag and a
-GitHub release. The Release workflow does not deploy production, restart an
-OpenClaw gateway, or consume production secrets.
+GitHub release. The Release workflow does not deploy production, restart the bridge
+or the service, or consume production secrets.
 
 ## Permanent branches and merge methods
 
@@ -22,7 +22,7 @@ OpenClaw gateway, or consume production secrets.
 - Every merge is human-only. Agents and workflows may open or validate pull
   requests, but they never merge them.
 
-Before promotion, update `openclaw/package.json` to the intended
+Before promotion, update `kit/cli/package.json` to the intended
 `YYYY.M.PATCH` version in its own reviewed change. A release dispatch must use
 that exact value and the current `main` commit.
 
@@ -47,7 +47,7 @@ reuse or move the previous version tag.
    hard-pinned to `refs/heads/main`; changing the repository's default branch does
    not authorize another branch. A dispatch from any other ref fails before
    checkout or metadata inspection.
-2. Enter the version from `openclaw/package.json`.
+2. Enter the version from `kit/cli/package.json`.
 3. Leave `dry_run` enabled (the default) for the first dispatch. This validates
    current-main metadata, installs locked dependencies, and runs every lane from
    `node scripts/release-gate.mjs` without a tag or release write.
@@ -97,8 +97,7 @@ their predecessors: verify the resulting import graph and restore every runtime
 module and test still referenced by the integrated architecture.
 
 Run `node scripts/release-gate.mjs` on the integrated tree before opening the PR.
-The default local gate includes the external VisualAffectV2 corpus check and an
-isolated local OpenClaw E2E run. GitHub's trusted release job runs the portable
+The default local gate includes the external VisualAffectV2 corpus check. GitHub's trusted release job runs the portable
 nine-lane subset with `node scripts/release-gate.mjs --ci`; that CI mode does not
 replace the local host evidence. The reviewed integration PR targets `dev`, then
 the ordinary `dev` to `release` and `release` to `main` promotion flow applies.

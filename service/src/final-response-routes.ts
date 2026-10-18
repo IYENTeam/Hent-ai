@@ -12,7 +12,6 @@ import {
 import { ServiceDatabaseSemanticAssetRepository } from "./semantic-assets/db-repository.js";
 import type { SemanticAssetRouter } from "./semantic-assets/ports.js";
 import { DeterministicSemanticAssetRouter } from "./semantic-assets/router.js";
-import type { FinalResponseVerifier } from "./verifier.js";
 import { parseResponseAffectV2, type ResponseAffectV2 } from "../../shared/affect.js";
 
 export {
@@ -34,7 +33,7 @@ export function mediaResponseForChannel(db: ServiceDatabase, channelId: string |
       filename: asset.filename,
       contentType: asset.contentType,
       url: asset.objectUrl,
-      sensitiveMedia: true,
+      sensitiveMedia: false,
       metadata: { storageKey: asset.storageKey },
     },
   };
@@ -42,11 +41,10 @@ export function mediaResponseForChannel(db: ServiceDatabase, channelId: string |
 
 export async function finalVerdictForBody(
   db: ServiceDatabase,
-  verifier: FinalResponseVerifier,
   body: unknown,
   assetRouter: SemanticAssetRouter = new DeterministicSemanticAssetRouter(new ServiceDatabaseSemanticAssetRepository(db)),
 ): Promise<FinalVerdictResult> {
-  return createFinalResponseUseCase({ db, verifier, assetRouter }).execute(finalResponseRequestFromBody(body));
+  return createFinalResponseUseCase({ db, assetRouter }).execute(finalResponseRequestFromBody(body));
 }
 
 export function finalResponseRequestFromBody(body: unknown): FinalResponseRequest {

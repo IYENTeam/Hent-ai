@@ -19,6 +19,8 @@ export type SemanticAssetCandidate = SemanticAssetMedia & {
 export interface SemanticAssetRepository {
   assetSetIdForChannel(channelId: string): string | null;
   listCandidates(assetSetId: string, emotion?: Emotion): readonly SemanticAssetCandidate[];
+  /** Changes whenever the set's assets change; `null` when the repository cannot tell. */
+  revisionForSet(assetSetId: string): string | null;
 }
 
 export type SemanticAssetRouteInput = {
@@ -33,6 +35,9 @@ export type SemanticAssetSelection = {
   readonly mode: "affect-v2" | "semantic" | "legacy-fallback";
   readonly score: number | null;
   readonly distance?: number | null;
+  readonly threshold?: number | null;
+  readonly generate?: boolean;
+  readonly nearest?: readonly { readonly media: SemanticAssetMedia; readonly distance: number }[];
 };
 
 export interface SemanticAssetRouter {

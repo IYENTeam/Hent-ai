@@ -7,7 +7,7 @@
 
 "Hent" is a coined word meaning "intent".
 
-Hent-ai automatically classifies the emotion of every bot response and attaches a matching emotion image. The canonical runtime is the **Hent-ai service** with a thin **OpenClaw** adapter; **Hermes** is supported through a lightweight compatibility adapter.
+Hent-ai attaches a matching emotion image to every bot reply. A Codex session is the bot's brain, the always-on `hent bridge` owns the Discord connection and token, and the **Hent-ai service** picks images.
 
 ### Supported Emotions
 
@@ -22,25 +22,24 @@ Hent-ai automatically classifies the emotion of every bot response and attaches 
 
 ## Runtime architecture
 
-There is one canonical OpenClaw path:
-
 ```text
-OpenClaw final reply + embedded ResponseAffectV2 marker
-  -> thin openclaw/ adapter strips and validates the transport marker
-  -> Hent-ai HTTP service
-  -> authenticated ResponseAffectV2 validation (remote verifier only as compatibility fallback)
-  -> service-owned nearest-neighbor affect router
-  -> service-owned /static media
-  -> OpenClaw outbound channel adapter
+Discord  <->  hent bridge (Discord token, gateway, inbound journal, send API)
+                 |  pushes every inbound message as one "[hent] INBOUND" line
+                 v
+             Codex session with the hent-mode skill (the brain)
+                 |  hent send --to <channel> --reply-to <message> --text ... --affect ...
+                 v
+             Hent-ai HTTP service (token-free): affect router -> /static media
 ```
 
-The service owns policy, channel/profile mappings, verifier fallback state, affect routing, asset
-records, and static bytes. OpenClaw owns host lifecycle hooks, same-generation affect transport, and delivery. It does not independently classify,
-scan manifests, read profile databases, or call Discord REST directly. The former
-`server-with-poller` composition is not a supported API or OpenClaw deployment path.
+The bridge holds the token and never calls the service; the session decides whether and what to
+answer; `hent send` asks the service for an image under one 2-second deadline and sends plain text
+when the service is slow or down. Restarting the session reconnects it and it receives any messages
+it missed, once, in order. See [ADR-0002](docs/adr/ADR-0002-session-brain-bridge.md) and
+[`kit/skill/hent-mode/SKILL.md`](kit/skill/hent-mode/SKILL.md).
 
-A fully tagged V2 set is ranked across all its images by weighted distance between the final
-response's `ResponseAffectV2` and pixel-derived `VisualAffectV2` vectors. Equal-distance candidates
+A fully tagged V2 set is ranked across all its images by weighted distance between the reply's
+`ResponseAffectV2` and pixel-derived `VisualAffectV2` vectors. Equal-distance candidates
 are selected randomly. A missing, malformed, hash-stale, or partially tagged set stays on the
 legacy path; incomplete metadata never silently activates mixed affect behavior.
 
@@ -48,7 +47,7 @@ legacy path; incomplete metadata never silently activates mixed affect behavior.
 
 ### One-command Codex setup
 
-Generate a 100-image pool, tag every accepted image from its pixels in `VisualAffectV2`, install it into external local storage, import it, and run service/OpenClaw verification with one command:
+Generate a 100-image pool, tag every accepted image from its pixels in `VisualAffectV2`, install it into external local storage, import it, and run service verification with one command:
 
 ```bash
 codex login
@@ -64,10 +63,8 @@ The generated pool, tags, manifests, setup state, and backups stay outside Git u
 
 > **Agent setup:** You can also tell Codex to read [`SKILL.md`](./SKILL.md) and set up a character pool. The skill uses the same one-shot entrypoint and only pauses for a real missing prerequisite.
 
-Choose your platform:
-
-- **OpenClaw** → see [`openclaw/README.md`](./openclaw/README.md) (canonical service-backed adapter)
-- **Hermes** → see [`hermes/README.md`](./hermes/README.md) (compatibility adapter)
+Run the bot: install the session kit (`kit/install.sh`), start the bridge, and say "hent mode" in a
+Codex session. See [`docs/agent-runbook.md`](docs/agent-runbook.md).
 
 ## Creating Emotion Images
 
@@ -87,10 +84,10 @@ codex login
 
 # Install and run
 cd generate && npm install && npm run build
-node dist/cli.js --character "cute orange cat"
+node dist/main.js generate --character "cute orange cat"
 
 # Or with an existing base image (skips base generation)
-node dist/cli.js --character "cute orange cat" --base ./my-base.png
+node dist/main.js generate --character "cute orange cat" --base ./my-base.png
 ```
 
 The tool first generates a base character image, then uses it as a reference to generate 6 emotion variants — ensuring style consistency across all images. Output: `base.png`, `happy.png`, `neutral.png`, `loyalty.png`, `sorry.png`, `confused.png`, and `focused.png` in the `assets/` directory.
@@ -199,7 +196,7 @@ Hent-ai derives a multidimensional affect vector from your agent's **response te
    - When you make a mistake, own it immediately — no deflection.
    - When investigating a problem, describe what you're checking.
    ```
-   This gives the LLM verifier clear signals across warmth, joy, embarrassment, determination, irritation, and the other AffectSpaceV2 dimensions.
+   This gives the image tagger clear signals across warmth, joy, embarrassment, determination, irritation, and the other AffectSpaceV2 dimensions.
 
 3. **Don't flatten your agent's personality** — A monotone agent will cluster around the same images. Let your agent have range: excitement, frustration, curiosity, affection, and teasing occupy different parts of the affect space.
 
@@ -252,7 +249,7 @@ Then place emotion images at `assets/profiles/gothic/` (happy.png, neutral.png, 
 
 ### Switching Profiles Per Channel
 
-For the **OpenClaw** runtime, channel → profile/asset mapping is owned by the Hent-ai service. Set it through the service API rather than a local file:
+Channel → profile/asset mapping is owned by the Hent-ai service. Set it through the service API rather than a local file:
 
 ```bash
 curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
@@ -263,23 +260,11 @@ curl -X PUT "$HENT_AI_SERVICE_URL/v1/channels/$DISCORD_CHANNEL_ID/mapping" \
 
 See [`docs/channel-profiles.md`](docs/channel-profiles.md) for the full service-owned channel/profile model.
 
-> The legacy `openclaw/scripts/switch_profile.ts` script and plugin `defaultProfile` config write
-> local state that the service-backed adapter does not read. They are migration tooling, not a
-> supported OpenClaw runtime workflow.
-
-### Configuration (Hermes)
-
-For Hermes, select a profile asset subdirectory with an environment variable:
-
-```bash
-export HENT_AI_DEFAULT_PROFILE=gothic
-```
-
 ### Import/migration
 
 Migration is explicit: back up the existing assets/database, run the service importer first in
 dry-run mode, inspect its warnings and manifest/DB diff, then run the mutating import and read the
-service state back. OpenClaw startup does not migrate local profiles or manifests implicitly.
+service state back. Nothing migrates local profiles or manifests implicitly.
 See [`docs/agent-runbook.md`](docs/agent-runbook.md) for the operational contract.
 
 ## License
