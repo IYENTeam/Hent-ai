@@ -27,7 +27,8 @@ import {
   type NewInboxEvent,
   SentLedger,
 } from "./journal.ts";
-import { Deliverer, type Exec } from "./deliver.ts";
+import { Deliverer, type DeliverDeps } from "./deliver.ts";
+import { ProcessingInbox } from "./inbox.ts";
 import { type BridgeHooks, startBridgeServer } from "./server.ts";
 import { type KeychainReader, readDiscordToken, ensureBridgeSecret } from "./token.ts";
 
@@ -151,7 +152,7 @@ export type StartBridgeOptions = {
   readonly sendRetryDelayMs?: number;
   /** Gap between typing re-sends while a `hent typing --for` hold runs (tests shorten it). */
   readonly typingIntervalMs?: number;
-  readonly deliver?: { readonly exec?: Exec; readonly backoffMs?: readonly number[]; readonly paneConfirmMs?: number; readonly findTranscript?: ConstructorParameters<typeof Deliverer>[0]["findTranscript"]; readonly disabled?: boolean };
+  readonly deliver?: Pick<DeliverDeps, "connect" | "isLive" | "retryMs" | "reconcileMs"> & { readonly disabled?: boolean };
 };
 
 export type BridgeHandle = {
@@ -159,6 +160,7 @@ export type BridgeHandle = {
   readonly home: string;
   readonly secret: string;
   readonly journal: Journal;
+  readonly inbox: ProcessingInbox;
   /** Emits `log` (line), `state` (GatewayState), `journaled` (InboxEvent), `heartbeat_ack`, `synced`, `token`. */
   readonly events: EventEmitter;
   gatewayState(): GatewayState;
@@ -378,6 +380,9 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   };
 
   const port = opts.port ?? (env.HENT_BRIDGE_PORT ? Number(env.HENT_BRIDGE_PORT) : BRIDGE_DEFAULT_PORT);
+  const inbox = new ProcessingInbox({
+    journal, handled, sessionPath: paths.session, wakePath: join(paths.state, "native-wake.json"), isBridged: allowed, log,
+  });
   const server = startBridgeServer({
     port,
     secret,
@@ -385,7 +390,9 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     consumers,
     sent,
     handled,
+    inbox,
     sessionPath: paths.session,
+    ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
     status: () => ({ gateway: gatewayState, botUserId }),
     discord: () => discord,
     clock,
@@ -396,6 +403,14 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
         deliverer?.onSessionSet();
         hooks.onSessionSet?.(session);
       },
+      onHandled: (messageId) => {
+        deliverer?.onHandled();
+        hooks.onHandled?.(messageId);
+      },
+      onInboxDrained: () => {
+        deliverer?.onInboxDrained();
+        hooks.onInboxDrained?.();
+      },
     },
     ...(opts.sendRetryDelayMs !== undefined ? { sendRetryDelayMs: opts.sendRetryDelayMs } : {}),
     ...(opts.typingIntervalMs !== undefined ? { typingIntervalMs: opts.typingIntervalMs } : {}),
@@ -405,17 +420,13 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   config.start(opts.configPollMs ?? 2_000);
   if (!opts.deliver?.disabled) {
     deliverer = new Deliverer({
-      journal,
-      handled,
-      sessionPath: paths.session,
-      deliveredPath: join(paths.state, "delivered.jsonl"),
-      isBridged: allowed,
-      clock,
+      inbox,
       log,
-      ...(opts.deliver?.exec ? { exec: opts.deliver.exec } : {}),
-      ...(opts.deliver?.backoffMs ? { backoffMs: opts.deliver.backoffMs } : {}),
-      ...(opts.deliver?.paneConfirmMs !== undefined ? { paneConfirmMs: opts.deliver.paneConfirmMs } : {}),
-      ...(opts.deliver?.findTranscript ? { findTranscript: opts.deliver.findTranscript } : {}),
+      ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
+      ...(opts.deliver?.connect ? { connect: opts.deliver.connect } : {}),
+      ...(opts.deliver?.isLive ? { isLive: opts.deliver.isLive } : {}),
+      ...(opts.deliver?.retryMs !== undefined ? { retryMs: opts.deliver.retryMs } : {}),
+      ...(opts.deliver?.reconcileMs !== undefined ? { reconcileMs: opts.deliver.reconcileMs } : {}),
     });
     deliverer.start();
   }
@@ -426,6 +437,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     home,
     secret,
     journal,
+    inbox,
     events,
     gatewayState: () => gatewayState,
     gateway: () => gateway,
@@ -434,7 +446,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       stopped = true;
       if (tokenTimer) clearTimeout(tokenTimer);
       config.stop();
-      deliverer?.stop();
+      await deliverer?.stop();
       gateway?.stop();
       await server.stop(true);
       await syncChain;

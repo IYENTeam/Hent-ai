@@ -416,9 +416,9 @@ export const cmdSkip = (args: readonly string[], env: Env = process.env): Promis
 };
 
 export const cmdSession = (args: readonly string[], env: Env = process.env): Promise<number> => {
-  const flags = parseFlags(args, []);
+  const flags = parseFlags(args, ["configure-codex"]);
   if (flags.positional[0] !== "set") {
-    console.error("usage: hent session set --agent codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID]");
+    console.error("usage: hent session set --agent codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID] [--configure-codex]");
     return Promise.resolve(2);
   }
   const agent = flags.values.get("agent");
@@ -433,7 +433,7 @@ export const cmdSession = (args: readonly string[], env: Env = process.env): Pro
     console.error("hent session set: run inside a herdr pane ($HERDR_PANE_ID) or pass --pane");
     return Promise.resolve(2);
   }
-  const body = { agent, sessionId, cwd, pane };
+  const body = { agent, sessionId, cwd, pane, ...(flags.bools.has("configure-codex") ? { configureCodex: true } : {}) };
   return simpleBridgeCall(env, async (b) => {
     await b.json("POST", BRIDGE_ROUTES.session, body);
     console.log(`SESSION_SET agent=${agent} pane=${pane}`);
@@ -442,6 +442,21 @@ export const cmdSession = (args: readonly string[], env: Env = process.env): Pro
 
 export const cmdInbox = (args: readonly string[], env: Env = process.env): Promise<number> => {
   const flags = parseFlags(args, ["tail"]);
+  const action = flags.positional[0];
+  if (action === "next" || action === "done") {
+    const wakeId = flags.values.get("wake");
+    const sessionId = flags.values.get("session-id") ?? env.CODEX_THREAD_ID;
+    if (!wakeId || !sessionId) {
+      console.error("usage: hent inbox next|done --wake UUID [--session-id ID]; CODEX_THREAD_ID supplies the session");
+      return Promise.resolve(2);
+    }
+    return simpleBridgeCall(env, async (b) => {
+      const result = action === "next"
+        ? await b.json("GET", `${BRIDGE_ROUTES.pending}?${new URLSearchParams({ wakeId, sessionId })}`)
+        : await b.json("POST", BRIDGE_ROUTES.drained, { wakeId, sessionId });
+      console.log(JSON.stringify(result));
+    });
+  }
   const n = Number(flags.positional[0] ?? flags.values.get("tail") ?? 20);
   return simpleBridgeCall(env, async (b) => {
     const res = await b.json<{ events: unknown[] }>("GET", `${BRIDGE_ROUTES.inbox}?consumer=debug-tail&wait=0`);

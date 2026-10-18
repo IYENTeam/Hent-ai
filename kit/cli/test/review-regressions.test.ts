@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InboxEvent } from "../src/bridge/contract.ts";
+import type { QueueRpc } from "../src/bridge/codex-queue.ts";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
 import { cmdChannels, cmdSend, cmdSession, LAUNCHD_TEMPLATE, readChannels } from "../src/commands.ts";
 import { fetchHttp, type Http } from "../src/messenger/http.ts";
@@ -49,7 +50,7 @@ const startService = (mode: Partial<ServiceMode> = {}) => {
   return `http://127.0.0.1:${server.port}`;
 };
 
-const setup = async (opts: { http?: Http; guildId?: string | null; deliver?: boolean; exec?: Parameters<typeof startBridge>[0] extends infer O ? O extends { deliver?: infer D } ? D extends { exec?: infer E } ? E : never : never : never } = {}) => {
+const setup = async (opts: { http?: Http; guildId?: string | null; deliver?: boolean; connect?: () => Promise<QueueRpc> } = {}) => {
   const fake = startFakeDiscord({ heartbeatIntervalMs: 100 });
   cleanups.push(() => fake.stop());
   const home = tempHome("hent-rr-");
@@ -58,7 +59,7 @@ const setup = async (opts: { http?: Http; guildId?: string | null; deliver?: boo
   const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl };
   const logs: string[] = [];
   const bridge = await startBridge({
-    deliver: opts.deliver ? { backoffMs: [20], paneConfirmMs: 200, ...(opts.exec ? { exec: opts.exec } : {}) } : { disabled: true },
+    deliver: opts.deliver ? { retryMs: 20, isLive: async () => true, ...(opts.connect ? { connect: opts.connect } : {}) } : { disabled: true },
     env,
     port: 0,
     logSink: (line) => logs.push(line),
@@ -185,27 +186,42 @@ test("removing a channel stops journaling it; an invalid channels.json keeps the
   expect(logs.some((l) => l.includes("BRIDGE_CONFIG_INVALID"))).toBe(true);
 });
 
-test("a herdr agent that runs the real `hent skip` for its prompt is delivered exactly once", async () => {
-  const calls: string[][] = [];
+test("a native wake consumes the real inbox CLI and skips its message exactly once", async () => {
+  const calls: string[] = [];
   let envForChild: Record<string, string> = {};
-  const exec = async (argv: readonly string[]) => {
-    calls.push([...argv]);
-    if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", agent_status: "idle" } } }) };
-    if (argv[2] === "read") return { code: 0, stdout: "> \n" };
-    if (argv[2] !== "prompt") return { code: 1, stdout: "" };
-    const prompt = argv[4]!;
-    const id = (JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)) as { messageId: string }).messageId;
-    const child = Bun.spawn(["bun", CLI, "skip", id], { env: { ...process.env, ...envForChild }, stdout: "pipe", stderr: "pipe" });
-    return { code: await child.exited, stdout: "" };
+  const command = async (args: readonly string[]): Promise<string> => {
+    const child = Bun.spawn(["bun", CLI, ...args], { env: { ...process.env, ...envForChild, CODEX_THREAD_ID: "abc-123" }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code).toBe(0);
+    expect(stderr).toBe("");
+    return stdout;
   };
-  const { fake, bridge, home, env } = await setup({ deliver: true, exec });
+  const connect = async (): Promise<QueueRpc> => ({
+    async request(method, params) {
+      calls.push(method);
+      if (method === "thread/read") return { thread: { status: { type: "idle" } } };
+      if (method === "thread/queue/list") return { data: [], nextCursor: null };
+      if (method !== "thread/queue/add") throw new Error(`unexpected method ${method}`);
+      if (typeof params !== "object" || params === null || !("clientUserMessageId" in params) || typeof params.clientUserMessageId !== "string") throw new Error("missing wake ID");
+      const wakeId = params.clientUserMessageId;
+      const response: { events: InboxEvent[] } = JSON.parse(await command(["inbox", "next", "--wake", wakeId]));
+      const message = response.events[0];
+      if (!message) throw new Error("missing pending message");
+      await command(["skip", message.messageId]);
+      expect(JSON.parse(await command(["inbox", "done", "--wake", wakeId]))).toEqual({ continue: false });
+      return { queuedSubmission: { id: "native-queue-entry" } };
+    },
+    subscribe: () => () => {},
+    onClose: () => () => {},
+    close: () => {},
+  });
+  const { fake, bridge, home, env } = await setup({ deliver: true, connect });
   envForChild = env;
   expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w1:p1"], env)).toBe(0);
+  const delivered = waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_WAKE_QUEUED"), 10_000);
   const question = await inbound(fake, bridge, "please answer");
-  await waitForEvent<string>(bridge.events, "log", (line) => line.includes("BRIDGE_DELIVERED") && line.includes(question.id), 10_000);
-  const prompts = calls.filter((c) => c[2] === "prompt");
-  expect(prompts.length).toBe(1);
-  expect(prompts[0]!.slice(0, 4)).toEqual(["herdr", "agent", "prompt", "w1:p1"]);
+  await delivered;
+  expect(calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
   expect(handledIds(home)).toContain(question.id);
 });
 

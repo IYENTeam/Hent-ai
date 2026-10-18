@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BridgeHandle, startBridge } from "../src/bridge/index.ts";
@@ -89,13 +89,13 @@ const tempHome = (prefix: string): string => {
   return home;
 };
 
-const setup = async (): Promise<{ fake: FakeDiscord; bridge: BridgeHandle; env: Record<string, string> }> => {
+const setup = async (overrides: Record<string, string> = {}): Promise<{ fake: FakeDiscord; bridge: BridgeHandle; env: Record<string, string> }> => {
   const fake = startFakeDiscord({ heartbeatIntervalMs: 100 });
   cleanups.push(() => fake.stop());
   const home = mkdtempSync(join(tmpdir(), "hent-cmd-"));
   cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   writeFileSync(join(home, "channels.json"), JSON.stringify({ channels: [{ channelId: CH, guildId: fake.guildId }], dms: false }));
-  const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl };
+  const env = { HENT_HOME: home, HENT_DISCORD_TOKEN: "fake-token", HENT_DISCORD_API_BASE: fake.apiBase, HENT_DISCORD_GATEWAY: fake.gatewayUrl, ...overrides };
   const bridge = await startBridge({ deliver: { disabled: true }, env, port: 0, logSink: () => {}, configPollMs: 50, sendRetryDelayMs: 10 });
   cleanups.push(() => bridge.stop());
   await waitForEvent(bridge.events, "synced");
@@ -363,6 +363,47 @@ test("hent session set registers the herdr pane it runs in, takes only --agent c
   expect(await cmdSession(["set", "--agent", "claude", "--session-id", "abc-123", "--cwd", "/tmp", "--pane", "w3:p1"], env)).toBe(2);
   expect(await cmdSession(["set", "--agent", "codex", "--session-id", "abc-123", "--cwd", "/tmp"], env)).toBe(2);
   expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", pane: "w2:p1" });
+});
+
+test.each([false, true])("hent session configures the existing Codex thread before registration (rejected=%s)", async (rejected) => {
+  const codexHome = tempHome("hent-codex-");
+  mkdirSync(join(codexHome, "app-server-control"));
+  const { env } = await setup({ CODEX_HOME: codexHome });
+  const methods: string[] = [];
+  const server = Bun.serve({
+    unix: join(codexHome, "app-server-control/app-server-control.sock"),
+    fetch(req, server) {
+      if (server.upgrade(req)) return;
+      return new Response("upgrade required", { status: 426 });
+    },
+    websocket: {
+      message(ws, data) {
+        const message = JSON.parse(String(data));
+        methods.push(message.method);
+        if (message.method === "initialize") ws.send(JSON.stringify({ id: message.id, result: {} }));
+        else if (message.method === "thread/settings/update") {
+          expect(existsSync(join(env.HENT_HOME!, "session.json"))).toBe(false);
+          expect(message.params).toEqual({
+            threadId: "existing-thread",
+            sandboxPolicy: { type: "workspaceWrite", writableRoots: [env.HENT_HOME], networkAccess: true },
+          });
+          ws.send(JSON.stringify({
+            id: message.id,
+            ...(rejected ? { error: { code: -32600, message: "Thread not loaded" } } : { result: {} }),
+          }));
+        }
+      },
+    },
+  });
+  cleanups.push(() => server.stop(true));
+  const code = await cmdSession([
+    "set", "--agent", "codex", "--session-id", "existing-thread", "--cwd", "/tmp",
+    "--pane", "w2:p1", "--configure-codex",
+  ], { ...env, CODEX_HOME: codexHome });
+  expect(code).toBe(rejected ? 1 : 0);
+  expect(existsSync(join(env.HENT_HOME!, "session.json"))).toBe(!rejected);
+  if (!rejected) expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8")).configureCodex).toBeUndefined();
+  expect(methods).toEqual(["initialize", "initialized", "thread/settings/update"]);
 });
 
 test("a stopped bridge makes hent send exit 4 with BRIDGE_DOWN", async () => {

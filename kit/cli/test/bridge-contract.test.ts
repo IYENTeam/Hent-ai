@@ -12,6 +12,8 @@ import {
   parseInboxEvent,
   parseInboxQuery,
   parseInboxResponse,
+  parsePendingQuery,
+  parseWakeRequest,
   parseSendMultipart,
   parseSendRequest,
   parseSendResponse,
@@ -23,6 +25,18 @@ import {
 } from "../src/bridge/contract";
 
 const q = (s: string) => new URLSearchParams(s);
+
+test("wake requests reject malformed ownership and duplicate query fields", () => {
+  const valid = { wakeId: "11111111-2222-4333-8444-555555555555", sessionId: "thread-1" };
+  expect(parseWakeRequest(valid)).toEqual({ ok: true, value: valid });
+  expect(parsePendingQuery(new URLSearchParams(valid))).toEqual({ ok: true, value: valid });
+  for (const body of [null, [], {}, { ...valid, extra: 1 }, { ...valid, wakeId: "../state" }, { ...valid, sessionId: "" }]) {
+    expect(parseWakeRequest(body).ok).toBe(false);
+  }
+  const duplicate = new URLSearchParams(valid);
+  duplicate.append("wakeId", valid.wakeId);
+  expect(parsePendingQuery(duplicate).ok).toBe(false);
+});
 
 function event(seq: number, over: Partial<InboxEvent> = {}): InboxEvent {
   return {
@@ -224,6 +238,10 @@ describe("edit / typing / handled / session", () => {
       value: { agent: "codex", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" },
     });
     expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp" }).ok).toBe(true);
+    expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp", configureCodex: true })).toEqual({
+      ok: true, value: { agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp", configureCodex: true },
+    });
+    expectErr(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp", configureCodex: "true" }), /boolean/);
     expectErr(parseSessionRequest({ agent: "gpt", sessionId: "s1", pane: "w1:p3", cwd: "/tmp" }), /agent/);
     // The brain is Codex only; the removed Claude agent is no longer accepted.
     expectErr(parseSessionRequest({ agent: "claude", sessionId: "s1", pane: "w1:p3", cwd: "/tmp" }), /agent must be one of codex/);

@@ -1,424 +1,239 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { InboxEvent } from "../src/bridge/contract.ts";
-import {
-  agentWorking,
-  Deliverer,
-  defaultFindTranscript,
-  type Exec,
-  formatPrompt,
-  inboundLine,
-  inputLine,
-  readSession,
-  type StoredSession,
-  transcriptReceived,
-} from "../src/bridge/deliver.ts";
-import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, type NewInboxEvent } from "../src/bridge/journal.ts";
-import { realClock } from "../src/run.ts";
+import { Deliverer } from "../src/bridge/deliver.ts";
+import { type QueueRpc, wakeText } from "../src/bridge/codex-queue.ts";
+import { ProcessingInbox, readSession } from "../src/bridge/inbox.ts";
+import { bridgePaths, ensurePrivateDir, HandledLedger, Journal, writePrivateFile } from "../src/bridge/journal.ts";
 
-const dirs: string[] = [];
-afterEach(() => {
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-});
+const cleanups: (() => Promise<void> | void)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+const now = Date.parse("2026-10-15T00:00:00Z");
+const session = { agent: "codex", sessionId: "thread-1", pane: "w1:p1", cwd: "/tmp" } as const;
+type Entry = { id: string; clientUserMessageId: string; input: { type: string; text: string }[] };
+function object(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("expected object");
+  return Object.fromEntries(Object.entries(value));
+}
 
-const event = (messageId: string, content: string, over: Partial<NewInboxEvent> = {}): NewInboxEvent => ({
-  kind: "message_create",
-  channelId: "100000000000000001",
-  guildId: "900000000000000001",
-  messageId,
-  authorId: "700000000000000001",
-  authorIsBot: false,
-  authorIsSelf: false,
-  authorName: "owner",
-  content,
-  referencedMessageId: null,
-  attachments: [],
-  createdAt: new Date().toISOString(),
-  ...over,
-});
-
-type Harness = ReturnType<typeof harness>;
-type FakeAgent = { agent: string; agent_status: string } | null;
-
-// Codex rollout records: a submitted line lands as a user message, the agent's own output does not.
-const userRecord = (text: string) =>
-  JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text }] } });
-const agentRecord = (text: string) =>
-  JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
-
-const harness = (session: StoredSession | null, opts: { bridged?: boolean; backoffMs?: number[] } = {}) => {
-  const home = mkdtempSync(join(tmpdir(), "hent-deliver-"));
-  dirs.push(home);
+function harness() {
+  const home = mkdtempSync(join(tmpdir(), "hent-wake-"));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
   const paths = bridgePaths(home);
-  ensurePrivateDir(home);
   ensurePrivateDir(paths.state);
-  if (session) writeFileSync(paths.session, JSON.stringify(session));
-  const journal = Journal.open(paths, Date.now(), () => {});
-  const handled = HandledLedger.open(paths.handled, Date.now());
-  // The fake pane agent writes where Codex does: <HOME>/.codex/sessions/<y>/<m>/<d>/rollout-*<sessionId>*.jsonl.
-  const sessionId = session?.sessionId ?? "none";
-  const rolloutDir = join(home, ".codex", "sessions", "2026", "10", "15");
-  mkdirSync(rolloutDir, { recursive: true });
-  const transcript = join(rolloutDir, `rollout-2026-10-15T00-50-01-${sessionId}.jsonl`);
-  writeFileSync(transcript, `${agentRecord("이전 대화: 한글 응답이 길게 쌓여 있다 ".repeat(200))}\n`);
-  // Fake herdr: `agent get` reports the pane occupant, `agent read` the screen, `agent prompt` submits a line.
-  let agent: FakeAgent = { agent: session?.agent ?? "codex", agent_status: "idle" };
-  let paneScreen: string | null = null;
-  let paneInput = "";
-  let paneWrites = true;
-  let promptFails = false;
-  let queueInput = false;
-  const queued: string[] = [];
-  const calls: string[][] = [];
-  const exec: Exec = async (argv) => {
-    calls.push([...argv]);
-    if (argv[0] !== "herdr" || argv[1] !== "agent") return { code: 127, stdout: "" };
-    if (argv[2] === "get") return agent ? { code: 0, stdout: JSON.stringify({ result: { agent: { pane_id: argv[3], ...agent }, type: "agent_info" } }) } : { code: 1, stdout: "" };
-    if (argv[2] === "read") return { code: agent ? 0 : 1, stdout: paneScreen ?? `some output\n\x1b[2m-- hint --\x1b[0m\n> ${paneInput}\n` };
-    if (argv[2] === "prompt") {
-      if (promptFails || !agent) return { code: 1, stdout: "" };
-      const line = argv[4]!;
-      // A working agent queues the submitted line and writes its user record only when it reads it.
-      if (queueInput) queued.push(line);
-      else {
-        // A pane that "does not write" still produces agent output quoting the line, which must not count as receipt.
-        appendFileSync(transcript, `${paneWrites ? userRecord(line) : agentRecord(`echo: ${line}`)}\n`);
-      }
-      return { code: 0, stdout: "" };
-    }
-    return { code: 1, stdout: "" };
+  writePrivateFile(paths.session, JSON.stringify(session));
+  const journal = Journal.open(paths, now, () => {});
+  const handled = HandledLedger.open(paths.handled, now);
+  const inboxDeps = { journal, handled, sessionPath: paths.session, wakePath: join(paths.state, "native-wake.json"), isBridged: (channel: string) => channel !== "off", log: () => {} };
+  const inbox = new ProcessingInbox(inboxDeps);
+  const entries: Entry[] = [];
+  const calls: string[] = [];
+  const logs: string[] = [];
+  let state = "idle";
+  let live = true;
+  let failAfterAdd = false;
+  let beforeList: (() => Promise<void>) | undefined;
+  let connections = 0;
+  const connect = async (): Promise<QueueRpc> => {
+    connections++;
+    const closed = new Set<() => void>();
+    return {
+      async request(method, params) {
+        calls.push(method);
+        const body = object(params);
+        switch (method) {
+          case "thread/read": return { thread: { status: { type: state } } };
+          case "thread/queue/list":
+            if (beforeList) await beforeList();
+            return { data: [...entries], nextCursor: null };
+          case "thread/queue/add": {
+            if (typeof body.clientUserMessageId !== "string" || !Array.isArray(body.input)) throw new Error("invalid add");
+            const entry: Entry = {
+              id: randomUUID(), clientUserMessageId: body.clientUserMessageId,
+              input: body.input.map((part) => { const value = object(part); return { type: String(value.type), text: String(value.text) }; }),
+            };
+            entries.push(entry); // Native IDs are deliberately NOT idempotent.
+            if (failAfterAdd) throw new Error("accepted, response lost");
+            return { queuedSubmission: entry };
+          }
+          case "thread/queue/delete": {
+            const index = entries.findIndex((entry) => entry.id === body.queuedSubmissionId);
+            if (index >= 0) entries.splice(index, 1);
+            return { deleted: index >= 0 };
+          }
+          default: throw new Error(`unexpected request ${method}`);
+        }
+      },
+      subscribe: () => () => {},
+      onClose: (listener) => { closed.add(listener); return () => { closed.delete(listener); }; },
+      close: () => { const callbacks = [...closed]; closed.clear(); for (const callback of callbacks) callback(); },
+    };
   };
-  const logLines: string[] = [];
-  const deliverer = new Deliverer({
-    journal,
-    handled,
-    sessionPath: paths.session,
-    deliveredPath: join(paths.state, "delivered.jsonl"),
-    isBridged: () => opts.bridged ?? true,
-    clock: realClock,
-    log: (name: string, fields?: Record<string, unknown>) => logLines.push(`${name} ${JSON.stringify(fields ?? {})}`),
-    exec,
-    findTranscript: (s: StoredSession) => defaultFindTranscript(s, home),
-    backoffMs: opts.backoffMs ?? [5],
-    paneConfirmMs: 500,
-    busyRetryMs: 10,
+  const deps = { inbox, connect, isLive: async () => live, log: (event: string) => { logs.push(event); }, retryMs: 60_000 };
+  const deliverer = new Deliverer(deps);
+  cleanups.push(() => deliverer.stop());
+  const append = (id: string, channelId = "room", authorIsSelf = false) => journal.append({
+    kind: "message_create", messageId: id, channelId, guildId: "guild", authorId: "owner", authorName: "owner",
+    authorIsSelf, authorIsBot: authorIsSelf, content: `raw "${id}"\n$(id) \`literal\``, attachments: [],
+    referencedMessageId: null, createdAt: new Date(now).toISOString(),
   });
-  journal.onAppend((e) => deliverer.onJournaled(e));
-  deliverer.start();
+  const wake = () => { const value = inbox.active(); if (!value) throw new Error("missing wake"); return value; };
   return {
-    home,
-    paths,
-    journal,
-    handled,
-    deliverer,
-    calls,
-    setAgent: (next: FakeAgent) => (agent = next),
-    setPaneWrites: (writes: boolean) => (paneWrites = writes),
-    setPaneInput: (text: string) => (paneInput = text),
-    setPaneScreen: (text: string | null) => (paneScreen = text),
-    setPromptFails: (fails: boolean) => (promptFails = fails),
-    setQueueInput: (on: boolean) => (queueInput = on),
-    readQueued: () => {
-      for (const line of queued.splice(0)) appendFileSync(transcript, `${userRecord(line)}\n`);
-    },
-    injected: () => calls.filter((c) => c[0] === "herdr" && c[2] === "prompt").map((c) => c[4]!),
-    logs: () => logLines,
+    inbox, inboxDeps, deliverer, deps, paths, entries, calls, logs, append, wake, handled,
+    state: (value: string) => { state = value; },
+    live: (value: boolean) => { live = value; },
+    failAfterAdd: (value: boolean) => { failAfterAdd = value; },
+    beforeList: (value: (() => Promise<void>) | undefined) => { beforeList = value; },
+    connections: () => connections,
   };
-};
+}
 
-const settle = async (h: Harness, predicate: () => boolean, ms = 3000): Promise<void> => {
-  const end = Date.now() + ms;
-  while (!predicate()) {
-    if (Date.now() > end) throw new Error("condition not reached");
-    await Bun.sleep(5);
-  }
-  h.deliverer.pendingCount();
-};
-
-const pane: StoredSession = { agent: "codex", sessionId: "11111111-2222-3333-4444-555555555555", pane: "w1:p1", cwd: "/tmp" };
-
-test("three events are injected into the pane in seq order", async () => {
-  const h = harness(pane);
-  h.journal.append(event("m1", "first"));
-  h.journal.append(event("m2", "second"));
-  h.journal.append(event("m3", "third"));
-  await settle(h, () => h.injected().length === 3);
-  expect(h.injected().map((p) => JSON.parse(p.slice(p.indexOf("[hent] INBOUND ") + 15)).messageId)).toEqual(["m1", "m2", "m3"]);
-  h.deliverer.stop();
+test("a burst queues one small wake and preserves every raw message in order", async () => {
+  const h = harness();
+  h.append("one"); h.append("two"); h.append("three");
+  await h.deliverer.onSessionSet();
+  await h.deliverer.onSessionSet();
+  expect(h.calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
+  expect(h.entries.map((entry) => entry.input)).toEqual([[{ type: "text", text: wakeText(h.wake().wakeId) }]]);
+  expect(h.inbox.next(h.wake()).events.map((event) => [event.messageId, event.content])).toEqual(
+    ["one", "two", "three"].map((id) => [id, `raw "${id}"\n$(id) \`literal\``]),
+  );
 });
 
-test("self messages and channels not in channels.json are never injected", async () => {
-  const h = harness(pane, { bridged: false });
-  h.journal.append(event("m1", "hello"));
-  const h2 = harness(pane);
-  h2.journal.append(event("s1", "mine", { authorIsSelf: true, authorIsBot: true }));
-  await Bun.sleep(50);
-  expect(h.injected()).toEqual([]);
-  expect(h2.injected()).toEqual([]);
-  h.deliverer.stop();
-  h2.deliverer.stop();
+test("self messages and unlisted channels never become pending wakes", async () => {
+  const h = harness();
+  h.append("self", "room", true); h.append("disabled", "off");
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toEqual([]);
+  expect(h.inbox.active()).toBeNull();
 });
 
-test("with no live agent in the pane, events stay queued (never run elsewhere) until it is back", async () => {
-  const h = harness(pane);
-  h.setAgent(null);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().filter((l) => l.includes("no_agent_in_pane")).length >= 2);
-  expect(h.injected()).toEqual([]);
-  expect(h.calls.every((c) => c[0] === "herdr")).toBe(true);
-  h.setAgent({ agent: "codex", agent_status: "idle" });
-  h.deliverer.onSessionSet();
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.injected().length).toBe(1);
-  h.deliverer.stop();
+test("an absent pane does not connect or wake a headless thread", async () => {
+  const h = harness();
+  h.live(false); h.append("waiting");
+  await h.deliverer.onSessionSet();
+  expect(h.connections()).toBe(0);
+  h.live(true);
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toHaveLength(1);
 });
 
-test("confirmation reads only bytes written after injection, even after multi-byte text", async () => {
-  const h = harness(pane);
-  h.journal.append(event("m1", "안녕"));
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED") || l.includes("pane_unconfirmed")));
-  expect(h.logs().some((l) => l.includes("pane_unconfirmed"))).toBe(false);
-  h.deliverer.stop();
+test("an unloaded Codex thread is never resumed or started by delivery", async () => {
+  const h = harness();
+  h.state("notLoaded"); h.append("waiting");
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toEqual([]);
+  expect(h.calls).toEqual(["thread/read"]);
+  h.state("idle");
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toHaveLength(1);
 });
 
-test("a pane delivery is confirmed from the transcript, otherwise retried", async () => {
-  const h = harness(pane);
-  h.setPaneWrites(false);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.injected().length >= 2, 4000);
-  h.setPaneWrites(true);
-  await settle(h, () => h.deliverer.pendingCount() === 0, 4000);
-  h.deliverer.stop();
+test("a busy thread accepts one queued wake without steering its active turn", async () => {
+  const h = harness();
+  h.state("active"); h.append("one");
+  await h.deliverer.onSessionSet();
+  h.append("two");
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toHaveLength(1);
+  expect(h.calls.every((method) => ["thread/read", "thread/queue/list", "thread/queue/add"].includes(method))).toBe(true);
 });
 
-test("bridge restart resumes undelivered events and does not repeat delivered ones", async () => {
-  const h = harness(pane);
-  h.journal.append(event("m1", "one"));
-  await settle(h, () => h.injected().length === 1);
-  h.deliverer.stop();
-  h.journal.append(event("m2", "two"));
-  const journal2 = Journal.open(h.paths, Date.now(), () => {});
-  const calls: string[][] = [];
-  const d2 = new Deliverer({
-    journal: journal2,
-    handled: h.handled,
-    sessionPath: h.paths.session,
-    deliveredPath: join(h.paths.state, "delivered.jsonl"),
-    isBridged: () => true,
-    clock: realClock,
-    log: () => {},
-    exec: async (argv) => {
-      calls.push([...argv]);
-      if (argv[2] === "get") return { code: 0, stdout: JSON.stringify({ result: { agent: { agent: "codex", agent_status: "idle" } } }) };
-      if (argv[2] === "read") return { code: 0, stdout: "> \n" };
-      if (argv[2] === "prompt") h.handled.mark({ messageId: "m2", how: "replied", at: new Date().toISOString() });
-      return { code: 0, stdout: "" };
-    },
-    backoffMs: [5],
+test("a lost add response is reconciled from the native queue without another add", async () => {
+  const h = harness();
+  h.failAfterAdd(true); h.append("one");
+  await h.deliverer.onSessionSet();
+  expect(h.entries).toHaveLength(1);
+  expect(h.inbox.active()?.phase).toBe("prepared");
+  h.failAfterAdd(false);
+  await h.deliverer.onSessionSet();
+  expect(h.calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
+  expect(h.inbox.active()?.phase).toBe("queued");
+});
+
+test("restart adopts the persisted wake and existing native entry", async () => {
+  const h = harness();
+  h.append("one");
+  await h.deliverer.onSessionSet();
+  await h.deliverer.stop();
+  const restartedInbox = new ProcessingInbox(h.inboxDeps);
+  const restarted = new Deliverer({ ...h.deps, inbox: restartedInbox });
+  cleanups.push(() => restarted.stop());
+  await restarted.onSessionSet();
+  expect(restartedInbox.active()?.wakeId).toBe(h.wake().wakeId);
+  expect(h.calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
+});
+
+test("duplicate owned queue rows are removed while unrelated input survives", async () => {
+  const h = harness();
+  h.append("one");
+  await h.deliverer.onSessionSet();
+  const wake = h.wake();
+  h.entries.push({ id: "duplicate", clientUserMessageId: wake.wakeId, input: [{ type: "text", text: wakeText(wake.wakeId) }] });
+  h.entries.push({ id: "unrelated", clientUserMessageId: randomUUID(), input: [{ type: "text", text: "human input" }] });
+  await h.deliverer.onSessionSet();
+  expect(h.entries.map((entry) => entry.id)).not.toContain("duplicate");
+  expect(h.entries.map((entry) => entry.id)).toContain("unrelated");
+  expect(h.entries).toHaveLength(2);
+});
+
+test("received work is not requeued while its turn is active", async () => {
+  const h = harness();
+  h.append("one");
+  await h.deliverer.onSessionSet();
+  h.inbox.next(h.wake());
+  h.entries.splice(0); h.state("active"); h.append("two");
+  await h.deliverer.onHandled();
+  expect(h.calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
+  expect(h.inbox.pending().map((event) => event.messageId)).toEqual(["one", "two"]);
+});
+
+test("a wake consumed between the idle snapshot and queue listing is not queued again", async () => {
+  const h = harness();
+  h.append("one");
+  await h.deliverer.onSessionSet();
+  h.beforeList(async () => {
+    h.entries.splice(0);
+    h.state("active");
+    h.beforeList(undefined);
   });
-  d2.start();
-  await settle(h, () => h.handled.get("m2") !== undefined);
-  const prompts = calls.filter((c) => c[2] === "prompt").map((c) => c[4]!);
-  expect(prompts.length).toBe(1);
-  expect(prompts[0]).toContain('"messageId":"m2"');
-  d2.stop();
+  await h.deliverer.onSessionSet();
+  expect(h.calls.filter((method) => method === "thread/queue/add")).toHaveLength(1);
+  expect(h.inbox.active()?.phase).toBe("queued");
 });
 
-test("each hent session set re-injects still-unhandled events once; replied ones never", async () => {
-  const h = harness(pane);
-  h.journal.append(event("m1", "unanswered"));
-  h.journal.append(event("m2", "answered"));
-  await settle(h, () => h.injected().length === 2);
-  h.handled.mark({ messageId: "m2", how: "replied", at: new Date().toISOString() });
-  h.deliverer.onSessionSet();
-  await settle(h, () => h.injected().length === 3);
-  expect(h.injected()[2]).toContain('"messageId":"m1"');
-  h.deliverer.onSessionSet();
-  await settle(h, () => h.injected().length === 4);
-  expect(h.injected()[3]).toContain('"messageId":"m1"');
-  h.handled.mark({ messageId: "m1", how: "skipped", at: new Date().toISOString() });
-  h.deliverer.onSessionSet();
-  await Bun.sleep(50);
-  expect(h.injected().length).toBe(4);
-  h.deliverer.stop();
+test("completed work retires its wake and clears stale owned queue entries", async () => {
+  const h = harness();
+  h.append("one");
+  await h.deliverer.onSessionSet();
+  const wake = h.wake();
+  h.inbox.next(wake);
+  h.handled.mark({ messageId: "one", how: "skipped", at: new Date(now).toISOString() });
+  h.inbox.done(wake);
+  await h.deliverer.onInboxDrained();
+  expect(h.entries).toEqual([]);
+  expect(h.inbox.active()).toBeNull();
 });
 
-test("a pane with unfinished typed input waits, then delivers once the input is empty", async () => {
-  const h = harness(pane);
-  h.setPaneInput("half-typed thought");
-  h.journal.append(event("m1", "hi"));
-  await Bun.sleep(80);
-  expect(h.injected()).toEqual([]);
-  h.setPaneInput("");
-  await settle(h, () => h.injected().length === 1);
-  h.deliverer.stop();
+test("an arrival while a native snapshot is in flight is queued before the pump settles", async () => {
+  const h = harness();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  h.beforeList(async () => { entered.resolve(); await release.promise; });
+  const checking = h.deliverer.onSessionSet();
+  await entered.promise;
+  h.append("late");
+  h.beforeList(undefined);
+  release.resolve();
+  await checking;
+  expect(h.entries).toHaveLength(1);
+  expect(h.inbox.next(h.wake()).events.map((event) => event.messageId)).toEqual(["late"]);
 });
 
-test("a pane where herdr sees another agent is never typed into", async () => {
-  const h = harness(pane);
-  h.setAgent({ agent: "gemini", agent_status: "idle" });
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("no_agent_in_pane")));
-  expect(h.injected()).toEqual([]);
-  h.deliverer.stop();
-});
-
-test("an agent herdr reports as working or blocked on a question waits", async () => {
-  for (const status of ["working", "blocked", "unknown"]) {
-    const h = harness(pane);
-    h.setAgent({ agent: "codex", agent_status: status });
-    h.journal.append(event("m1", "hi"));
-    await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
-    expect(h.injected()).toEqual([]);
-    h.setAgent({ agent: "codex", agent_status: "done" });
-    await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-    expect(h.injected().length).toBe(1);
-    h.deliverer.stop();
-  }
-});
-
-test("a rejected herdr prompt is retried, not counted as delivered", async () => {
-  const h = harness(pane);
-  h.setPromptFails(true);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
-  expect(h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED"))).toBe(false);
-  h.setPromptFails(false);
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  h.deliverer.stop();
-});
-
-test("inputLine tells an empty prompt from typed input and from no prompt at all", () => {
-  expect(inputLine("│ > \x1b[2mTry \"fix lint\"\x1b[0m   │")).toBe("empty");
-  expect(inputLine("> ")).toBe("empty");
-  expect(inputLine("› draft reply")).toBe("typed");
-  expect(inputLine("│ > typed │")).toBe("typed");
-  expect(inputLine("unrelated node server is running")).toBe("none");
-});
-
-test("inputLine reads a real herdr capture of Codex (CRLF lines, dim placeholder under a background colour)", () => {
-  const screen = (name: string) => readFileSync(new URL(`./fixtures/codex-0.162-herdr-screen-${name}.ansi`, import.meta.url), "utf8");
-  expect(inputLine(screen("idle"))).toBe("empty");
-  expect(inputLine(screen("typed"))).toBe("typed");
-  expect(agentWorking(screen("idle"))).toBe(false);
-});
-
-test("hent session set restarts the backoff, so the new session is tried right away", async () => {
-  const h = harness(pane, { backoffMs: [5, 60_000] });
-  rmSync(h.paths.session);
-  h.journal.append(event("m1", "while away"));
-  await settle(h, () => h.logs().filter((l) => l.includes("no_session")).length >= 2);
-  writeFileSync(h.paths.session, JSON.stringify(pane));
-  h.setPaneWrites(false);
-  h.deliverer.onSessionSet();
-  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
-  expect(h.logs().find((l) => l.includes("pane_unconfirmed"))).toContain('"delayMs":5');
-  h.setPaneWrites(true);
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")), 1_000);
-  h.deliverer.stop();
-});
-
-test("agentWorking spots the live 'esc to interrupt' status of Codex", () => {
-  const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-  expect(agentWorking(fixture("codex-0.162-screen-working.ansi"))).toBe(true);
-  expect(agentWorking(fixture("codex-0.162-herdr-screen-idle.ansi"))).toBe(false);
-  expect(inputLine(fixture("codex-0.162-screen-working.ansi"))).toBe("empty");
-});
-
-test("an agent that is mid-turn with an empty input line is busy, never typed into", async () => {
-  const h = harness(pane);
-  h.setPaneScreen(readFileSync(new URL("./fixtures/codex-0.162-screen-working.ansi", import.meta.url), "utf8"));
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
-  expect(h.injected()).toEqual([]);
-  h.setPaneScreen(null);
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.injected().length).toBe(1);
-  h.deliverer.stop();
-});
-
-test("a line the agent queued past the confirm window is confirmed later, not typed twice", async () => {
-  const h = harness(pane);
-  h.setQueueInput(true);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
-  h.readQueued();
-  await settle(h, () => h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED")));
-  expect(h.injected().length).toBe(1);
-  h.deliverer.stop();
-});
-
-test("a pane showing no input prompt is treated as busy, never typed into", async () => {
-  const h = harness(pane);
-  h.setPaneScreen("compiling...\nstill working");
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_busy")));
-  expect(h.injected()).toEqual([]);
-  h.deliverer.stop();
-});
-
-test("receipt needs the exact injected line in a user-input record", () => {
-  const wanted = { ...event("wanted-id", "payload"), seq: 1 } as InboxEvent;
-  const prompt = formatPrompt(wanted, []);
-  expect(transcriptReceived(agentRecord(prompt), wanted)).toBe(false);
-  expect(transcriptReceived(userRecord('I saw [hent] INBOUND earlier; {"messageId":"wanted-id"} is pending'), wanted)).toBe(false);
-  expect(transcriptReceived(userRecord(inboundLine({ ...wanted, content: "other payload" })), wanted)).toBe(false);
-  expect(transcriptReceived(userRecord(prompt), wanted)).toBe(true);
-  const eventMsg = JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: prompt } });
-  expect(transcriptReceived(eventMsg, wanted)).toBe(true);
-});
-
-test("typing without a submitted user record leaves the event unconfirmed", async () => {
-  const h = harness(pane);
-  h.setPaneWrites(false);
-  h.journal.append(event("m1", "hi"));
-  await settle(h, () => h.logs().some((l) => l.includes("pane_unconfirmed")));
-  expect(h.logs().some((l) => l.startsWith("BRIDGE_DELIVERED"))).toBe(false);
-  h.deliverer.stop();
-});
-
-test("transcripts are found where Codex writes them", () => {
-  const home = mkdtempSync(join(tmpdir(), "hent-find-"));
-  dirs.push(home);
-  const codex = join(home, ".codex", "sessions", "2026", "10", "14");
-  mkdirSync(codex, { recursive: true });
-  writeFileSync(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"), "");
-  expect(defaultFindTranscript({ agent: "codex", sessionId: "cccc-dddd", pane: "w1:p1", cwd: "/x" }, home)).toBe(join(codex, "rollout-2026-10-14T00-50-01-cccc-dddd.jsonl"));
-  expect(defaultFindTranscript({ agent: "codex", sessionId: "no-such-session", pane: "w1:p1", cwd: "/x" }, home)).toBeNull();
-});
-
-test("a session.json left by the removed Claude brain is ignored", () => {
-  const home = mkdtempSync(join(tmpdir(), "hent-stale-session-"));
-  dirs.push(home);
-  const path = join(home, "session.json");
-  writeFileSync(path, JSON.stringify({ agent: "claude", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/tmp" }));
-  expect(readSession(path)).toBeNull();
-  writeFileSync(path, JSON.stringify({ agent: "codex", sessionId: "aaaa-bbbb", pane: "w1:p1", cwd: "/tmp" }));
-  expect(readSession(path)).toMatchObject({ agent: "codex", sessionId: "aaaa-bbbb" });
-});
-
-test("prompt text carries quotes, newlines and $( verbatim as one herdr argv element", async () => {
-  const content = 'say "hi"\nthen $(id) `x`';
-  const prompt = formatPrompt({ seq: 1, ...event("m1", content) }, []);
-  expect(prompt.includes("\n")).toBe(false);
-  expect(JSON.parse(prompt.slice(prompt.indexOf("[hent] INBOUND ") + 15)).content).toBe(content);
-  const h = harness(pane);
-  h.journal.append(event("m1", content));
-  await settle(h, () => h.injected().length === 1);
-  const call = h.calls.find((c) => c[2] === "prompt")!;
-  expect(call.slice(0, 4)).toEqual(["herdr", "agent", "prompt", "w1:p1"]);
-  expect(call.length).toBe(5);
-  expect(JSON.parse(call[4]!.slice(call[4]!.indexOf("[hent] INBOUND ") + 15)).content).toBe(content);
-  h.deliverer.stop();
-});
-
-test("history is prefixed after a quiet gap", () => {
-  mkdirSync(tmpdir(), { recursive: true });
-  const e: InboxEvent = { seq: 3, ...event("m3", "now") };
-  const prior: InboxEvent = { seq: 2, ...event("m2", "earlier") };
-  const prompt = formatPrompt(e, [prior]);
-  expect(prompt.startsWith("[hent] HISTORY ")).toBe(true);
-  expect(prompt).toContain('"content":"earlier"');
+test("legacy Claude session records are rejected before native delivery", () => {
+  const h = harness();
+  writePrivateFile(h.paths.session, JSON.stringify({ ...session, agent: "claude" }));
+  expect(readSession(h.paths.session)).toBeNull();
 });
