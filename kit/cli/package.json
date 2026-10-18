@@ -1,6 +1,6 @@
 {
   "name": "@hent-ai/kit",
-  "version": "2026.5.6",
+  "version": "2026.10.0",
   "private": true,
   "type": "module",
   "bin": {
