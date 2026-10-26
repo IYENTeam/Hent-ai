@@ -109,7 +109,13 @@ async function setup() {
   });
   const register = (value: unknown = nitro, target = bridge) => api("/v1/session", value, target);
   const added = (threadId: string) => waitForEvent<Added>(events, "added", (entry) => entry.threadId === threadId);
-  const next = (wake: Added, target = bridge) => api(`/v1/inbox/pending?${new URLSearchParams({ sessionId: wake.threadId, wakeId: wake.wakeId })}`, undefined, target);
+  const next = (wake: Added, target = bridge) => {
+    // The native consumer removes its queued input and starts an active turn
+    // before that turn calls inbox next. An idle fake would invite redelivery.
+    states.set(wake.threadId, "active");
+    queues.set(wake.threadId, (queues.get(wake.threadId) ?? []).filter((entry) => entry.clientUserMessageId !== wake.wakeId));
+    return api(`/v1/inbox/pending?${new URLSearchParams({ sessionId: wake.threadId, wakeId: wake.wakeId })}`, undefined, target);
+  };
   return { home, bridge, fake, settings, updates, rejected, unavailable, states, requests, queues, launch, api, register, added, next };
 }
 
