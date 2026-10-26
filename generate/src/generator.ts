@@ -6,7 +6,7 @@ import {
   EMOTIONS as SHARED_EMOTIONS,
   EMOTION_PROMPTS as SHARED_EMOTION_PROMPTS,
   type Emotion,
-} from "@hent-ai/shared";
+} from "../../shared/emotions.js";
 
 export const EMOTIONS = SHARED_EMOTIONS;
 export type { Emotion };

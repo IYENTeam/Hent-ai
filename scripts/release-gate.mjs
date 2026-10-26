@@ -43,13 +43,6 @@ if (!listJsonMode && Number(process.versions.node.split(".")[0]) !== 22) {
   process.exit(result.status ?? 1);
 }
 
-const liveDiscordEnv = [
-  "HENT_AI_DISCORD_POLLER_TOKEN",
-  "HENT_AI_DISCORD_POLLER_CHANNELS",
-  "HENT_AI_DISCORD_POLLER_LIVE_SEND_CONTENT",
-  "DISCORD_BOT_TOKEN",
-];
-
 const portableChecks = [
   {
     id: "service-typescript",
@@ -57,27 +50,11 @@ const portableChecks = [
     cwd: "service",
     command: "npx",
     args: ["tsc", "--noEmit"],
-    envUnset: liveDiscordEnv,
   },
   {
     id: "service-tests",
     label: "service full regression suite",
     cwd: "service",
-    command: "npx",
-    args: ["vitest", "run"],
-    envUnset: liveDiscordEnv,
-  },
-  {
-    id: "openclaw-typescript",
-    label: "openclaw TypeScript",
-    cwd: "openclaw",
-    command: "npx",
-    args: ["tsc", "--noEmit"],
-  },
-  {
-    id: "openclaw-tests",
-    label: "openclaw full regression suite",
-    cwd: "openclaw",
     command: "npx",
     args: ["vitest", "run"],
   },
@@ -103,11 +80,25 @@ const portableChecks = [
     args: ["vitest", "run"],
   },
   {
-    id: "hermes-unittest",
-    label: "Hermes unittest discovery",
-    cwd: ".",
-    command: "python3",
-    args: ["-m", "unittest", "discover", "-s", "tests/hermes", "-p", "test_*.py"],
+    id: "kit-install",
+    label: "session kit dependency install",
+    cwd: "kit/cli",
+    command: "bun",
+    args: ["install", "--frozen-lockfile"],
+  },
+  {
+    id: "kit-typescript",
+    label: "session kit TypeScript",
+    cwd: "kit/cli",
+    command: "bunx",
+    args: ["tsc", "--noEmit", "-p", "."],
+  },
+  {
+    id: "kit-tests",
+    label: "session kit full regression suite",
+    cwd: "kit/cli",
+    command: "bun",
+    args: ["test"],
   },
   {
     id: "static-contracts",
@@ -120,9 +111,7 @@ const portableChecks = [
       `import assert from "node:assert/strict";
        import { access, readFile } from "node:fs/promises";
        const manifest = JSON.parse(await readFile("assets/manifest.json", "utf8"));
-       const plugin = JSON.parse(await readFile("openclaw/openclaw.plugin.json", "utf8"));
-       const packageJson = JSON.parse(await readFile("openclaw/package.json", "utf8"));
-       const entrypoint = await readFile("openclaw/index.ts", "utf8");
+       const kitPackage = JSON.parse(await readFile("kit/cli/package.json", "utf8"));
        const emotions = ["sorry", "happy", "confused", "focused", "loyalty", "neutral"];
        assert.ok(manifest.sets[manifest.activeSet], "active asset set is missing");
        for (const [setId, set] of Object.entries(manifest.sets)) {
@@ -131,10 +120,9 @@ const portableChecks = [
            for (const filename of set.emotions[emotion]) await access("assets/sets/" + setId + "/" + filename);
          }
        }
-       assert.equal(plugin.id, "hent-ai-service-adapter");
-       assert.equal(packageJson.main, "./index.ts");
-       assert.ok(packageJson.files.includes("index.ts"));
-       assert.match(entrypoint, /definePluginEntry/);`,
+       assert.equal(kitPackage.bin.hent, "src/cli.ts");
+       assert.deepEqual(Object.keys(kitPackage.dependencies ?? {}), []);
+       await access("kit/skill/hent-mode/SKILL.md");`,
     ],
   },
 ];
@@ -163,13 +151,6 @@ const localHostChecks = [
     cwd: ".",
     command: "node",
     args: ["scripts/verify-affect-assets.mjs", externalAssetRoot, externalAffectSetId],
-  },
-  {
-    id: "local-openclaw-e2e",
-    label: "isolated and restored local OpenClaw E2E",
-    cwd: ".",
-    command: "node",
-    args: ["scripts/e2e-hent-openclaw.mjs"],
   },
 ];
 

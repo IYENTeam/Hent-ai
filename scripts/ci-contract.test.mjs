@@ -41,19 +41,16 @@ function assertNamed(jobId, name) {
 }
 
 test("preserves the existing package lanes and integration contract checks", () => {
-  assertNamed("openclaw", "OpenClaw Plugin");
+  assertNamed("kit", "Session Kit \\(bun\\)");
   assertNamed("generate", "Generate Module");
-  assertNamed("hermes", "Hermes Plugin \\(Python\\)");
   assertNamed("integration", "Integration Check");
+  assert.doesNotMatch(workflow, /openclaw|hermes/i);
 
   const integration = job("integration");
-  assert.match(integration, /name: Verify plugin manifest/);
-  assert.match(integration, /openclaw\/openclaw\.plugin\.json/);
+  assert.match(integration, /name: Verify session kit package/);
+  assert.match(integration, /kit\/cli\/package\.json/);
   assert.match(integration, /name: Verify assets integrity/);
   assert.match(integration, /ASSET_DIR="assets"/);
-  assert.match(integration, /name: Verify entry point exports/);
-  assert.match(integration, /openclaw\/index\.ts/);
-  assert.match(integration, /definePluginEntry/);
 });
 
 test("runs push and pull-request CI on main, dev, and release", () => {
@@ -66,9 +63,12 @@ test("runs push and pull-request CI on main, dev, and release", () => {
 });
 
 test("makes TypeScript and tests blocking across runtime/package lanes", () => {
-  const openclaw = job("openclaw");
-  assert.match(openclaw, /name: Type check[\s\S]*pnpm exec tsc --noEmit --skipLibCheck/);
-  assert.doesNotMatch(openclaw, /TypeScript check skipped|name: Lint|name: Test coverage/);
+  const kit = job("kit");
+  assert.match(kit, /working-directory: kit\/cli/);
+  assert.match(kit, /oven-sh\/setup-bun@[0-9a-f]{40}/);
+  assert.match(kit, /name: Type check[\s\S]*bunx tsc --noEmit -p \./);
+  assert.match(kit, /name: Test[\s\S]*run: bun test/);
+  assert.doesNotMatch(kit, /continue-on-error|\|\| echo/);
 
   const service = job("service");
   assertNamed("service", "Service");
@@ -85,22 +85,12 @@ test("makes TypeScript and tests blocking across runtime/package lanes", () => {
   assert.match(shared, /name: Test[\s\S]*run: npm test/);
 });
 
-test("uses Python stdlib unittest for the Hermes lane", () => {
-  const hermes = job("hermes");
-  assert.match(
-    hermes,
-    /python -m unittest discover -s tests\/hermes -p ['"]test_\*\.py['"] -v/,
-  );
-  assert.doesNotMatch(hermes, /pytest|pip install/);
-});
-
 test("integration waits for every runtime and package lane", () => {
   assert.deepEqual(needs(job("integration")), [
-    "openclaw",
+    "kit",
     "generate",
     "service",
     "shared",
-    "hermes",
   ]);
 });
 
@@ -109,11 +99,10 @@ test("defines stable, fail-closed aggregate checks", () => {
   assertNamed("ci_required", "CI Required");
   assert.match(ciRequired, /^    if: always\(\)$/m);
   assert.deepEqual(needs(ciRequired), [
-    "openclaw",
+    "kit",
     "generate",
     "service",
     "shared",
-    "hermes",
     "integration",
   ]);
   assert.match(ciRequired, /Object\.entries\(needs\)/);

@@ -2,11 +2,10 @@ import { createHash } from "node:crypto";
 import { CANONICAL_EMOTIONS, type Emotion } from "../../shared/emotions.js";
 import { parseResponseAffectV2, type ResponseAffectV2 } from "../../shared/affect.js";
 import type { ServiceDatabase } from "./db.js";
-import type { SemanticAssetMedia, SemanticAssetRouter } from "./semantic-assets/ports.js";
-import type { FinalResponseVerifier, VerifierJudgment } from "./verifier.js";
+import type { SemanticAssetMedia, SemanticAssetRouter, SemanticAssetSelection } from "./semantic-assets/ports.js";
 
 export const FINAL_VERDICT_SCHEMA_VERSION = "FinalEmotionVerdictV1";
-export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV1";
+export const SERVICE_MEDIA_RESPONSE_SCHEMA_VERSION = "ServiceMediaResponseV2-ExplicitSensitivity";
 export const VERIFIER_CACHE_POLICY_VERSION = "VerifierCachePolicyV4-NormalizedAffect";
 export const ASSET_POLICY_VERSION = "ServiceAssetPolicyV2-AffectSpaceV2";
 
@@ -17,7 +16,7 @@ export type ServiceMedia = {
   filename: string;
   contentType: string;
   url: string;
-  sensitiveMedia: true;
+  sensitiveMedia: boolean;
   metadata: { storageKey: string };
 };
 
@@ -32,6 +31,13 @@ export type FinalVerdict = {
   reason?: string;
   affect?: ResponseAffectV2;
   media?: ServiceMedia;
+  routing?: {
+    readonly mode: SemanticAssetSelection["mode"];
+    readonly distance: number | null;
+    readonly threshold: number | null;
+    readonly generate: boolean;
+    readonly nearest: readonly { readonly url: string; readonly filename: string; readonly distance: number }[];
+  };
 };
 
 export type FinalVerdictResult = {
@@ -52,7 +58,6 @@ export interface FinalResponseUseCase {
 
 export function createFinalResponseUseCase(dependencies: {
   readonly db: ServiceDatabase;
-  readonly verifier: FinalResponseVerifier;
   readonly assetRouter: SemanticAssetRouter;
 }): FinalResponseUseCase {
   return {
@@ -66,41 +71,15 @@ export function createFinalResponseUseCase(dependencies: {
       }
 
       const responseAffect = parseResponseAffectV2(request.responseAffect);
-      const key = verdictCacheKey(request.channelId, request.finalText, validEmotions, responseAffect ?? undefined);
+      if (!responseAffect) return skippedVerdict("missing_response_affect");
+      const key = verdictCacheKey(request.channelId, request.finalText, validEmotions, responseAffect);
       const cached = cachedVerdict(dependencies.db, key, validEmotions);
       if (cached !== undefined) {
         if (!cached) return skippedVerdict("cached_null_verdict");
-        return verdictWithRoutedMedia(dependencies.assetRouter, request.channelId, request.finalText, cached);
+        return verdictWithRoutedMedia(dependencies, request.channelId, request.finalText, cached);
       }
 
-      let selected: VerifierJudgment | null = responseAffect ? { affect: responseAffect } : null;
-      if (!selected) {
-        try {
-          selected = await dependencies.verifier.verify({
-            channelId: request.channelId,
-            finalText: request.finalText,
-            validEmotions,
-          });
-        } catch (error) {
-          console.warn(`[hent-ai-service] verifier error channelId=${request.channelId ?? "unknown"}: ${error instanceof Error ? error.message : String(error)}`);
-          return skippedVerdict("verifier_error");
-        }
-      }
-
-      const emotion = normalizeEmotion(selected?.emotion);
-      const affect = parseResponseAffectV2(selected?.affect);
-      if (!selected || (!affect && (!emotion || !validEmotions.includes(emotion)))) {
-        storeCachedVerdict(dependencies.db, key, null);
-        return skippedVerdict("verifier_emotion_invalid");
-      }
-
-      // Routing is downstream of verification. V2 uses the shared affect vector;
-      // a valid coarse emotion remains optional compatibility data for legacy sets.
-      const result = verdictWithRoutedMedia(dependencies.assetRouter, request.channelId, request.finalText, {
-        ...selected,
-        ...(emotion && validEmotions.includes(emotion) ? { emotion } : {}),
-        ...(affect ? { affect } : {}),
-      });
+      const result = verdictWithRoutedMedia(dependencies, request.channelId, request.finalText, { affect: responseAffect });
       if (!result.verdict) {
         storeCachedVerdict(dependencies.db, key, null);
         return result;
@@ -112,7 +91,7 @@ export function createFinalResponseUseCase(dependencies: {
 }
 
 function verdictWithRoutedMedia(
-  assetRouter: SemanticAssetRouter,
+  dependencies: { readonly db: ServiceDatabase; readonly assetRouter: SemanticAssetRouter },
   channelId: string | undefined,
   finalText: string,
   verdict: FinalVerdict,
@@ -120,9 +99,22 @@ function verdictWithRoutedMedia(
   const emotion = normalizeEmotion(verdict.emotion);
   const affect = parseResponseAffectV2(verdict.affect);
   if (!channelId || (!emotion && !affect)) return skippedVerdict("no_asset_for_emotion");
-  const selection = assetRouter.route({ channelId, ...(emotion ? { emotion } : {}), text: finalText, ...(affect ? { affect } : {}) });
+  const selection = dependencies.assetRouter.route({
+    channelId, ...(emotion ? { emotion } : {}), text: finalText, ...(affect ? { affect } : {}),
+  });
   if (!selection) return skippedVerdict("no_asset_for_emotion");
-  return { verdict: { ...verdict, ...(emotion ? { emotion } : {}), media: serviceMediaFrom(selection.media) } };
+  return {
+    verdict: {
+      ...verdict, ...(emotion ? { emotion } : {}), media: serviceMediaFrom(selection.media),
+      routing: {
+        mode: selection.mode,
+        distance: selection.distance ?? null,
+        threshold: selection.threshold ?? null,
+        generate: selection.generate ?? false,
+        nearest: (selection.nearest ?? []).map(({ media, distance }) => ({ url: media.objectUrl, filename: media.filename, distance })),
+      },
+    },
+  };
 }
 
 function serviceMediaFrom(media: SemanticAssetMedia): ServiceMedia {
@@ -130,7 +122,7 @@ function serviceMediaFrom(media: SemanticAssetMedia): ServiceMedia {
     filename: media.filename,
     contentType: media.contentType,
     url: media.objectUrl,
-    sensitiveMedia: true,
+    sensitiveMedia: false,
     metadata: { storageKey: media.storageKey },
   };
 }

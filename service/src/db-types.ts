@@ -63,13 +63,3 @@ export type StoredSemanticAssetCandidate = {
   semanticTags: unknown;
   semanticVector: unknown;
 };
-
-export type GenerationJob = {
-  id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  request: unknown;
-  result: unknown | null;
-  error: string | null;
-  createdAt: string;
-  updatedAt: string;
-};

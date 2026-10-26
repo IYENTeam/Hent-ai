@@ -1,7 +1,6 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { ServiceDatabase } from "./db.js";
-import { createHentAiServer, listen, type HentAiServerOptions } from "./server.js";
-import { createFinalResponseVerifierFromConfig, loadVerifierProviderConfigFromEnv } from "./verifier.js";
+import { createHentAiServer, listen } from "./server.js";
 
 export type ApiServiceConfig = {
   readonly dbPath: string;
@@ -26,10 +25,8 @@ export function loadApiServiceConfig(env: Env = process.env): ApiServiceConfig {
   return { dbPath, token, port, hostname, assetRoot };
 }
 
-/** API-only composition. It never imports or starts the Discord participant worker. */
 export function createApiService(options: {
   readonly config: ApiServiceConfig;
-  readonly verifier: HentAiServerOptions["verifier"];
   readonly createDatabase?: (path: string) => ServiceDatabase;
   readonly createServer?: typeof createHentAiServer;
   readonly listenServer?: typeof listen;
@@ -40,7 +37,7 @@ export function createApiService(options: {
   return {
     async start() {
       const db = createDatabase(options.config.dbPath);
-      const server = createServer({ db, token: options.config.token, assetRoot: options.config.assetRoot, verifier: options.verifier });
+      const server = createServer({ db, token: options.config.token, assetRoot: options.config.assetRoot });
       try {
         const binding = await listenServer(server, options.config.port, options.config.hostname);
         return {
@@ -60,8 +57,7 @@ export function createApiService(options: {
 
 export async function main(env: Env = process.env): Promise<void> {
   const config = loadApiServiceConfig(env);
-  const verifier = createFinalResponseVerifierFromConfig(loadVerifierProviderConfigFromEnv(env));
-  const service = createApiService({ config, verifier });
+  const service = createApiService({ config });
   const binding = await service.start();
   console.info(JSON.stringify({ event: "hent_ai_api_listening", url: binding.url }));
 }

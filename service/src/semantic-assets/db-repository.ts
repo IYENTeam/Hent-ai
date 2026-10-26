@@ -16,4 +16,8 @@ export class ServiceDatabaseSemanticAssetRepository implements SemanticAssetRepo
       ? this.database.listAssetsForSetEmotion(assetSetId, emotion)
       : this.database.listAssetsForSet(assetSetId);
   }
+
+  revisionForSet(assetSetId: string): string | null {
+    return this.database.assetSetRevision(assetSetId);
+  }
 }

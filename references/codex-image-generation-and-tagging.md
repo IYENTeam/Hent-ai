@@ -45,8 +45,8 @@ After the full set validates:
 2. Back up the service SQLite database and service-manager configuration.
 3. Re-run migration with `--apply --activate`. The migration may resume identical bytes but must refuse a different file at the same destination.
 4. Import the external manifest into the service database. Change only explicitly requested channel mappings, or the single enabled mapping when inference is unambiguous.
-5. Restart the managed Hent-ai service and OpenClaw gateway only when their local configuration is discoverable.
-6. Verify service health, `AffectSpaceV2` routing diagnostics, selected object hash, static response bytes, OpenClaw media handoff, and a real Discord attachment when credentials and a channel are available.
+5. Restart the managed Hent-ai service only when their local configuration is discoverable.
+6. Verify service health, `AffectSpaceV2` routing diagnostics, selected object hash, static response bytes, `hent send` media handoff, and a real Discord attachment when credentials and a channel are available.
 7. Keep the previous asset set, database backup, and service configuration as rollback material.
 
 The terminal state file is `<asset-root-parent>/setup/<set-id>-codex/setup-status.json`. Success requires at least:

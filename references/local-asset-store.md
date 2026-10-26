@@ -24,8 +24,8 @@ For a new Codex-generated set, `npm run setup:affect -- ... --apply` automates t
 4. Back up the live database and service-manager configuration.
 5. Re-run with `--apply --activate`. Existing identical files may resume; different bytes must abort rather than overwrite.
 6. Import the external manifest into the service database using Node.js 22.
-7. Map only intended channels to the new set. Bump the verifier/asset cache-policy version when the affect contract changes so legacy cached verdicts cannot bypass V2.
-8. Change `HENT_AI_ASSET_ROOT`, restart, and verify health, routed filename, routing mode, stored object hash, HTTP response bytes, and a real OpenClaw/Discord message.
+7. Map only intended channels to the new set. Bump the verdict-cache/asset policy version when the affect contract changes so legacy cached verdicts cannot bypass V2.
+8. Change `HENT_AI_ASSET_ROOT`, restart, and verify health, routed filename, routing mode, stored object hash, HTTP response bytes, and a real Discord message sent with `hent send`.
 9. After all checks pass, remove the staged generated pool and runtime manifest entry from the repository. Keep the backed-up DB and previous service configuration for rollback.
 
 Do not copy secrets into scripts or documentation. Read them from the existing service environment when an authenticated local check is necessary.

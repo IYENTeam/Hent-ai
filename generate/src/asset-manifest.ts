@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { updateManifestFile } from "./manifest-update.js";
 
 export interface AssetSet {
   name: string;
@@ -17,6 +18,7 @@ export interface AssetManifest {
 }
 
 const MANIFEST_FILENAME = "manifest.json";
+const loadedManifests = new WeakMap<AssetManifest, string>();
 const SETS_DIR = "sets";
 const SAFE_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 const SAFE_PATH_SEGMENT_RE = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -70,7 +72,9 @@ export async function loadManifest(imageDir: string): Promise<AssetManifest | nu
   const manifestPath = resolve(imageDir, MANIFEST_FILENAME);
   try {
     const raw = await readFile(manifestPath, "utf-8");
-    return JSON.parse(raw) as AssetManifest;
+    const manifest = JSON.parse(raw) as AssetManifest;
+    loadedManifests.set(manifest, JSON.stringify(manifest));
+    return manifest;
   } catch (error) {
     if (isFileNotFoundError(error)) return null;
     throw error;
@@ -78,14 +82,16 @@ export async function loadManifest(imageDir: string): Promise<AssetManifest | nu
 }
 
 export async function saveManifest(imageDir: string, manifest: AssetManifest): Promise<void> {
-  await mkdir(imageDir, { recursive: true });
   const manifestPath = resolve(imageDir, MANIFEST_FILENAME);
-  const tempPath = resolve(
-    imageDir,
-    `${MANIFEST_FILENAME}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  );
-  await writeFile(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
-  await rename(tempPath, manifestPath);
+  const expected = loadedManifests.get(manifest);
+  await updateManifestFile<AssetManifest>(manifestPath, (current) => {
+    if (current && JSON.stringify(current) !== expected && JSON.stringify(current) !== JSON.stringify(manifest)) {
+      throw new Error("Manifest changed since it was loaded; reload and retry the edit");
+    }
+    if (!current && expected) throw new Error("Manifest was removed since it was loaded; reload before saving");
+    return manifest;
+  });
+  loadedManifests.set(manifest, JSON.stringify(manifest));
 }
 
 export function getSetDir(imageDir: string, setId: string): string {
