@@ -210,7 +210,7 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const CONSUMER = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const UINT = /^(0|[1-9]\d{0,15})$/;
-const HERDR_PANE = /^[A-Za-z0-9]{1,16}:p[0-9]{1,9}$/;
+const HERDR_PANE = /^[A-Za-z0-9]{1,16}:p[A-Za-z0-9]{1,16}$/;
 
 // Control characters are rejected in pane targets and cwd (argv safety, no terminal injection).
 const CONTROL = /[\u0000-\u001f\u007f]/;
