@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,21 +26,19 @@ const tempHome = (prefix: string): string => {
   return home;
 };
 
-type ServiceMode = { verdictDelayMs: number; mediaDelayMs: number; body: Uint8Array; sensitive: boolean };
+type ServiceMode = { body: Uint8Array; sensitive: boolean };
 
 const startService = (mode: Partial<ServiceMode> = {}) => {
-  const m: ServiceMode = { verdictDelayMs: 0, mediaDelayMs: 0, body: PNG, sensitive: false, ...mode };
+  const m: ServiceMode = { body: PNG, sensitive: false, ...mode };
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: async (req) => {
       const path = new URL(req.url).pathname;
       if (path === "/v1/final-response/verdict") {
-        await Bun.sleep(m.verdictDelayMs);
         return Response.json({ verdict: { media: { url: "/static/s/happy-1.png", filename: "happy-1.png", contentType: "image/png", sensitiveMedia: m.sensitive } } });
       }
       if (path === "/static/s/happy-1.png") {
-        await Bun.sleep(m.mediaDelayMs);
         return new Response(m.body, { headers: { "content-type": "image/png" } });
       }
       return new Response("nf", { status: 404 });
@@ -99,15 +97,49 @@ test("sensitive media is sent as a spoiler attachment", async () => {
   expect(fake.messages(CH).at(-1)!.attachments.map((a) => a.filename)).toEqual(["SPOILER_happy-1.png"]);
 });
 
-test("a slow verdict plus a slow download share one 2 s budget and the text goes out plain", async () => {
+test("verdict and download share one 2 s deadline and expiration sends plain text", async () => {
+  // Given a real service that starts its media response but does not finish it.
   const { fake, env } = await setup();
-  const url = startService({ verdictDelayMs: 1_200, mediaDelayMs: 1_200 });
-  const started = performance.now();
-  expect(await cmdSend(["--to", CH, "--text", "budget", "--affect", AFFECT], { ...env, HENT_URL: url, HENT_SERVICE_TOKEN: "t" })).toBe(0);
-  const elapsed = performance.now() - started;
-  // Real AbortSignal deadline, so this is wall time: the 2 s budget plus at most 100 ms for the plain send.
-  expect(elapsed).toBeLessThan(2_100);
-  expect(fake.messages(CH).at(-1)!.attachments).toEqual([]);
+  const mediaRequested = Promise.withResolvers<void>();
+  const finishMedia = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      if (new URL(req.url).pathname === "/v1/final-response/verdict") {
+        return Response.json({ verdict: { media: { url: "/static/happy.png", filename: "happy.png", contentType: "image/png" } } });
+      }
+      mediaRequested.resolve();
+      await finishMedia.promise;
+      return new Response(PNG);
+    },
+  });
+  cleanups.push(async () => { finishMedia.resolve(); await server.stop(true); });
+  const nativeTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const budgets: AbortController[] = [];
+  const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+    if (milliseconds !== 2_000) return nativeTimeout(milliseconds);
+    const budget = new AbortController();
+    budgets.push(budget);
+    return budget.signal;
+  });
+  try {
+    // When the one 2000 ms deadline expires after the verdict, during download.
+    const sent = cmdSend(["--to", CH, "--text", "budget", "--affect", AFFECT], {
+      ...env, HENT_URL: `http://127.0.0.1:${server.port}`, HENT_SERVICE_TOKEN: "t",
+    });
+    await mediaRequested.promise;
+    expect(budgets).toHaveLength(1);
+    budgets[0]?.abort();
+
+    // Then no second download budget is created and the real bridge sends plain text.
+    expect(await sent).toBe(0);
+    expect(budgets).toHaveLength(1);
+    expect(fake.messages(CH).at(-1)).toMatchObject({ content: "budget", attachments: [] });
+  } finally {
+    for (const budget of budgets) budget.abort();
+    timeout.mockRestore();
+  }
 });
 
 test("a malformed --affect exits 2 and sends nothing", async () => {
