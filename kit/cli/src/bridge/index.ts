@@ -7,7 +7,6 @@
 // RESUME replays missed events itself. DM channels cannot be backfilled (no channel list to
 // page through), so DMs missed while disconnected without a successful RESUME are lost.
 
-import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { hentHome } from "../config.ts";
@@ -29,6 +28,7 @@ import {
 } from "./journal.ts";
 import { Deliverer, type DeliverDeps } from "./deliver.ts";
 import { ProcessingInbox } from "./inbox.ts";
+import { ChannelSessions } from "./channel-sessions.ts";
 import { type BridgeHooks, startBridgeServer } from "./server.ts";
 import { type KeychainReader, readDiscordToken, ensureBridgeSecret } from "./token.ts";
 
@@ -202,11 +202,11 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   let buffered: NewInboxEvent[] = [];
   let syncChain: Promise<void> = Promise.resolve();
 
-  let deliverer: Deliverer | null = null;
+  const deliverers = new Map<ProcessingInbox, Deliverer>();
   journal.onAppend((event) => {
     events.emit("journaled", event);
     try {
-      deliverer?.onJournaled(event);
+      for (const deliverer of deliverers.values()) void deliverer.onJournaled(event);
       hooks.onJournaled?.(event);
     } catch (error) {
       log("BRIDGE_HOOK_FAILED", { hook: "onJournaled", name: error instanceof Error ? error.name : "error" });
@@ -380,9 +380,28 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   };
 
   const port = opts.port ?? (env.HENT_BRIDGE_PORT ? Number(env.HENT_BRIDGE_PORT) : BRIDGE_DEFAULT_PORT);
-  const inbox = new ProcessingInbox({
-    journal, handled, sessionPath: paths.session, wakePath: join(paths.state, "native-wake.json"), isBridged: allowed, log,
+  const sessions = new ChannelSessions({
+    paths, journal, handled, isBridged: allowed, log, now: clock.now,
+    ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
   });
+  const inbox = sessions.defaultInbox;
+  const syncDeliverers = (): void => {
+    if (opts.deliver?.disabled || stopped) return;
+    for (const lane of sessions.all()) {
+      const existing = deliverers.get(lane);
+      if (existing) { void existing.onSessionSet(); continue; }
+      const deliverer = new Deliverer({
+        inbox: lane, log,
+        ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
+        ...(opts.deliver?.connect ? { connect: opts.deliver.connect } : {}),
+        ...(opts.deliver?.isLive ? { isLive: opts.deliver.isLive } : {}),
+        ...(opts.deliver?.retryMs !== undefined ? { retryMs: opts.deliver.retryMs } : {}),
+        ...(opts.deliver?.reconcileMs !== undefined ? { reconcileMs: opts.deliver.reconcileMs } : {}),
+      });
+      deliverers.set(lane, deliverer);
+      deliverer.start();
+    }
+  };
   const server = startBridgeServer({
     port,
     secret,
@@ -390,9 +409,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     consumers,
     sent,
     handled,
-    inbox,
-    sessionPath: paths.session,
-    ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
+    sessions,
     status: () => ({ gateway: gatewayState, botUserId }),
     discord: () => discord,
     clock,
@@ -400,15 +417,15 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
     hooks: {
       ...hooks,
       onSessionSet: (session) => {
-        deliverer?.onSessionSet();
+        syncDeliverers();
         hooks.onSessionSet?.(session);
       },
       onHandled: (messageId) => {
-        deliverer?.onHandled();
+        for (const deliverer of deliverers.values()) void deliverer.onHandled();
         hooks.onHandled?.(messageId);
       },
       onInboxDrained: () => {
-        deliverer?.onInboxDrained();
+        for (const deliverer of deliverers.values()) void deliverer.onInboxDrained();
         hooks.onInboxDrained?.();
       },
     },
@@ -418,18 +435,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
   const boundPort = server.port ?? port;
   log("BRIDGE_LISTENING", { host: "127.0.0.1", port: boundPort });
   config.start(opts.configPollMs ?? 2_000);
-  if (!opts.deliver?.disabled) {
-    deliverer = new Deliverer({
-      inbox,
-      log,
-      ...(env.CODEX_HOME ? { codexHome: env.CODEX_HOME } : {}),
-      ...(opts.deliver?.connect ? { connect: opts.deliver.connect } : {}),
-      ...(opts.deliver?.isLive ? { isLive: opts.deliver.isLive } : {}),
-      ...(opts.deliver?.retryMs !== undefined ? { retryMs: opts.deliver.retryMs } : {}),
-      ...(opts.deliver?.reconcileMs !== undefined ? { reconcileMs: opts.deliver.reconcileMs } : {}),
-    });
-    deliverer.start();
-  }
+  syncDeliverers();
   void lookForToken();
 
   return {
@@ -446,7 +452,7 @@ export const startBridge = async (opts: StartBridgeOptions = {}): Promise<Bridge
       stopped = true;
       if (tokenTimer) clearTimeout(tokenTimer);
       config.stop();
-      await deliverer?.stop();
+      await Promise.all([...deliverers.values()].map((deliverer) => deliverer.stop()));
       gateway?.stop();
       await server.stop(true);
       await syncChain;

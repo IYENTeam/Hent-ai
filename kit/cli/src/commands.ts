@@ -418,7 +418,7 @@ export const cmdSkip = (args: readonly string[], env: Env = process.env): Promis
 export const cmdSession = (args: readonly string[], env: Env = process.env): Promise<number> => {
   const flags = parseFlags(args, ["configure-codex"]);
   if (flags.positional[0] !== "set") {
-    console.error("usage: hent session set --agent codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID] [--configure-codex]");
+    console.error("usage: hent session set --agent codex --session-id ID --cwd DIR [--pane HERDR_PANE_ID] [--channel CH --model MODEL --effort EFFORT] [--configure-codex]");
     return Promise.resolve(2);
   }
   const agent = flags.values.get("agent");
@@ -433,7 +433,13 @@ export const cmdSession = (args: readonly string[], env: Env = process.env): Pro
     console.error("hent session set: run inside a herdr pane ($HERDR_PANE_ID) or pass --pane");
     return Promise.resolve(2);
   }
-  const body = { agent, sessionId, cwd, pane, ...(flags.bools.has("configure-codex") ? { configureCodex: true } : {}) };
+  const body = {
+    agent, sessionId, cwd, pane,
+    ...(flags.values.has("channel") ? { channelId: flags.values.get("channel") } : {}),
+    ...(flags.values.has("model") ? { model: flags.values.get("model") } : {}),
+    ...(flags.values.has("effort") ? { effort: flags.values.get("effort") } : {}),
+    ...(flags.bools.has("configure-codex") ? { configureCodex: true } : {}),
+  };
   return simpleBridgeCall(env, async (b) => {
     await b.json("POST", BRIDGE_ROUTES.session, body);
     console.log(`SESSION_SET agent=${agent} pane=${pane}`);

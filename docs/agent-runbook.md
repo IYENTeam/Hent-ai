@@ -116,6 +116,34 @@ ledger. Native queue IDs do not make retries idempotent: reconnects reconcile ow
 and only send/skip marks a source message handled. No headless session is started when the pane
 is gone or the native thread is unloaded.
 
+### Per-channel brains
+
+The default `session.json` still owns all bridged channels without an override. To give one
+channel its own model or effort, start a separate interactive Codex thread in a separate herdr
+pane, sharing the bridge's `HENT_HOME` and `CODEX_HOME`, load the normal Hent instructions, then
+register from that thread:
+
+```bash
+hent session set --agent codex --session-id "$CODEX_THREAD_ID" \
+  --cwd "$PWD" --pane "$HERDR_PANE_ID" \
+  --channel 123456789012345678 --model gpt-6.1-sol --effort medium --configure-codex
+```
+
+Use the upgraded CLI: older versions ignore these flags and would replace the default session.
+`kit/brain.sh start/stop` remains the singleton default launcher; do not use it to launch the
+channel brain. Registration applies `model` and `effort` to that dedicated thread through
+`thread/settings/update` before publishing ownership; it does not change the default thread.
+Read the dedicated and default threads through Codex `thread/read` to confirm their live `model`
+and `reasoningEffort` before claiming activation.
+
+Register before adding the channel to the bridge. If already bridged, drain any work fetched by
+the default brain first; a transfer with received work returns `409 session_conflict`.
+Overrides persist in `$HENT_HOME/channel-sessions.json`, with separate
+`state/native-wake-channel-<channelId>.json` files. An unavailable channel brain leaves its work
+pending rather than falling back to the default. Re-register replacements/resumed channel brains.
+Each override requires its own thread and pane. These partitions isolate dispatch, not API
+authorization: all brains still share the local bridge bearer.
+
 ### Per-channel rules
 
 A deployment can give one channel its own operating rules in `~/.hent/channel-rules/<channelId>.md`

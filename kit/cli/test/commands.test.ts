@@ -413,6 +413,36 @@ test("hent session set registers the herdr pane it runs in, takes only --agent c
   expect(JSON.parse(readFileSync(join(env.HENT_HOME!, "session.json"), "utf8"))).toMatchObject({ agent: "codex", pane: "w2:p1" });
 });
 
+test("hent session forwards channel model and effort to the bridge registration", async () => {
+  // Given a local bridge API that records its registration request.
+  const home = tempHome("hent-channel-session-command-");
+  writeFileSync(join(home, "bridge.secret"), "test-secret", { mode: 0o600 });
+  const requests: unknown[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      requests.push(await req.json());
+      return Response.json({});
+    },
+  });
+  cleanups.push(() => server.stop(true));
+
+  // When the CLI registers a dedicated channel thread.
+  const code = await cmdSession([
+    "set", "--agent", "codex", "--session-id", "nitro-thread", "--cwd", "/tmp",
+    "--pane", "w2:p1", "--channel", CH, "--model", "gpt-6.1-sol", "--effort", "medium",
+    "--configure-codex",
+  ], { HENT_HOME: home, HENT_BRIDGE_PORT: String(server.port) });
+
+  // Then the bridge receives all scoped settings, rather than a global registration.
+  expect(code).toBe(0);
+  expect(requests).toEqual([{
+    agent: "codex", sessionId: "nitro-thread", cwd: "/tmp", pane: "w2:p1",
+    channelId: CH, model: "gpt-6.1-sol", effort: "medium", configureCodex: true,
+  }]);
+});
+
 test.each([false, true])("hent session configures the existing Codex thread before registration (rejected=%s)", async (rejected) => {
   const codexHome = tempHome("hent-codex-");
   mkdirSync(join(codexHome, "app-server-control"));
