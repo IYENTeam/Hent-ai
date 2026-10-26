@@ -42,6 +42,7 @@ const ROUTING = {
 };
 
 const startService = (): Service => {
+  const pending = new Set<() => void>();
   let announce: (request: string) => void = () => {};
   const firstRequest = new Promise<string>((resolve) => { announce = resolve; });
   const state: Service = { url: "", requests: [], mode: "media", assets: [], assetStatus: 201, firstRequest };
@@ -53,7 +54,7 @@ const startService = (): Service => {
       state.requests.push(`${req.method} ${path}`);
       announce(`${req.method} ${path}`);
       // A hanging service never answers; the caller's deadline is what ends the wait.
-      if (state.mode === "hang") await new Promise<never>(() => {});
+      if (state.mode === "hang") await new Promise<void>((resolve) => { pending.add(resolve); });
       if (path === "/v1/final-response/verdict") {
         const media = { url: "/static/sets/s/happy-1.png", filename: "happy-1.png", contentType: "image/png", sensitiveMedia: false };
         return Response.json({ verdict: { media, ...(state.routing === undefined ? {} : { routing: state.routing }) } });
@@ -68,7 +69,10 @@ const startService = (): Service => {
     },
   });
   state.url = `http://127.0.0.1:${server.port}`;
-  cleanups.push(() => server.stop(true));
+  cleanups.push(async () => {
+    for (const resolve of pending) resolve();
+    await server.stop(true);
+  });
   return state;
 };
 
@@ -183,6 +187,50 @@ test("hent media --json uses the same fixed base even when the nearest images ch
     "GET /static/sets/s/happy-1.png", "GET /static/sets/s/happy-1.png",
   ]);
   expect(new Uint8Array(readFileSync(basePath))).toEqual(baseBytes);
+});
+
+test("hent media isolates channel references and downloaded media while preserving the global base", async () => {
+  // Given distinct fixed references and the same service-selected filename for two channels.
+  const service = startService();
+  service.routing = ROUTING;
+  const home = tempHome("hent-channel-media-");
+  const globalBase = join(home, "base.png");
+  const channelBase = join(home, "nitro.png");
+  writeFileSync(globalBase, new Uint8Array([...PNG, 1]));
+  writeFileSync(channelBase, new Uint8Array([...PNG, 2]));
+  writeFileSync(join(home, "config.json"), JSON.stringify({ channelBaseImages: { nitro: channelBase } }));
+  const env = { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" };
+
+  // When both channels ask for generation.
+  const nitro = await capture(() => cmdMedia(["--channel", "nitro", "--text", "hello", "--affect", AFFECT, "--json"], env));
+  const original = await capture(() => cmdMedia(["--channel", CH, "--text", "hello", "--affect", AFFECT, "--json"], env));
+
+  // Then each result uses its own reference and download directory.
+  const selected = JSON.parse(nitro.lines[0]!);
+  const fallback = JSON.parse(original.lines[0]!);
+  expect(selected.references).toEqual([channelBase]);
+  expect(fallback.references).toEqual([globalBase]);
+  expect(selected.path.startsWith(join(home, "state", "media", "channel-nitro") + "/")).toBe(true);
+  expect(fallback.path.startsWith(join(home, "state", "media", `channel-${CH}`) + "/")).toBe(true);
+  expect(new Uint8Array(readFileSync(globalBase))).toEqual(new Uint8Array([...PNG, 1]));
+});
+
+test("hent media does not use the global character when a configured channel base is missing", async () => {
+  // Given a channel override that is missing while the global base is valid.
+  const service = startService();
+  service.routing = ROUTING;
+  const home = tempHome("hent-channel-base-missing-");
+  writeFileSync(join(home, "base.png"), PNG);
+  writeFileSync(join(home, "config.json"), JSON.stringify({ channelBaseImages: { nitro: join(home, "missing.png") } }));
+
+  // When that channel asks for generation.
+  const result = await capture(() => cmdMedia(
+    ["--channel", "nitro", "--text", "hello", "--affect", AFFECT, "--json"],
+    { HENT_HOME: home, HENT_URL: service.url, HENT_SERVICE_TOKEN: "t" },
+  ));
+
+  // Then it keeps the selected channel image rather than drawing the global character.
+  expect(JSON.parse(result.lines[0]!)).toMatchObject({ generate: false, references: [], reason: "base_image_unavailable" });
 });
 
 for (const state of ["missing", "directory", "invalid"] as const) {

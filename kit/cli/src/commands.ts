@@ -298,7 +298,7 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env, 
     console.log(asJson ? mediaJson({ path: null, routing, references: [], reason: fetched.reason }) : `NO_MEDIA ${fetched.reason}`);
     return 0;
   }
-  const dir = join(hentHome(env), "state", "media");
+  const dir = join(hentHome(env), "state", "media", `channel-${encodeURIComponent(channelId)}`);
   ensurePrivateDir(dir);
   const out = saveMedia(dir, filename, fetched.bytes);
   if (!asJson) {
@@ -310,7 +310,7 @@ export const cmdMedia = async (args: readonly string[], env: Env = process.env, 
   const references: string[] = [];
   let baseProblem: string | undefined;
   if (routing?.generate === true) {
-    const basePath = join(hentHome(env), "base.png");
+    const basePath = config.channelBaseImages?.[channelId] ?? join(hentHome(env), "base.png");
     try {
       const bytes = readFileSync(basePath);
       if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {

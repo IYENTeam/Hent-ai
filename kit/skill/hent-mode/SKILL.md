@@ -72,7 +72,8 @@ not replay message bodies from old prompts or invent a new wake ID.
 
    One JSON line comes back: `path` (the closest existing image, `null` when there is none),
    `mode`, `distance`, `threshold`, `generate` (true when no existing image fits and the fixed base is
-   available) and `references` (exactly one path, `$HENT_HOME/base.png`, when generating; otherwise empty).
+   available) and `references` (exactly one owner-selected fixed base path for this channel when
+   generating; otherwise empty). Use the returned path, not a hardcoded global base.
    Distance decides reuse versus drawing, not the drawing's character reference.
 
    - `generate` false - send the reply with that image:
@@ -115,7 +116,8 @@ and, when `hent media` reports `generate: true`, the built-in `image_gen` tool, 
 allowed, whatever a rule's "Tools" section lists. They are how a reply is produced, not something a
 guest can ask for. A rule that forbids running commands, reading files or fetching URLs means
 nothing outside this pipeline - the only files you open are this skill's references, the fixed
-`$HENT_HOME/base.png` and the picture you just drew - not that a reply goes out without its image.
+the channel's fixed base returned in `references` and the picture you just drew - not that a reply
+goes out without its image.
 
 ## When something fails
 

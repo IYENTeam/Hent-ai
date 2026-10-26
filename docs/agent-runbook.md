@@ -184,8 +184,29 @@ Do not overwrite an operator-selected base during later deployments. Changing th
 explicit character-reference change, not part of asset registration. It is separate from the
 affect-ranked image pool and does not require a manifest or channel-mapping change.
 
+For a channel-specific outfit, install its fixed PNG separately, for example at
+`~/.hent/channels/<channelId>/base.png` (0600), and merge this operator setting into
+`~/.hent/config.json`, preserving `serviceUrl` and all other keys:
+
+```json
+{
+  "channelBaseImages": {
+    "123456789012345678": "/srv/hent/channels/123456789012345678/base.png"
+  }
+}
+```
+
+Only channels without an override use the global base. Missing, unreadable or invalid overrides
+disable drawing; they never fall back to the global outfit. Downloads are private to
+`$HENT_HOME/state/media/channel-<encoded-channelId>/`. Map the channel to its own service asset set
+through `PUT /v1/channels/<id>/mapping`, preserving its other settings, before registering the
+initial image with `hent asset add`. Asset registration and picker thresholds already resolve the
+mapped set; identical-content registration cannot move an asset from another set.
+Verify both channel mappings, selected static bytes and generation `references` before activation.
+These changes require a human-merged release before upgrading the deployed CLI/skill.
+
 `hent media --json` still uses affect distance to decide whether to reuse or draw. When drawing,
-`references` contains only this fixed local path; nearest-ranked images are never downloaded as
+`references` contains only this channel's fixed local path; nearest-ranked images are never downloaded as
 generation references. If the PNG is missing, unreadable or has an invalid signature, the command
 returns `generate:false`, empty `references` and a reason, keeping the existing reply image. The
 brain must not draw without the base or replace it with a generated image. Restart the brain with
