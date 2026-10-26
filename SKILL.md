@@ -1,6 +1,6 @@
 ---
 name: hent-ai
-description: "Generate, pixel-tag, migrate, and operate Hent-ai character image pools with VisualAffectV2 nearest-neighbor routing. Use when creating character images, changing emotion routing, moving assets to local storage, importing a set, or validating OpenClaw media delivery."
+description: "Generate, pixel-tag, migrate, and operate Hent-ai character image pools with VisualAffectV2 nearest-neighbor routing. Use when creating character images, changing emotion routing, moving assets to local storage, importing a set, or validating media delivered through `hent send`."
 ---
 
 # Hent-ai Affect Assets
@@ -38,7 +38,7 @@ References and channels are optional and repeatable. Without `--apply`, perform 
 4. Bind the tag to the image SHA-256, model, timestamp, and prompt version. Treat tags as immutable; regenerate a tag when pixels change.
 5. Compile and validate the set, then run `affect-store` without `--apply`. Review file count, bytes, checksum, and target before applying.
 6. Back up the live SQLite database and service configuration. Copy to the external store, import the manifest, change only intended channel mappings, then switch `HENT_AI_ASSET_ROOT` and restart the service.
-7. Verify unit/type tests, API routing diagnostics, exact media bytes, and a real local OpenClaw/Discord response. Keep the source until all checks pass; remove it from the repo only after the external copy is hash-verified.
+7. Verify unit/type tests, API routing diagnostics, exact media bytes, and a real Discord reply sent by a `hent-mode` session. Keep the source until all checks pass; remove it from the repo only after the external copy is hash-verified.
 
 If tagging reveals weak coverage of an affect region, report it and generate additional images with approval. Never repair sparse coverage by assigning emotions that are not visible.
 
@@ -83,7 +83,7 @@ count, byte count, and hashes. After activation:
 
 1. Run `node scripts/verify-affect-assets.mjs <asset-root> <set-id>`.
 2. Run `node scripts/release-gate.mjs`; this includes the repository suites,
-   external corpus verification, and isolated local OpenClaw E2E.
+   and external corpus verification.
 3. Confirm the restarted API and ambient worker are healthy and that a real
    Discord response contains the selected image with exact expected bytes.
 4. Confirm the previous asset root, database backup, and service configuration

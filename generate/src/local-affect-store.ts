@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { AFFECT_SPACE_VERSION, VISUAL_AFFECT_SCHEMA_VERSION, parseVisualAffectV2 } from "../../shared/affect.js";
 import { VISUAL_AFFECT_COLLECTION_SCHEMA_VERSION, type VisualAffectCollectionV2 } from "./affect-tags.js";
+import { updateManifestFile } from "./manifest-update.js";
 
 type ManifestSet = {
   readonly name?: string;
@@ -103,17 +104,6 @@ async function copyExclusiveOrResume(source: string, target: string, expectedHas
   if (await sha256(target) !== expectedHash) throw new Error(`Copied asset hash mismatch: ${target}`);
 }
 
-async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp-${process.pid}`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 export async function migrateAffectAssetsToLocalStore(options: {
   readonly sourceRoot: string;
   readonly sourceSetId: string;
@@ -175,12 +165,16 @@ export async function migrateAffectAssetsToLocalStore(options: {
       const source = join(sourceRoot, "sets", sourceSetId, filename);
       await copyExclusiveOrResume(source, join(targetRoot, "sets", targetSetId, filename), collection.items[filename]!.source!.imageSha256);
     }
-    const nextManifest: AssetManifest = {
-      ...targetManifest,
-      ...(options.activate ? { activeSet: targetSetId } : {}),
-      sets: { ...(targetManifest.sets ?? {}), [targetSetId]: targetSet },
-    };
-    await writeJsonAtomic(manifestPath, nextManifest);
+    await updateManifestFile<AssetManifest>(manifestPath, (latest) => {
+      if (latest?.sets?.[targetSetId] && JSON.stringify(latest.sets[targetSetId]) !== JSON.stringify(targetSet)) {
+        throw new Error(`External manifest already contains a different set: ${targetSetId}`);
+      }
+      return {
+        ...latest,
+        ...(options.activate ? { activeSet: targetSetId } : {}),
+        sets: { ...(latest?.sets ?? {}), [targetSetId]: targetSet },
+      };
+    });
   }
 
   return {

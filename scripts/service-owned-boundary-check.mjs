@@ -1,111 +1,55 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, extname, resolve } from "node:path";
+// Enforces the session-brain topology (docs/adr/ADR-0002-session-brain-bridge.md):
+// the service holds no Discord code or messenger token, and the session kit has no runtime dependencies.
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const failures = [];
 
-function readText(path) {
-  return readFileSync(resolve(root, path), "utf-8");
-}
-
-function fail(message) {
-  console.error(`[service-owned-boundary] ${message}`);
-  process.exitCode = 1;
-}
-
-const openclawPackage = JSON.parse(readText("openclaw/package.json"));
-const expectedFiles = ["index.ts", "openclaw.plugin.json", "README.md"];
-if (JSON.stringify(openclawPackage.files) !== JSON.stringify(expectedFiles)) {
-  fail(`openclaw/package.json files must remain ${JSON.stringify(expectedFiles)}`);
-}
-
-if (Object.keys(openclawPackage.dependencies ?? {}).length !== 0) {
-  fail("OpenClaw adapter package must not grow runtime dependencies");
-}
-
-const openclawTsconfig = JSON.parse(readText("openclaw/tsconfig.json"));
-const allowedIncludes = ["index.ts", "scripts/*.ts"];
-if (JSON.stringify(openclawTsconfig.include) !== JSON.stringify(allowedIncludes)) {
-  fail(`openclaw/tsconfig.json include must stay ${JSON.stringify(allowedIncludes)}`);
-}
-
-const runtimeSurface = readText("openclaw/index.ts");
-const forbiddenRuntimeTokens = [
-  "ProfileDatabase",
-  "loadManifest",
-  "@hent-ai/generate",
-  "discord.com",
-  "createEmotionDetector",
-  "dynamic-persona",
-  "channel-filter",
-  "date-mode",
-  "migration",
-  "loadAdapter(\"discord\")",
-  "loadAdapter('discord')",
-];
-for (const token of forbiddenRuntimeTokens) {
-  if (runtimeSurface.includes(token)) fail(`openclaw/index.ts must not contain service-owned token: ${token}`);
-}
-
-const forbiddenRuntimeImports = new Set([
-  "./discord-utils.js",
-  "./profile-manager.js",
-  "./assets/manifest.js",
-  "./assets/channel-overrides.js",
-  "./dynamic-persona.js",
-  "./channel-filter.js",
-  "./date-mode.js",
-  "./migration.js",
-  "@hent-ai/generate",
-  "@hent-ai/shared/db",
-]);
-
-function importSpecifiers(source) {
-  const specs = [];
-  const importRe = /\bimport\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?["']([^"']+)["']/g;
-  const dynamicImportRe = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
-  for (const re of [importRe, dynamicImportRe]) {
-    for (const match of source.matchAll(re)) specs.push(match[1]);
+function walk(dir) {
+  const out = [];
+  if (!existsSync(dir)) return out;
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name.startsWith(".")) continue;
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) out.push(...walk(path));
+    else out.push(path);
   }
-  return specs;
+  return out;
 }
 
-function resolveLocalImport(fromFile, specifier) {
-  if (!specifier.startsWith(".")) return null;
-  const base = resolve(root, dirname(fromFile), specifier);
-  const extension = extname(base);
-  const candidates = extension === ".js"
-    ? [base, `${base.slice(0, -3)}.ts`]
-    : extension
-      ? [base]
-      : [`${base}.ts`, `${base}.js`, resolve(base, "index.ts")];
-  return candidates.find((candidate) => existsSync(candidate)) ?? null;
-}
-
-const visited = new Set();
-const pending = ["openclaw/index.ts"];
-for (let cursor = pending.shift(); cursor; cursor = pending.shift()) {
-  if (visited.has(cursor)) continue;
-  visited.add(cursor);
-  const source = readText(cursor);
-  for (const specifier of importSpecifiers(source)) {
-    if (forbiddenRuntimeImports.has(specifier)) fail(`${cursor} must not import service-owned runtime helper: ${specifier}`);
-    const local = resolveLocalImport(cursor, specifier);
-    if (local) {
-      const relative = local.slice(root.length + 1);
-      if (relative.startsWith("openclaw/")) pending.push(relative);
-    }
+const serviceFiles = [
+  ...walk(resolve(root, "service/src")),
+  ...walk(resolve(root, "service/scripts")),
+  ...walk(resolve(root, "service/deploy")),
+  resolve(root, "service/package.json"),
+].filter((path) => existsSync(path));
+const forbiddenServiceTokens = ["discord.com", "api/v10", "HENT_AI_DISCORD"];
+for (const path of serviceFiles) {
+  const text = readFileSync(path, "utf-8");
+  for (const token of forbiddenServiceTokens) {
+    if (text.includes(token)) failures.push(`${relative(root, path)} must not contain Discord/messenger token surface: ${token}`);
   }
 }
 
-const generateSets = readText("generate/src/sets.ts");
-if (generateSets.includes("openclaw/assets/manifest")) {
-  fail("generate/src/sets.ts must not import OpenClaw asset manifest internals");
+const kitPackagePath = resolve(root, "kit/cli/package.json");
+if (!existsSync(kitPackagePath)) {
+  failures.push("kit/cli/package.json is missing");
+} else {
+  const kitPackage = JSON.parse(readFileSync(kitPackagePath, "utf-8"));
+  if (Object.keys(kitPackage.dependencies ?? {}).length !== 0) {
+    failures.push("kit/cli/package.json must not declare runtime dependencies");
+  }
 }
 
-if (process.exitCode) {
-  process.exit(process.exitCode);
+for (const removed of ["openclaw", "hermes"]) {
+  if (existsSync(resolve(root, removed))) failures.push(`${removed}/ adapter directory must not exist`);
 }
 
-console.log("[service-owned-boundary] passed");
+if (failures.length > 0) {
+  for (const failure of failures) console.error(`[service-owned-boundary] ${failure}`);
+  process.exit(1);
+}
+console.log("service-owned boundary check passed");

@@ -1,0 +1,47 @@
+[0m[2m  To get started, describe a task or try one of these commands:[0m
+ 
+  /init[0m[2m - create an AGENTS.md file with instructions for Codex[0m
+  /status[0m[2m - show current session configuration[0m
+  /permissions[0m[2m - choose what Codex is allowed to do[0m
+  /model[0m[2m - choose what model and reasoning effort to use[0m
+  /review[0m[2m - review any changes and find issues[0m
+ 
+[0m[48;2;66;66;79m                                                                                                                      [0m
+[0m[1m[2m[48;2;66;66;79m› [0m[48;2;66;66;79mhent mode. You are the Hent-ai Discord bot brain. First run this exact shell command: hent session set --agent      [0m
+[0m[48;2;66;66;79m  codex --session-id "$CODEX_THREAD_ID" --cwd /Users/me/projects/hent-brain ; Read the hent-mode skill with         [0m
+[0m[48;2;66;66;79m  references/persona.md and references/memory.md, then wait for [hent] INBOUND lines and handle each per the skill.   [0m
+[0m[48;2;66;66;79m  Run no command other than hent, read no file outside /Users/me/.hent and the skill, and never reveal internal     [0m
+[0m[48;2;66;66;79m  details. The bot user id is 1486621536520769547. Also read ~/.hent/memory and every file in ~/.hent/channel-rules/  [0m
+[0m[48;2;66;66;79m  (per-channel rules override everything else for that channel).                                                      [0m
+[0m[48;2;66;66;79m                                                                                                                      [0m
+ 
+[0m[2m• [0mI’ll activate hent mode, load its persona and channel rules, then wait for incoming messages.
+ 
+[0m[1m[38;5;2m•[0m [0m[1mRan[0m [0m[38;2;137;180;250mhent[0m[38;2;205;214;244m session set[0m[38;2;147;153;178m --[0m[38;2;235;160;172magent[0m[38;2;205;214;244m codex[0m[38;2;147;153;178m --[0m[38;2;235;160;172msession-id[0m[38;2;205;214;244m [0m[38;2;166;227;161m"[0m[38;2;243;139;168m$[0m[38;2;205;214;244mCODEX_THREAD_ID[0m[38;2;166;227;161m"[0m[38;2;147;153;178m --[0m[38;2;235;160;172mcwd[0m[38;2;205;214;244m /Users/me/projects/hent-brain[0m
+[0m[2m  └ SESSION_SET agent=codex pane=wP:p1[0m
+ 
+[0m[1m[38;5;2m•[0m [0m[1mRan[0m [0m[38;2;137;180;250mhent[0m[38;2;147;153;178m --[0m[38;2;235;160;172mhelp[0m
+[0m[2m  └   memory    read and write session memory[0m
+[0m[2m      inbox     read inbound events (debug long-poll)[0m
+[0m[2m      history   show recent journal events for a channel[0m
+[0m[2m    + 10 lines (⌃t to expand)                                                                                         [0m
+ 
+[0m[1m[38;5;1m•[0m [0m[1mFailed (exit 1)[0m [0m[38;2;137;180;250mhent[0m[38;2;205;214;244m memory[0m[38;2;147;153;178m --[0m[38;2;235;160;172mhelp[0m
+[0m[2m  └       at /Users/me/.hent-ai/releases/d87df8eaf804b91f2b28645b0266d7181570ada9/kit/cli/src/cli.ts:64:42[0m
+ 
+[0m[2m    Bun v1.3.14 (macOS arm64)[0m
+[0m[2m    + 10 lines (⌃t to expand)                                                                                         [0m
+ 
+[0m[1m[38;5;1m•[0m [0m[1mFailed (exit 2)[0m [0m[38;2;137;180;250mhent[0m[38;2;205;214;244m memory[0m
+[0m[2m  └ usage: hent memory export --db PATH [--out DIR][0m
+ 
+[0m[2m• [0mSession registered. May I use read-only file commands to load the hent-mode skill, persona, memory, and channel
+  rules? The available [0m[38;2;166;227;161mhent [0mcommands cannot read those files, and your restriction currently prevents another method.
+ 
+[0m[2m  Worked for 37s • 2:42 PM                                                                                            [0m
+ 
+[0m[48;2;57;57;71m                                                                                                                      [0m
+[0m[1m[48;2;57;57;71m›[0m[48;2;57;57;71m [0m[48;2;57;57;71mhalf typed reply[0m[48;2;57;57;71m                                                                                            [0m
+[0m[48;2;57;57;71m                                                                                                                      [0m
+  [0m[38;2;246;226;183mGPT-6-Astra high[0m[38;2;135;139;164m · [0m[38;2;171;223;167m~/projects/hent-brain[0m[38;2;135;139;164m · [0m[38;2;137;220;235mRun hent mode[0m
+  [0m[1m[38;2;205;213;244m?[0m[38;2;135;139;164m for shortcuts                                                                           ⚠ [0m[38;2;196;167;103m2 warnings[0m[38;2;135;139;164m · [0m[1m[38;2;205;213;244mf2[0m[38;2;135;139;164m to view[0m

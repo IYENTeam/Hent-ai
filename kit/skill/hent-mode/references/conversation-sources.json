@@ -1,0 +1,2032 @@
+[
+  {
+    "path": "docs/channel-profiles.md",
+    "line": 11,
+    "text": "| Channel policy | Hent-ai service | 채널별 활성화, date-mode, private-mode, 민감 미디어 정책 |"
+  },
+  {
+    "path": "docs/channel-profiles.md",
+    "line": 41,
+    "text": "- `hentAiService.timeoutMs`: 선택. 요청 timeout이며 기본값은 15000ms입니다."
+  },
+  {
+    "path": "docs/channel-profiles.md",
+    "line": 67,
+    "text": "Adapter failure behavior is non-blocking. Timeout, network error, HTTP error, `null`, or malformed media leaves the original payload unchanged so OpenClaw text continues."
+  },
+  {
+    "path": "docs/channel-profiles.md",
+    "line": 81,
+    "text": "Discord threads need their own mapping when OpenClaw delivers replies from a thread session. The adapter sends the active conversation/channel id to the service, so a parent-channel mapping does not automatically cover thread ids."
+  },
+  {
+    "path": "openclaw/skills/private-mode.SKILL.md",
+    "line": 48,
+    "text": "- Only execute when the user explicitly requests a mode change."
+  },
+  {
+    "path": "openclaw/skills/private-mode.SKILL.md",
+    "line": 49,
+    "text": "- The asset-set change is per-channel and persists in `hentai.db` across bot restarts."
+  },
+  {
+    "path": "openclaw/skills/private-mode.SKILL.md",
+    "line": 50,
+    "text": "- If the requested set doesn't exist in the manifest, the plugin silently falls back to the default. Warn the user if you suspect the set isn't set up yet."
+  },
+  {
+    "path": "openclaw/skills/private-mode.SKILL.md",
+    "line": 51,
+    "text": "- Permission check: if `allowedUsers` is configured in the plugin config, verify the requesting user is in the list before executing."
+  },
+  {
+    "path": "openclaw/skills/profile-switch.SKILL.md",
+    "line": 57,
+    "text": "- Only execute when the user explicitly requests a profile change."
+  },
+  {
+    "path": "openclaw/skills/profile-switch.SKILL.md",
+    "line": 58,
+    "text": "- The change is per-channel and persists across bot restarts (stored in SQLite)."
+  },
+  {
+    "path": "openclaw/skills/profile-switch.SKILL.md",
+    "line": 59,
+    "text": "- If the requested profile doesn't exist, the script exits with an error. Inform the user."
+  },
+  {
+    "path": "openclaw/skills/profile-switch.SKILL.md",
+    "line": 60,
+    "text": "- Permission check: if `allowedUsers` is configured in the plugin config, verify the requesting user is in the list before executing."
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 49,
+    "text": "export function parseDiscordParticipantAllowlist(value: string | undefined): DiscordParticipantStartupConfig {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 50,
+    "text": "  if (value === undefined) return disabled(\"HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST is required\");"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 51,
+    "text": "  if (value.length === 0) return disabled(\"HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST must not be empty\");"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 52,
+    "text": "  const allowlist: DiscordParticipantScope[] = []; const scopes = new Set<string>();"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 53,
+    "text": "  for (const pair of value.split(\",\")) {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 54,
+    "text": "    const parsed = scopePair(pair);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 55,
+    "text": "    if (!parsed) return disabled(\"HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST must be comma-separated guildId:channelId Snowflake pairs\");"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 56,
+    "text": "    const key = `${parsed.guildId}:${parsed.channelId}`;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 57,
+    "text": "    if (scopes.has(key)) return disabled(\"HENT_AI_DISCORD_PARTICIPANT_ALLOWLIST must not contain duplicate guildId:channelId pairs\");"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 58,
+    "text": "    scopes.add(key); allowlist.push(parsed);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 59,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 60,
+    "text": "  return { enabled: true, allowlist, diagnostics: [] };"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 61,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 63,
+    "text": "export function isDiscordParticipantScopeAllowed(startup: DiscordParticipantStartupConfig, scope: DiscordParticipantScope, channelMapping: DiscordParticipantChannelMapping | null): boolean {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 64,
+    "text": "  return startup.enabled && channelMapping?.enabled === true && startup.allowlist.some((candidate) => candidate.guildId === scope.guildId && candidate.channelId === scope.channelId);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 65,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 67,
+    "text": "export function readAmbientSettings(settingsJson: string | null): AmbientSettings {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 68,
+    "text": "  if (settingsJson === null) return {};"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 69,
+    "text": "  let settings: unknown;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 70,
+    "text": "  try {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 71,
+    "text": "    settings = JSON.parse(settingsJson);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 72,
+    "text": "  } catch {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 73,
+    "text": "    return {};"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 74,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 75,
+    "text": "  if (settings === null || typeof settings !== \"object\" || Array.isArray(settings)) return {};"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 76,
+    "text": "  const value = settings as Record<string, unknown>;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 77,
+    "text": "  const aliases = addressAliases(value.ambientAddressAliases);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 78,
+    "text": "  return {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 79,
+    "text": "    ...(positiveInteger(value.ambientBudgetPerHour) ? { ambientBudgetPerHour: value.ambientBudgetPerHour } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 80,
+    "text": "    ...(unitInterval(value.ambientConfidenceFloor) ? { ambientConfidenceFloor: value.ambientConfidenceFloor } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 81,
+    "text": "    ...(minimumInteger(value.ambientIdleDecayTauMs, 60_000) ? { ambientIdleDecayTauMs: value.ambientIdleDecayTauMs } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 82,
+    "text": "    ...(minimumInteger(value.ambientPressureTauMs, 60_000) ? { ambientPressureTauMs: value.ambientPressureTauMs } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 83,
+    "text": "    ...(typeof value.ambientPityEnabled === \"boolean\" ? { ambientPityEnabled: value.ambientPityEnabled } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 84,
+    "text": "    ...(aliases.length > 0 ? { ambientAddressAliases: aliases } : {}),"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 85,
+    "text": "  };"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 86,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 87,
+    "text": ""
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 88,
+    "text": "function addressAliases(value: unknown): readonly string[] {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 89,
+    "text": "  if (!Array.isArray(value)) return [];"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 90,
+    "text": "  return [...new Set(value"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 91,
+    "text": "    .filter((entry): entry is string => typeof entry === \"string\")"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 92,
+    "text": "    .map((entry) => entry.trim())"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 93,
+    "text": "    .filter((entry) => entry.length > 0 && entry.length <= 64))]"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 94,
+    "text": "    .slice(0, 16);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-contracts.ts",
+    "line": 95,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 43,
+    "text": "const DEFAULT_AMBIENT_DRIVE = 0.5;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 44,
+    "text": "const RECENT_CONTEXT_LIMIT = 20;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 45,
+    "text": "const ROSTER_FRESHNESS_MS = 5 * 60_000;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 71,
+    "text": "      const afterRosterMapping = options.serviceDb.getChannelMapping(options.scope.channelId);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 72,
+    "text": "      if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterRosterMapping)) return \"disabled\";"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 73,
+    "text": "      if (!options.store.persistMembershipSnapshot(options.scope, roster.memberIds, roster.complete, roster.observedAtMs, input.fence)) return \"lease_unavailable\";"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 74,
+    "text": ""
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 75,
+    "text": "      const beforeProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 76,
+    "text": "      if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, beforeProviderMapping)) return \"disabled\";"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 87,
+    "text": "          context: { archiveSummaries: context.archiveSummaries, relationships: context.relationships },"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 99,
+    "text": "      const afterProviderMapping = options.serviceDb.getChannelMapping(options.scope.channelId);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 100,
+    "text": "      if (!isDiscordParticipantScopeAllowed(options.startup, options.scope, afterProviderMapping)) return \"disabled\";"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 101,
+    "text": "      if (appraisal.kind === \"unavailable\") return \"provider_unavailable\";"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 102,
+    "text": "      if (appraisal.kind === \"valid\" && appraisal.proposal.confidence < (ambientSettings.ambientConfidenceFloor ?? 0.7)) {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 103,
+    "text": "        appraisal = { kind: \"invalid\", diagnostic: \"provider confidence was below threshold\" };"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 104,
+    "text": "      }"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 105,
+    "text": "      if (appraisal.kind === \"valid\" && !relationshipTargetsAuthorized(appraisal.proposal.relationshipProposals, context.transcript, roster)) {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 106,
+    "text": "        appraisal = { kind: \"invalid\", diagnostic: \"relationship target was not authenticated by transcript or roster\" };"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 107,
+    "text": "      }"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 127,
+    "text": "      const planned = decision.shouldSpeak && !work.observeOnly && bubbles !== null;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 170,
+    "text": "function loadContext(db: ServiceDatabase, scope: Scope, eventId: string, now: number): { transcript: readonly DiscordInboundMessage[]; event: DiscordInboundMessage; archiveSummaries: readonly string[]; relationships: readonly RelationshipContext[] } {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 171,
+    "text": "  const scopeId = `discord:${scope.guildId}:${scope.channelId}`;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 172,
+    "text": "  const rows = db.db.prepare(`SELECT message_id,text,event_ts,author_role,metadata_json FROM conversation_raw_events"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 173,
+    "text": "    WHERE scope_id=? ORDER BY event_ts DESC,id DESC LIMIT ?`).all(scopeId, RECENT_CONTEXT_LIMIT) as RawRow[];"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 174,
+    "text": "  const transcript = rows.reverse().map((row) => inbound(row, scope));"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 201,
+    "text": "function relationshipTargetsAuthorized("
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 202,
+    "text": "  proposals: readonly { readonly userId: string }[],"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 203,
+    "text": "  transcript: readonly DiscordInboundMessage[],"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 204,
+    "text": "  roster: DiscordMembershipSnapshot,"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 205,
+    "text": "): boolean {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 206,
+    "text": "  const authenticated = new Set([...transcript.map((entry) => entry.authorId), ...roster.memberIds]);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 207,
+    "text": "  return proposals.every((proposal) => authenticated.has(proposal.userId));"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 208,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 214,
+    "text": "    .all(scopeId, new Date(now - 600_000).toISOString(), new Date(now).toISOString()) as { event_ts: string; author_role: string; metadata_json: string }[];"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 231,
+    "text": "function budgetAvailable(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): boolean {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 232,
+    "text": "  if (!Number.isInteger(limit) || limit <= 0) return false;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 233,
+    "text": "  return budgetRemaining(store, scope, limit, now) > 0;"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 234,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 235,
+    "text": "function budgetRemaining(store: AdaptiveAmbientStore, scope: Scope, limit: number, now: number): number {"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 236,
+    "text": "  const current = store.budget(scope, BUDGET_KEY); const windowStartMs = hourStart(now);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 237,
+    "text": "  return !current || current.windowStartMs !== windowStartMs ? limit : Math.max(0, limit - current.count);"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 238,
+    "text": "}"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 239,
+    "text": "function nextBudget(store: AdaptiveAmbientStore, scope: Scope, now: number) { const windowStartMs = hourStart(now); const current = store.budget(scope, BUDGET_KEY); return { key: BUDGET_KEY, count: current?.windowStartMs === windowStartMs ? current.count + 1 : 1, windowStartMs }; }"
+  },
+  {
+    "path": "service/src/adaptive-ambient-runtime.ts",
+    "line": 240,
+    "text": "function hourStart(now: number): number { return Math.floor(now / 3_600_000) * 3_600_000; }"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 12,
+    "text": "const DEFAULT_DRIVE = 0.5;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 13,
+    "text": "export const IDLE_DECAY_TAU_MS = 2 * 3_600_000;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 14,
+    "text": "export const PRESSURE_TAU_MS = 30 * 60_000;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 15,
+    "text": "const ROSTER_FRESHNESS_MS = 5 * 60 * 1000;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 61,
+    "text": "export function isExplicitAmbientAddress("
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 62,
+    "text": "  message: Pick<DiscordInboundMessage, \"mentions\" | \"replyTo\"> & Partial<Pick<DiscordInboundMessage, \"content\">>,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 63,
+    "text": "  botUserId: string,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 64,
+    "text": "  addressAliases: readonly string[] = [],"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 65,
+    "text": "): boolean {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 66,
+    "text": "  if (message.mentions.includes(botUserId) || message.replyTo?.authorId === botUserId) return true;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 67,
+    "text": "  const content = message.content?.trimStart().toLocaleLowerCase(\"en-US\") ?? \"\";"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 68,
+    "text": "  return addressAliases.some((alias) => {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 69,
+    "text": "    const normalized = alias.trim().toLocaleLowerCase(\"en-US\");"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 70,
+    "text": "    if (!normalized) return false;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 71,
+    "text": "    const candidates = /[가-힣]$/u.test(normalized) ? [normalized, `${normalized}아`, `${normalized}야`] : [normalized];"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 72,
+    "text": "    return candidates.some((candidate) => {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 73,
+    "text": "      if (!content.startsWith(candidate)) return false;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 74,
+    "text": "      const remainder = content.slice(candidate.length);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 75,
+    "text": "      return remainder.length === 0 || /^[\\s,!?~.…]/u.test(remainder);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 76,
+    "text": "    });"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 77,
+    "text": "  });"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 78,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 80,
+    "text": "export function calculateAmbientEvidenceWeight(input: AmbientEvidenceInput): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 81,
+    "text": "  if (isExplicitAmbientAddress(input.message, input.botUserId, input.addressAliases)) return 1;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 82,
+    "text": "  if (!isFreshCompleteRoster(input.roster, input.nowMs)) return 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 83,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 84,
+    "text": "  const activeHumanCount = new Set(input.activeHumanIds).size;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 85,
+    "text": "  if (activeHumanCount >= 2) return 0.5;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 86,
+    "text": "  return activeHumanCount === 1 ? 0.25 : 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 87,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 89,
+    "text": "export function applyAmbientIdleDecay(drive: number, updatedAtMs: number, nowMs: number, tauMs: number): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 90,
+    "text": "  if (!Number.isFinite(updatedAtMs) || !Number.isFinite(nowMs) || !Number.isFinite(tauMs) || tauMs <= 0) return drive;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 91,
+    "text": "  const dtMs = nowMs - updatedAtMs;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 92,
+    "text": "  if (!Number.isFinite(dtMs) || dtMs <= 0) return drive;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 93,
+    "text": "  return Math.min(1, Math.max(0, DEFAULT_DRIVE + (drive - DEFAULT_DRIVE) * Math.exp(-dtMs / tauMs)));"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 94,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 96,
+    "text": "export function applyAmbientPressure("
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 97,
+    "text": "  state: Pick<AmbientState, \"pressure\" | \"pressureUpdatedAtMs\"> | null,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 98,
+    "text": "  appraisal: AmbientAppraisalParseResult,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 99,
+    "text": "  nowMs: number,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 100,
+    "text": "  tauMs = PRESSURE_TAU_MS,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 101,
+    "text": "): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 102,
+    "text": "  const pressure = applyAmbientPressureDecay(state?.pressure ?? 0, state?.pressureUpdatedAtMs ?? null, nowMs, tauMs);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 103,
+    "text": "  if (appraisal.kind !== \"valid\") return pressure;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 104,
+    "text": "  const silenceRequest = appraisal.proposal.silenceRequest;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 105,
+    "text": "  if (silenceRequest?.present !== true) return pressure;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 106,
+    "text": "  return clampUnitInterval(pressure + silenceRequestIntensity(silenceRequest.intensity) * appraisal.proposal.confidence) ?? pressure;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 107,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 109,
+    "text": "export function calculateNextAmbientDrive(previousState: AmbientState | null, desiredDrive: number): number | null {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 110,
+    "text": "  if (!isUnitInterval(desiredDrive)) return null;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 111,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 112,
+    "text": "  const previousDrive = previousState === null ? DEFAULT_DRIVE : previousState.drive;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 113,
+    "text": "  if (!isUnitInterval(previousDrive)) return null;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 114,
+    "text": "  return clampUnitInterval(previousDrive * 0.75 + desiredDrive * 0.25);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 115,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 117,
+    "text": "export function calculateAmbientProbability(input: AmbientProbabilityInput): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 118,
+    "text": "  if (input.decision !== \"speak\" || !input.validChunks) return 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 119,
+    "text": "  if (!isUnitInterval(input.nextDrive) || !isUnitInterval(input.confidence) || !isUnitInterval(input.evidenceWeight)) return 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 120,
+    "text": "  return clampUnitInterval(input.nextDrive * input.confidence * input.evidenceWeight) ?? 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 121,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 168,
+    "text": "  const opportunity = proposal.decision === \"speak\" && validChunks && proposal.confidence >= (input.confidenceFloor ?? 0.7) && !input.observeOnly;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 170,
+    "text": "  const draw = stableAmbientDraw(scopeId(input.roster), input.eventId);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 171,
+    "text": "  const shouldSpeak = probability > 0 && draw < probability;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 200,
+    "text": "function applyAmbientPityBoost(baseProbability: number, state: AmbientStateWithStreaks | null, enabled: boolean): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 201,
+    "text": "  if (!enabled || baseProbability <= 0) return baseProbability;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 202,
+    "text": "  const skipStreak = ambientStreak(state?.skipStreak);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 203,
+    "text": "  const speakStreak = ambientStreak(state?.speakStreak);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 204,
+    "text": "  let probability = 1 - (1 - baseProbability) ** (1 + skipStreak);"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 205,
+    "text": "  if (speakStreak >= Math.floor(1 / baseProbability)) probability *= 0.5;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 206,
+    "text": "  return clampUnitInterval(probability) ?? 0;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 207,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 220,
+    "text": "function invalidDecision(input: AmbientDecisionInput, evidenceWeight: number, diagnostic: string): AmbientDecisionResult {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 221,
+    "text": "  return {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 222,
+    "text": "    audit: {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 223,
+    "text": "      eventId: input.eventId,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 224,
+    "text": "      scope: input.roster.scope,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 225,
+    "text": "      proposal: null,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 226,
+    "text": "      outcome: \"invalid\","
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 227,
+    "text": "      diagnostic,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 228,
+    "text": "      recordedAtMs: input.nowMs,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 229,
+    "text": "    },"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 230,
+    "text": "    driveUpdate: null,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 231,
+    "text": "    evidenceWeight,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 232,
+    "text": "    probability: 0,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 233,
+    "text": "    draw: null,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 234,
+    "text": "    shouldSpeak: false,"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 235,
+    "text": "  };"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 236,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 238,
+    "text": "function hasValidAmbientChunks(proposal: AmbientAppraisalProposal): boolean {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 239,
+    "text": "  return proposal.decision === \"observe\" ? proposal.chunks.length === 0 : proposal.chunks.length >= 1 && proposal.chunks.length <= 5;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 240,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 250,
+    "text": "function silenceRequestIntensity(intensity: \"mild\" | \"strong\" | \"moderator\"): number {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 251,
+    "text": "  switch (intensity) {"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 252,
+    "text": "    case \"mild\": return 0.5;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 253,
+    "text": "    case \"strong\": return 0.8;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 254,
+    "text": "    case \"moderator\": return 1;"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 255,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/conversation-ambient.ts",
+    "line": 256,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-config.ts",
+    "line": 79,
+    "text": "  cooldownMs: 600_000,"
+  },
+  {
+    "path": "service/src/conversation-config.ts",
+    "line": 80,
+    "text": "  budgetPerHour: 20,"
+  },
+  {
+    "path": "service/src/conversation-config.ts",
+    "line": 81,
+    "text": "  minHumanIdleMs: 12_000,"
+  },
+  {
+    "path": "service/src/conversation-config.ts",
+    "line": 82,
+    "text": "  confidenceThreshold: 0.7,"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 15,
+    "text": "const MAX_PROFILE_NOTES = 12;"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 17,
+    "text": "export function mergeRelationshipProfile(current: RelationshipProfile | null, update: RelationshipUpdate): RelationshipProfile {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 18,
+    "text": "  const previous = current ?? { rapport: 0.5, familiarity: 0.5, notes: [] };"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 19,
+    "text": "  return {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 20,
+    "text": "    rapport: clampUnit(previous.rapport + clampDelta(update.rapportDelta)),"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 21,
+    "text": "    familiarity: clampUnit(previous.familiarity + clampDelta(update.familiarityDelta)),"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 22,
+    "text": "    notes: stableNotes([...previous.notes, ...update.notes]),"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 23,
+    "text": "  };"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 24,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 26,
+    "text": "export function normalizeRelationshipNotes(notes: readonly string[]): readonly string[] {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 27,
+    "text": "  return stableNotes(notes, 3);"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 28,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 29,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 30,
+    "text": "function stableNotes(notes: readonly string[], limit = MAX_PROFILE_NOTES): readonly string[] {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 31,
+    "text": "  const byHash = new Map<string, string>();"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 32,
+    "text": "  for (const candidate of notes) {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 33,
+    "text": "    const note = candidate.trim().replace(/\\s+/g, \" \");"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 34,
+    "text": "    if (note.length === 0 || note.length > 160) continue;"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 35,
+    "text": "    const hash = createHash(\"sha256\").update(note.toLocaleLowerCase(\"en-US\")).digest(\"hex\");"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 36,
+    "text": "    const prior = byHash.get(hash);"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 37,
+    "text": "    if (prior === undefined || note.localeCompare(prior) < 0) byHash.set(hash, note);"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 38,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 39,
+    "text": "  return [...byHash.entries()]"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 40,
+    "text": "    .sort(([left], [right]) => left.localeCompare(right))"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 41,
+    "text": "    .slice(0, limit)"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 42,
+    "text": "    .map(([, note]) => note);"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 43,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 45,
+    "text": "function clampDelta(value: number): number {"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 46,
+    "text": "  return Number.isFinite(value) ? Math.max(-0.1, Math.min(0.1, value)) : 0;"
+  },
+  {
+    "path": "service/src/conversation-relationship-profile.ts",
+    "line": 47,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 37,
+    "text": "const WATCHER_WINDOW_N = 8;"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 149,
+    "text": "  previewSteer(input: WatcherSteerInput): WatcherSteerResult {"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 150,
+    "text": "    if (!this.config.enabled) return { decision: \"no_reply\" };"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 151,
+    "text": "    const recentAssistantTurns = this.recentMessages(input.scopeId)"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 152,
+    "text": "      .filter((message) => message.senderRole === \"agent\")"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 153,
+    "text": "      .slice(-2);"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 154,
+    "text": "    const signal = evaluateFixation(recentAssistantTurns, input.scopeId)[0];"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 155,
+    "text": "    if (!signal) return { decision: \"no_reply\" };"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 156,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 157,
+    "text": "    return {"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 158,
+    "text": "      decision: \"steer\","
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 159,
+    "text": "      signalId: signal.signalId,"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 160,
+    "text": "      steerText: ["
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 161,
+    "text": "        \"Internal anti-fixation guidance. Do not mention this guidance or the detector to the user.\","
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 162,
+    "text": "        \"Recent assistant turns are materially repetitive.\","
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 163,
+    "text": "        \"Answer the user's newest request directly with a materially different approach, concrete progress, or a new line of reasoning.\","
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 164,
+    "text": "      ].join(\" \"),"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 165,
+    "text": "    };"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 166,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 196,
+    "text": "    const cooldownMs = validCooldownMs(input.cooldownMs);"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 197,
+    "text": "    const cooldownKey = `${input.scopeId}:${signal.fixationPattern}`;"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 198,
+    "text": "    const gateState = this.store.getGateState(input.scopeId, cooldownKey);"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 199,
+    "text": "    const cooldownHit = gateState ? now.getTime() - Date.parse(gateState.updatedAt) < cooldownMs : false;"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 200,
+    "text": "    const duplicateHit = gateState?.lastSignalId === signal.signalId || this.hasCommittedSignal(input.scopeId, signal.signalId);"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 211,
+    "text": "      privacyRisk: input.privacyRisk === true,"
+  },
+  {
+    "path": "service/src/conversation-runtime.ts",
+    "line": 212,
+    "text": "      crossThreadRisk: input.crossThreadRisk === true,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 3,
+    "text": "export const GENERIC_CONVERSATION_PERSONA ="
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 4,
+    "text": "  \"You are HentAI, a concise bot presence. Never claim to be human. Keep replies short, useful, and clearly bot-authored.\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 77,
+    "text": "const HUMAN_IDENTITY_CLAIM_PATTERNS = ["
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 78,
+    "text": "  /\\b(?:i\\s+am|i'm|im)\\s+(?:a\\s+|an\\s+)?(?:(?:actual|living|real)\\s+)?(?:human(?:\\s+being)?|person)\\b[,.! ]*/gi,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 79,
+    "text": "  /\\b(?:i\\s+am|i'm|im)\\s+not\\s+(?:a\\s+|an\\s+)?(?:ai|artificial\\s+intelligence|bot|robot)\\b[,.! ]*/gi,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 80,
+    "text": "  /\\b(?:not|never)\\s+(?:a\\s+|an\\s+)?(?:ai|artificial\\s+intelligence|bot|robot)\\b[,.! ]*/gi,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 81,
+    "text": "  /\\b(?:actual|living|real)\\s+(?:human(?:\\s+being)?|person)\\b[,.! ]*/gi,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 82,
+    "text": "] as const;"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 91,
+    "text": "    budgetRemaining: Math.max(0, input.config.budgetPerHour - input.state.speechCountThisHour - 1),"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 95,
+    "text": "export function resolveConversationPersona(input: ConversationSpeechPolicyInput): ConversationPolicyPersona {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 96,
+    "text": "  const profileNote = sanitizePersonaNote(input.profile?.soulSnippet);"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 97,
+    "text": "  if (profileNote) return withPersonaBoundary({ source: \"channel_profile\", note: profileNote });"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 98,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 99,
+    "text": "  const configNote = sanitizePersonaNote(input.config.persona);"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 100,
+    "text": "  if (configNote) return withPersonaBoundary({ source: \"config\", note: configNote });"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 101,
+    "text": ""
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 102,
+    "text": "  return { source: \"generic\", text: GENERIC_CONVERSATION_PERSONA };"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 103,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 105,
+    "text": "function suppressedReasonFor(input: ConversationSpeechPolicyInput): ConversationSuppressedReason | null {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 106,
+    "text": "  if (!input.config.enabled) return \"service_disabled\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 107,
+    "text": "  if (input.channel.enabled !== true) return \"channel_disabled\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 108,
+    "text": "  if (!input.safeguards.privacyAllowed) return \"privacy_blocked\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 109,
+    "text": "  if (!input.safeguards.threadAllowed) return \"thread_blocked\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 110,
+    "text": "  if (input.safeguards.duplicateSignal) return \"duplicate_signal\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 111,
+    "text": "  if (input.safeguards.selfNudge) return \"self_nudge\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 112,
+    "text": "  if (isCoolingDown(input)) return \"cooldown\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 113,
+    "text": "  if (input.state.speechCountThisHour >= input.config.budgetPerHour) return \"hourly_budget_exhausted\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 114,
+    "text": "  if (input.state.lastHumanMessageAtMs === null) return \"no_recent_human_activity\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 115,
+    "text": "  if (input.nowMs - input.state.lastHumanMessageAtMs < input.config.minHumanIdleMs) return \"recent_human_active\";"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 116,
+    "text": "  return input.provider.confidence < input.config.confidenceThreshold ? \"low_confidence\" : null;"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 117,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 119,
+    "text": "function isCoolingDown(input: ConversationSpeechPolicyInput): boolean {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 120,
+    "text": "  return input.state.lastSpeechAtMs !== null && input.nowMs - input.state.lastSpeechAtMs < input.config.cooldownMs;"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 121,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 123,
+    "text": "function withPersonaBoundary(candidate: PersonaCandidate): ConversationPolicyPersona {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 124,
+    "text": "  return {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 125,
+    "text": "    source: candidate.source,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 126,
+    "text": "    text: `You are HentAI, a concise bot presence. Never claim to be human. Persona notes: ${candidate.note}`,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 127,
+    "text": "  };"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 128,
+    "text": "}"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 130,
+    "text": "function sanitizePersonaNote(value: string | null | undefined): string | null {"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 131,
+    "text": "  const trimmed = value?.trim();"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 132,
+    "text": "  if (!trimmed) return null;"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 133,
+    "text": "  const withoutIdentityClaims = HUMAN_IDENTITY_CLAIM_PATTERNS.reduce("
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 134,
+    "text": "    (current, pattern) => current.replace(pattern, \" \"),"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 135,
+    "text": "    trimmed,"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 136,
+    "text": "  );"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 137,
+    "text": "  const normalized = withoutIdentityClaims.replace(/\\s+/g, \" \").replace(/^[,.;:\\s]+/g, \"\").trim();"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 138,
+    "text": "  return normalized.length > 0 ? normalized : null;"
+  },
+  {
+    "path": "service/src/conversation-speech-policy.ts",
+    "line": 139,
+    "text": "}"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 14,
+    "text": "export const PRIORITY_STACK = ["
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 15,
+    "text": "  \"latest_explicit_instruction\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 16,
+    "text": "  \"active_nudge\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 17,
+    "text": "  \"current_topic\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 18,
+    "text": "  \"older_summary\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 19,
+    "text": "] as const;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 158,
+    "text": "export const STOP_WORDS: ReadonlySet<string> = new Set<string>(["
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 159,
+    "text": "  \"the\", \"a\", \"an\", \"and\", \"or\", \"but\", \"if\", \"then\", \"so\", \"to\", \"of\", \"in\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 160,
+    "text": "  \"on\", \"for\", \"is\", \"are\", \"was\", \"were\", \"be\", \"been\", \"it\", \"this\", \"that\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 161,
+    "text": "  \"i\", \"you\", \"we\", \"they\", \"as\", \"at\", \"by\", \"with\", \"about\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 162,
+    "text": "  \"은\", \"는\", \"이\", \"가\", \"을\", \"를\", \"에\", \"의\", \"도\", \"로\", \"으로\", \"고\", \"과\", \"와\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 163,
+    "text": "]);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 165,
+    "text": "export const SIMILARITY_EPSILON = 1e-9;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 189,
+    "text": "export function latestInstruction(text: string): string | null {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 190,
+    "text": "  if ("
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 191,
+    "text": "    hasAny(text, ["
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 192,
+    "text": "      \"don't\", \"do not\", \"stop\", \"instead\", \"rather\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 193,
+    "text": "      \"아니\", \"하지마\", \"하지 마\", \"말고\", \"대신\", \"그만\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 194,
+    "text": "    ])"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 195,
+    "text": "  ) {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 196,
+    "text": "    return compact(text, 160);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 197,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 198,
+    "text": "  return null;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 199,
+    "text": "}"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 229,
+    "text": "export function similarity(aText: string, bText: string): number {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 230,
+    "text": "  const aTokens = tokenize(aText);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 231,
+    "text": "  const bTokens = tokenize(bText);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 232,
+    "text": "  const tokenSim = jaccard(aTokens, bTokens);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 233,
+    "text": "  const gramSim = jaccard(bigrams(aTokens), bigrams(bTokens));"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 234,
+    "text": "  return Math.max(tokenSim, gramSim);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 235,
+    "text": "}"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 270,
+    "text": "export const DEFAULT_WINDOW_N = 8;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 271,
+    "text": "export const DEFAULT_PERSISTENCE_K = 3;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 272,
+    "text": "export const DEFAULT_SIM_THRESHOLD = 0.6;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 273,
+    "text": "export const DEFAULT_PERSISTENCE_SIM_FLOOR = 0.4;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 298,
+    "text": "  const repetition = approxGte(maxSim, simThreshold);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 299,
+    "text": "  const stuck = persistence >= persistenceK && approxGte(maxSim, floor);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 317,
+    "text": "      confidence: 0.6,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 330,
+    "text": "export function detectCorrectionDrivenFixation("
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 331,
+    "text": "  messages: RawConversationMessage[],"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 332,
+    "text": "  scopeId: string,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 333,
+    "text": "  options: FixationOptions = {},"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 334,
+    "text": "): InternalAntiFixationSignal[] {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 335,
+    "text": "  const now = options.now ?? DEFAULT_NOW;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 336,
+    "text": "  const signals: InternalAntiFixationSignal[] = [];"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 337,
+    "text": "  for (let i = 2; i < messages.length; i += 1) {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 338,
+    "text": "    const prevAgent = messages[i - 2]!;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 339,
+    "text": "    const correction = messages[i - 1]!;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 340,
+    "text": "    const currentAgent = messages[i]!;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 341,
+    "text": "    if ("
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 342,
+    "text": "      prevAgent.senderRole !== \"agent\" ||"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 343,
+    "text": "      correction.senderRole !== \"user\" ||"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 344,
+    "text": "      currentAgent.senderRole !== \"agent\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 345,
+    "text": "    ) {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 346,
+    "text": "      continue;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 347,
+    "text": "    }"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 348,
+    "text": "    const corrected = latestInstruction(correction.text) !== null;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 349,
+    "text": "    const repeatedFrame = inferTopic(prevAgent.text) === inferTopic(currentAgent.text);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 350,
+    "text": "    const newTopic = inferTopic(correction.text);"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 351,
+    "text": "    if (corrected && repeatedFrame && inferTopic(currentAgent.text) !== newTopic) {"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 352,
+    "text": "      signals.push({"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 353,
+    "text": "        schema: \"conversation_watcher.internal_anti_fixation_signal.v1\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 354,
+    "text": "        signalId: `sig-correction-${currentAgent.id}`,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 355,
+    "text": "        scopeId,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 356,
+    "text": "        reason: \"Agent repeated the previous frame after a newer explicit instruction.\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 357,
+    "text": "        staleFrame: inferTopic(prevAgent.text),"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 358,
+    "text": "        newContextEvidence: `${correction.id}: ${compact(correction.text, 120)}`,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 359,
+    "text": "        suggestedPivot: `Answer from the newer frame: ${newTopic}.`,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 360,
+    "text": "        sourceMessageIds: [prevAgent.id, correction.id, currentAgent.id],"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 361,
+    "text": "        confidence: 0.9,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 362,
+    "text": "        severity: \"high\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 363,
+    "text": "        fixationPattern: \"new_context_ignored_previous_frame_repeated\","
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 364,
+    "text": "        createdAt: now,"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 365,
+    "text": "      });"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 366,
+    "text": "    }"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 367,
+    "text": "  }"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 368,
+    "text": "  return signals;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 369,
+    "text": "}"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 462,
+    "text": "  const threadMatches ="
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 463,
+    "text": "    !input.sourceThreadId || !input.targetThreadId || input.sourceThreadId === input.targetThreadId;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 464,
+    "text": "  const threadOk = threadMatches && !input.crossThreadRisk;"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 465,
+    "text": "  const threadReason = input.crossThreadRisk"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 466,
+    "text": "    ? \"signal sources span multiple threads\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 467,
+    "text": "    : threadMatches"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 468,
+    "text": "      ? \"thread matches or is unspecified\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 469,
+    "text": "      : \"source and target thread mismatch\";"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 470,
+    "text": "  const suppressedReason = input.shadowMode"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 471,
+    "text": "    ? \"shadow_mode\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 472,
+    "text": "    : input.cooldownHit"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 473,
+    "text": "      ? \"cooldown\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 474,
+    "text": "      : input.duplicateHit"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 475,
+    "text": "        ? \"duplicate\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 476,
+    "text": "        : input.privacyRisk"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 477,
+    "text": "          ? \"privacy\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 478,
+    "text": "          : !threadOk"
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 479,
+    "text": "            ? \"thread_mismatch\""
+  },
+  {
+    "path": "service/src/watcher-core.ts",
+    "line": 480,
+    "text": "            : undefined;"
+  }
+]

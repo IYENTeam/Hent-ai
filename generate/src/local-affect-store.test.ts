@@ -55,5 +55,14 @@ describe("external local affect asset store", () => {
     })).resolves.toMatchObject({ dryRun: false, files: 1, activated: true });
     expect(await readFile(join(source, "sets", "source-v2", "happy-001.png"))).toEqual(pixels);
     expect(JSON.parse(await readFile(join(source, "manifest.json"), "utf8"))).toMatchObject({ activeSet: "source-v2" });
+
+    const before = JSON.parse(await readFile(join(target, "manifest.json"), "utf8"));
+    await Promise.all(["concurrent-a", "concurrent-b"].map((targetSetId) => migrateAffectAssetsToLocalStore({
+      sourceRoot: source, sourceSetId: "source", targetRoot: target, targetSetId, tagCollectionPath: tagPath, apply: true,
+    })));
+    const after = JSON.parse(await readFile(join(target, "manifest.json"), "utf8"));
+    expect(after.activeSet).toBe(before.activeSet);
+    expect(after.sets.target).toEqual(before.sets.target);
+    expect(Object.keys(after.sets).sort()).toEqual(["concurrent-a", "concurrent-b", "target"]);
   });
 });

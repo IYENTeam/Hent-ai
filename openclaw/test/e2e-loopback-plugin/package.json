@@ -1,6 +1,0 @@
-{
-  "name": "hent-e2e-loopback",
-  "private": true,
-  "type": "module",
-  "openclaw": { "extensions": ["./index.ts"] }
-}

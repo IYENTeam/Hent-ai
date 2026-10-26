@@ -1,20 +1,17 @@
 {
   "versions": {
     "finalVerdict": "FinalEmotionVerdictV1",
-    "mediaResponse": "ServiceMediaResponseV1",
+    "mediaResponse": "ServiceMediaResponseV2-ExplicitSensitivity",
     "verifierCachePolicy": "VerifierCachePolicyV4-NormalizedAffect",
     "assetPolicy": "ServiceAssetPolicyV2-AffectSpaceV2"
   },
   "validVerdict": {
     "verdict": {
-      "emotion": "neutral",
-      "confidence": 0.88,
-      "reason": "remote_verifier",
       "media": {
         "filename": "neutral.png",
         "contentType": "image/png",
         "url": "/static/sets/set/neutral.png",
-        "sensitiveMedia": true,
+        "sensitiveMedia": false,
         "metadata": {
           "storageKey": "sets/set/neutral.png"
         }
@@ -23,6 +20,6 @@
   },
   "nullVerdict": {
     "verdict": null,
-    "diagnostics": [{ "skipped": true, "reason": "verifier_emotion_invalid" }]
+    "diagnostics": [{ "skipped": true, "reason": "missing_response_affect" }]
   }
 }

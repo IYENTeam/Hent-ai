@@ -2,19 +2,19 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
-import { DEFAULT_CONVERSATION_CONFIG, type ConversationServiceConfig } from "./conversation-config.js";
 import type { ServiceDatabase } from "./db.js";
 import { createHentAiServer, listen } from "./server.js";
-import type { FinalResponseVerifier } from "./verifier.js";
+import { AFFECT_DIMENSIONS, AFFECT_SPACE_VERSION, RESPONSE_AFFECT_SCHEMA_VERSION, type AffectDimensionsV2, type ResponseAffectV2 } from "../../shared/affect.js";
 
 export const token = "test-token";
-export const nullVerifier: FinalResponseVerifier = { verify: async () => null };
-export const enabledConversationConfig: ConversationServiceConfig = { ...DEFAULT_CONVERSATION_CONFIG, enabled: true };
+
+export function responseAffect(overrides: Partial<AffectDimensionsV2> = {}): ResponseAffectV2 {
+  const dimensions = Object.fromEntries(AFFECT_DIMENSIONS.map((key) => [key, overrides[key] ?? 0.1])) as AffectDimensionsV2;
+  return { schemaVersion: RESPONSE_AFFECT_SCHEMA_VERSION, affectSpaceVersion: AFFECT_SPACE_VERSION, dimensions, confidence: 0.9 };
+}
 
 type TestServerOptions = {
   readonly assetRoot?: string;
-  readonly verifier?: FinalResponseVerifier;
-  readonly conversationConfig?: ConversationServiceConfig;
 };
 
 const tempRoots: string[] = [];
@@ -34,14 +34,7 @@ export async function withServer<T>(
   fn: (baseUrl: string) => Promise<T>,
   options: TestServerOptions = {},
 ): Promise<T> {
-  const verifier = options.verifier ?? nullVerifier;
-  const binding = await listen(createHentAiServer({
-    db,
-    token,
-    assetRoot: options.assetRoot,
-    verifier,
-    ...(options.conversationConfig ? { conversationConfig: options.conversationConfig } : {}),
-  }));
+  const binding = await listen(createHentAiServer({ db, token, assetRoot: options.assetRoot }));
   try {
     return await fn(binding.url);
   } finally {
