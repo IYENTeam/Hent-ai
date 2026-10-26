@@ -2,8 +2,6 @@
 // bridge.secret on every route except /v1/health, strict request parsing via contract.ts.
 
 import { timingSafeEqual } from "node:crypto";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import type { Discord } from "../messenger/discord.ts";
 import { MessengerError } from "../messenger/http.ts";
 import type { Clock } from "../run.ts";
@@ -34,9 +32,10 @@ import {
   TYPING_INTERVAL_MS,
   typingTicks,
 } from "./contract.ts";
-import { type BridgeLog, type ConsumerStore, type HandledLedger, type Journal, type SentLedger, writePrivateFile } from "./journal.ts";
-import { ProcessingInbox, StaleWakeError } from "./inbox.ts";
-import { CodexRpc, CodexRpcError } from "./codex-rpc.ts";
+import { type BridgeLog, type ConsumerStore, type HandledLedger, type Journal, type SentLedger } from "./journal.ts";
+import { StaleWakeError } from "./inbox.ts";
+import { CodexRpcError } from "./codex-rpc.ts";
+import { ChannelSessions, SessionConflictError } from "./channel-sessions.ts";
 
 /**
  * Extension points for later todos. `onJournaled` fires once per newly journaled event in seq
@@ -57,9 +56,7 @@ export type BridgeServerDeps = {
   readonly consumers: ConsumerStore;
   readonly sent: SentLedger;
   readonly handled: HandledLedger;
-  readonly inbox: ProcessingInbox;
-  readonly sessionPath: string;
-  readonly codexHome?: string;
+  readonly sessions: ChannelSessions;
   readonly status: () => { gateway: GatewayState; botUserId: string | null };
   readonly discord: () => Discord | null;
   readonly clock: Clock;
@@ -286,8 +283,9 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const parsed = body === null ? parsePendingQuery(url.searchParams) : body.ok ? parseWakeRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
         try {
-          if (pathname === BRIDGE_ROUTES.pending) return json(deps.inbox.next(parsed.value));
-          const result = deps.inbox.done(parsed.value);
+          const processing = deps.sessions.forWake(parsed.value);
+          if (pathname === BRIDGE_ROUTES.pending) return json(processing.next(parsed.value));
+          const result = processing.done(parsed.value);
           deps.hooks.onInboxDrained?.();
           return json(result);
         } catch (error) {
@@ -339,29 +337,15 @@ export const startBridgeServer = (deps: BridgeServerDeps) => {
         const body = await readJson(req);
         const parsed = body.ok ? parseSessionRequest(body.value) : body;
         if (!parsed.ok) return invalid(parsed.error);
-        const { configureCodex, ...session } = parsed.value;
-        if (configureCodex) {
-          try {
-            // The sandboxed CLI cannot open the daemon's Unix socket. Configure
-            // the already-running TUI from the bridge before enabling wakeups.
-            const rpc = await CodexRpc.connect({
-              socketPath: join(deps.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-control/app-server-control.sock"),
-            });
-            try {
-              await rpc.request("thread/settings/update", {
-                threadId: session.sessionId,
-                sandboxPolicy: { type: "workspaceWrite", writableRoots: [dirname(deps.sessionPath)], networkAccess: true },
-              });
-            } finally {
-              rpc.close();
-            }
-          } catch (error) {
-            if (error instanceof CodexRpcError) return fail(503, "codex_unavailable", error.message);
-            throw error;
-          }
+        const session = parsed.value;
+        try {
+          await deps.sessions.register(session);
+        } catch (error) {
+          if (error instanceof CodexRpcError) return fail(503, "codex_unavailable", error.message);
+          if (error instanceof SessionConflictError) return fail(409, "session_conflict", error.message);
+          throw error;
         }
-        writePrivateFile(deps.sessionPath, `${JSON.stringify({ ...session, updatedAt: new Date(clock.now()).toISOString() }, null, 2)}\n`);
-        log("BRIDGE_SESSION_SET", { agent: session.agent, pane: session.pane });
+        log("BRIDGE_SESSION_SET", { agent: session.agent, pane: session.pane, channelId: session.channelId ?? null });
         deps.hooks.onSessionSet?.(session);
         return new Response(null, { status: 204 });
       }

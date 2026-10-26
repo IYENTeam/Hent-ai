@@ -238,6 +238,7 @@ describe("edit / typing / handled / session", () => {
       value: { agent: "codex", sessionId: "3f2a-uuid", pane: "w1:p3", cwd: "/Users/iyen/work" },
     });
     expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp" }).ok).toBe(true);
+    expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "w16:p1K", cwd: "/tmp" }).ok).toBe(true);
     expect(parseSessionRequest({ agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp", configureCodex: true })).toEqual({
       ok: true, value: { agent: "codex", sessionId: "s1", pane: "wD:p12", cwd: "/tmp", configureCodex: true },
     });

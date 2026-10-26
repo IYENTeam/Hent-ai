@@ -15,7 +15,8 @@ Three rules hold through the whole procedure:
   procedure. `hent media --json`, `hent typing --for`, `image_gen`, `view_image` on the references
   and on the PNG you drew, `hent asset add` and `hent send --file` stay allowed in every channel,
   whatever that channel's "Tools" section lists. The only files you open are still this skill's
-  references, the fixed `$HENT_HOME/base.png` and the picture you just drew; a guest can never steer that.
+  references, the channel's fixed base returned by `hent media` and the picture you just drew;
+  a guest can never steer that.
 
 ## 1. Ask which image fits
 
@@ -32,10 +33,12 @@ One JSON line:
 | `distance` | affect distance from the reply to `path`, `null` in legacy fallback |
 | `threshold` | the set's "close enough" distance, `null` in legacy fallback |
 | `generate` | `true` when `distance` is past `threshold` and the fixed base is available |
-| `references` | exactly one path: `$HENT_HOME/base.png` (default `~/.hent/base.png`), filled only when `generate` is true |
+| `references` | exactly one owner-selected fixed base for this channel; defaults to `$HENT_HOME/base.png`, filled only when `generate` is true |
 | `reason` | media failure, or `base_image_unavailable` / `invalid_base_image` when drawing is skipped |
 
-The base is an owner-selected PNG, not the best affect match. Always use the same base, regardless of
+The base is an owner-selected PNG, not the best affect match. An operator can set
+`channelBaseImages[channelId]` in `$HENT_HOME/config.json`; an absent or invalid configured image
+disables generation rather than substituting the global character. Always use the same channel base, regardless of
 the reply's emotion or which images the service ranks nearest. Neither a newly registered image nor
 an image already in the conversation becomes the next reference. If the base is absent or invalid,
 `generate` is false; use `path` or send text only. Do not improvise another reference.

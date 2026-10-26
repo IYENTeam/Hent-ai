@@ -116,6 +116,34 @@ ledger. Native queue IDs do not make retries idempotent: reconnects reconcile ow
 and only send/skip marks a source message handled. No headless session is started when the pane
 is gone or the native thread is unloaded.
 
+### Per-channel brains
+
+The default `session.json` still owns all bridged channels without an override. To give one
+channel its own model or effort, start a separate interactive Codex thread in a separate herdr
+pane, sharing the bridge's `HENT_HOME` and `CODEX_HOME`, load the normal Hent instructions, then
+register from that thread:
+
+```bash
+hent session set --agent codex --session-id "$CODEX_THREAD_ID" \
+  --cwd "$PWD" --pane "$HERDR_PANE_ID" \
+  --channel 123456789012345678 --model gpt-6.1-sol --effort medium --configure-codex
+```
+
+Use the upgraded CLI: older versions ignore these flags and would replace the default session.
+`kit/brain.sh start/stop` remains the singleton default launcher; do not use it to launch the
+channel brain. Registration applies `model` and `effort` to that dedicated thread through
+`thread/settings/update` before publishing ownership; it does not change the default thread.
+Read the dedicated and default threads through Codex `thread/read` to confirm their live `model`
+and `reasoningEffort` before claiming activation.
+
+Register before adding the channel to the bridge. If already bridged, drain any work fetched by
+the default brain first; a transfer with received work returns `409 session_conflict`.
+Overrides persist in `$HENT_HOME/channel-sessions.json`, with separate
+`state/native-wake-channel-<channelId>.json` files. An unavailable channel brain leaves its work
+pending rather than falling back to the default. Re-register replacements/resumed channel brains.
+Each override requires its own thread and pane. These partitions isolate dispatch, not API
+authorization: all brains still share the local bridge bearer.
+
 ### Per-channel rules
 
 A deployment can give one channel its own operating rules in `~/.hent/channel-rules/<channelId>.md`
@@ -184,8 +212,29 @@ Do not overwrite an operator-selected base during later deployments. Changing th
 explicit character-reference change, not part of asset registration. It is separate from the
 affect-ranked image pool and does not require a manifest or channel-mapping change.
 
+For a channel-specific outfit, install its fixed PNG separately, for example at
+`~/.hent/channels/<channelId>/base.png` (0600), and merge this operator setting into
+`~/.hent/config.json`, preserving `serviceUrl` and all other keys:
+
+```json
+{
+  "channelBaseImages": {
+    "123456789012345678": "/srv/hent/channels/123456789012345678/base.png"
+  }
+}
+```
+
+Only channels without an override use the global base. Missing, unreadable or invalid overrides
+disable drawing; they never fall back to the global outfit. Downloads are private to
+`$HENT_HOME/state/media/channel-<encoded-channelId>/`. Map the channel to its own service asset set
+through `PUT /v1/channels/<id>/mapping`, preserving its other settings, before registering the
+initial image with `hent asset add`. Asset registration and picker thresholds already resolve the
+mapped set; identical-content registration cannot move an asset from another set.
+Verify both channel mappings, selected static bytes and generation `references` before activation.
+These changes require a human-merged release before upgrading the deployed CLI/skill.
+
 `hent media --json` still uses affect distance to decide whether to reuse or draw. When drawing,
-`references` contains only this fixed local path; nearest-ranked images are never downloaded as
+`references` contains only this channel's fixed local path; nearest-ranked images are never downloaded as
 generation references. If the PNG is missing, unreadable or has an invalid signature, the command
 returns `generate:false`, empty `references` and a reason, keeping the existing reply image. The
 brain must not draw without the base or replace it with a generated image. Restart the brain with

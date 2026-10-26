@@ -36,6 +36,7 @@ export class ProcessingInbox {
     readonly journal: Journal;
     readonly handled: HandledLedger;
     readonly sessionPath: string;
+    readonly getSession?: () => SessionRequest | null;
     readonly wakePath: string;
     readonly isBridged: BridgedLookup;
     readonly log: BridgeLog;
@@ -54,7 +55,7 @@ export class ProcessingInbox {
     };
   }
 
-  session(): SessionRequest | null { return readSession(this.deps.sessionPath); }
+  session(): SessionRequest | null { return this.deps.getSession ? this.deps.getSession() : readSession(this.deps.sessionPath); }
   active(): NativeWake | null { return this.wake; }
 
   eligible(event: InboxEvent): boolean {

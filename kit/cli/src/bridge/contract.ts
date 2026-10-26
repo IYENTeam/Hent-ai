@@ -37,6 +37,7 @@ export type BridgeErrorCode =
   | "unauthorized"
   | "lease_held"
   | "stale_wake"
+  | "session_conflict"
   | "codex_unavailable"
   | "discord_error"
   | "gateway_fatal";
@@ -152,6 +153,10 @@ export interface SessionRequest {
   cwd: string;
   /** Apply this running thread's Hent sandbox before enabling inbox wakeups. */
   configureCodex?: boolean;
+  /** A dedicated channel thread; omitted keeps the legacy default session. */
+  channelId?: string;
+  model?: string;
+  effort?: string;
 }
 
 export type GatewayState = "connected" | "reconnecting" | "fatal";
@@ -205,7 +210,7 @@ const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const CONSUMER = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 const UINT = /^(0|[1-9]\d{0,15})$/;
-const HERDR_PANE = /^[A-Za-z0-9]{1,16}:p[0-9]{1,9}$/;
+const HERDR_PANE = /^[A-Za-z0-9]{1,16}:p[A-Za-z0-9]{1,16}$/;
 
 // Control characters are rejected in pane targets and cwd (argv safety, no terminal injection).
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -429,7 +434,7 @@ export function parseHandledRequest(input: unknown): ParseResult<HandledRequest>
 export function parseSessionRequest(input: unknown): ParseResult<SessionRequest> {
   return run(() => {
     const obj = asObject(input, "session request");
-    onlyKeys(obj, ["agent", "sessionId", "pane", "cwd", "configureCodex"], "session request");
+    onlyKeys(obj, ["agent", "sessionId", "pane", "cwd", "configureCodex", "channelId", "model", "effort"], "session request");
     const agent = oneOf(obj, "agent", ["codex"] as const);
     const sessionId = str(obj, "sessionId");
     if (!SESSION_ID.test(sessionId)) fail("sessionId must match [A-Za-z0-9._-]{1,128}");
@@ -438,7 +443,17 @@ export function parseSessionRequest(input: unknown): ParseResult<SessionRequest>
     const cwd = str(obj, "cwd");
     if (!cwd.startsWith("/") || cwd.length > 4096 || CONTROL.test(cwd)) fail("cwd must be an absolute path");
     if (obj.configureCodex !== undefined && typeof obj.configureCodex !== "boolean") fail("configureCodex must be a boolean");
-    return { agent, sessionId, pane, cwd, ...(obj.configureCodex === true ? { configureCodex: true } : {}) };
+    const base = { agent, sessionId, pane, cwd, ...(obj.configureCodex === true ? { configureCodex: true } : {}) };
+    if (obj.channelId === undefined) {
+      if (obj.model !== undefined || obj.effort !== undefined) fail("model and effort require channelId");
+      return base;
+    }
+    const channelId = id(obj, "channelId");
+    const model = str(obj, "model");
+    const effort = str(obj, "effort");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(model)) fail("model must be a model identifier");
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(effort)) fail("effort must be a reasoning effort identifier");
+    return { ...base, channelId, model, effort };
   });
 }
 
